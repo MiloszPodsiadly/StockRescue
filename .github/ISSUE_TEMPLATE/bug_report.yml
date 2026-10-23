@@ -1,0 +1,60 @@
+name: Bug report
+description: Report reproducible incorrect behavior in an implemented feature.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please search existing issues first.
+        **Do not disclose security vulnerabilities here.** Read [Security Policy](https://github.com/MiloszPodsiadly/StockRescue/blob/master/SECURITY.md) and use a private reporting channel.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: What is failing?
+      placeholder: A valid inventory movement is rejected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide minimal reproduction steps using synthetic or non-sensitive data.
+      placeholder: |
+        1. Start with ...
+        2. Submit ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment / revision
+      description: OS, application revision or commit SHA, and relevant runtime versions.
+      placeholder: Local environment, commit SHA, runtime version
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots (redacted)
+      description: Remove tokens, credentials, personal information, and customer data before pasting.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched for existing reports of this issue.
+          required: true
+        - label: This report does not contain secrets or unpatched vulnerability details.
+          required: true

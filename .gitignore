@@ -1,0 +1,86 @@
+# Operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# Local secrets and overrides
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+secrets/
+
+# Java / Maven / Gradle
+**/target/
+**/build/
+.gradle/
+out/
+*.class
+*.log
+.mvn/timing.properties
+# Keep Maven/Gradle wrapper artifacts checked in as needed.
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+env/
+*.egg-info/
+.dist/
+
+# JavaScript / TypeScript
+node_modules/
+.next/
+.nuxt/
+dist/
+coverage/
+*.tsbuildinfo
+.npm/
+.yarn/cache/
+.pnpm-store/
+
+# Temporary files and local outputs
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+.cache/
+tmp/
+
+# Project data and local ML artifacts (add carefully scoped exceptions if needed)
+artifacts/
+checkpoints/
+mlruns/
+*.parquet
+*.feather
+*.joblib
+*.pkl
+
+# Application-local runtime
+*.db
+*.sqlite
+*.sqlite3
