@@ -1,4 +1,4 @@
-# StockRescue AI
+# 🍒🍓🍎🥑♻️ StockRescue AI ♻️🥑🍎🍓🍒
 
 **Turn surplus into opportunity.**
 
