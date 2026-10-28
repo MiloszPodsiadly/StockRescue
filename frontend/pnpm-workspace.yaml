@@ -1,0 +1,29 @@
+engineStrict: true
+saveExact: true
+strictPeerDependencies: true
+storeDir: .tools/pnpm-store
+strictSsl: true
+strictDepBuilds: true
+allowBuilds: {}
+dangerouslyAllowAllBuilds: false
+blockExoticSubdeps: true
+trustPolicy: no-downgrade
+# Babel's official 2023 backport; registry signature and pinned SHA-512 are checked separately.
+trustPolicyExclude:
+  - semver@6.3.1
+trustLockfile: false
+verifyStoreIntegrity: true
+verifyDepsBeforeRun: error
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+skills:
+  dirs: []
+minimumReleaseAgeExclude:
+  - '@types/node@26.6.6'
+  - lucide-react@1.63.0
+  - seroval@1.7.3
+  - seroval-plugins@1.7.3
+overrides:
+  seroval: 1.7.3
+  seroval-plugins: 1.7.3
