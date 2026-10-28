@@ -70,6 +70,12 @@ coverage/
 *.rej
 .cache/
 tmp/
+.tools/
+.uv-cache/
+/infrastructure/.data/
+
+# Local task instructions and reference materials
+/documents/prompts/
 
 # Project data and local ML artifacts (add carefully scoped exceptions if needed)
 artifacts/

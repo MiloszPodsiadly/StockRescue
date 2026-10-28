@@ -1,0 +1,67 @@
+spring:
+  application:
+    name: stockrescue-backend
+  lifecycle:
+    timeout-per-shutdown-phase: 10s
+  datasource:
+    url: ${DATABASE_URL}
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      connection-timeout: 2000
+      validation-timeout: 1000
+      maximum-pool-size: 5
+  flyway:
+    validate-on-migrate: true
+    clean-disabled: true
+    baseline-on-migrate: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    admin:
+      fail-fast: false
+      operation-timeout: 3s
+      close-timeout: 1s
+      properties:
+        request.timeout.ms: 2000
+        default.api.timeout.ms: 3000
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+    include-exception: false
+
+management:
+  endpoints:
+    web:
+      base-path: /api
+      discovery:
+        enabled: false
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      show-components: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+        integration:
+          include: kafka,intelligence
+
+stockrescue:
+  intelligence:
+    base-url: ${INTELLIGENCE_BASE_URL}
+
+logging:
+  pattern:
+    level: '%5p [correlationId:%X{correlationId:-}]'
