@@ -1,11 +1,10 @@
 # Contributing to StockRescue AI
 
-Thank you for considering a contribution! StockRescue AI is in an early planning stage. Ideas, documentation improvements, tests, and future implementation contributions are welcome.
-
+StockRescue AI currently provides its SR-001 technical foundation. Keep contributions focused and document only what helps someone run, change or review the application.
 
 ## Before you begin
 
-1. Read the [README](README.md) and [roadmap](ROADMAP.md).
+1. Read the [README](README.md) and [architecture notes](documents/architecture.md).
 2. Check open issues and pull requests to avoid duplicating work.
 3. For a substantial feature, breaking change, or architecture decision, open an issue first to agree on scope.
 4. Keep changes focused; avoid unrelated refactors and speculative abstractions.
@@ -13,17 +12,39 @@ Thank you for considering a contribution! StockRescue AI is in an early planning
 
 ## Set up a development environment
 
-There is **no runnable application or finalized build toolchain yet**. Environment requirements and verified commands will be documented alongside the first working modules. Until then, documentation-only changes can be contributed without a running application.
+Use JDK 27.0.1, Node 26.13.0, pnpm 12.16.1, Python 3.15.2 and uv 0.13.6.
+Gradle 9.8.2 is supplied by the committed wrapper. Docker must be running for
+the backend's PostgreSQL and Kafka tests. The Compose quickstart in the README
+requires only Docker; host development tools are needed for the checks below.
 
-When build tooling is introduced, the relevant setup and validation commands will be specified in the module documentation and CI workflows. Do not invent success claims for checks that cannot yet run.
+From the repository root, run `./scripts/dev-check.ps1` on Windows or
+`bash scripts/dev-check.sh` on Linux/macOS. Add `-Integration` on Windows or
+`--integration` on Linux/macOS to build the images and check the real Compose
+services, dependency failures and recovery. These checks use an isolated Compose
+project and preserve its PostgreSQL volume when stopping.
+
+For browser checks, install Chromium with
+`pnpm --dir frontend exec playwright install chromium`, then run
+`uv run --project intelligence --locked python scripts/integration-check.py --browser`
+after building the Compose images. Prefer targeted checks for subsequent changes;
+the commands for individual components are in the development scripts and CI.
 
 ## Contribution workflow
 
 1. Fork the repository or create a feature branch if you have write access.
 2. Branch from the current default branch, presently `master`.
-5. Add or update relevant documentation and tests when the affected components exist.
-6. Open a pull request using the repository template. Link the relevant issue when there is one.
-7. Address review comments and keep the change reasonably easy to review.
+3. Add or update relevant documentation and tests when the affected components exist.
+4. Open a pull request using the repository template. Link the relevant issue when there is one.
+5. Address review comments and keep the change reasonably easy to review.
+
+Coding agents work on the branch already selected by the owner. They must ask
+for permission before committing or pushing; tests and non-destructive checks
+can run without a separate approval. Preserve existing user changes.
+
+Use the latest stable compatible upstream versions when introducing tooling,
+then pin exact versions and commit lockfiles and wrapper artifacts. Installed
+local versions do not determine the target. Report incompatibilities with
+evidence rather than silently downgrading or selecting prereleases.
 
 ## Commit convention
 

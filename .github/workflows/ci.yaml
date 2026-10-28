@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: oracle
+          java-version: 27.0.1
+      - run: bash backend/gradlew -p backend --no-daemon clean test bootJar
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: backend-junit
+          path: backend/build/test-results/test/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.node-version
+      - run: npm install --global pnpm@12.16.1
+      - run: node scripts/verify-npm-exceptions.mjs
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - run: pnpm --dir frontend run typecheck
+      - run: pnpm --dir frontend run lint
+      - run: pnpm --dir frontend run test
+      - run: pnpm --dir frontend run build
+      - run: pnpm --dir frontend audit --audit-level high
+      - run: pnpm --dir frontend licenses list --prod --json
+
+  intelligence:
+    name: Intelligence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: intelligence/.python-version
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: 0.13.6
+      - run: uv sync --project intelligence --locked
+      - run: uv run --project intelligence --locked ruff check intelligence
+      - run: uv run --project intelligence --locked ruff format --check intelligence
+      - run: uv run --project intelligence --locked pytest intelligence/tests
+
+  compose:
+    name: Compose integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: intelligence/.python-version
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.node-version
+      - run: npm install --global pnpm@12.16.1
+      - run: node scripts/verify-npm-exceptions.mjs
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - run: pnpm --dir frontend exec playwright install --with-deps chromium
+      - run: docker compose --env-file .env.example config --quiet
+      - run: docker compose --env-file .env.example build
+      - run: python scripts/integration-check.py --browser
+
+  windows:
+    name: Windows toolchain
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: oracle
+          java-version: 27.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: intelligence/.python-version
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: 0.13.6
+      - run: .\backend\gradlew.bat -p backend --no-daemon --version
+      - run: .\backend\gradlew.bat -p backend --no-daemon bootJar
+      - run: uv sync --project intelligence --locked
+      - run: uv run --project intelligence --locked pytest intelligence/tests
+
+  repository:
+    name: Repository checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: git diff --check HEAD~1 HEAD
+      - name: Workflow validation
+        run: docker run --rm -v "$PWD/.github/workflows:/workflows:ro" rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 /workflows/ci.yaml
+      - name: Secret scan
+        run: docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f git /repo --redact --no-banner
