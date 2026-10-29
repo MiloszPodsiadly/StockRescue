@@ -16,7 +16,9 @@ server {
     }
 
     location /api/ {
-        proxy_pass http://backend:8080;
+        resolver ${BACKEND_RESOLVER} valid=10s ipv6=off;
+        set $backend_upstream http://${BACKEND_HOST}:${BACKEND_PORT};
+        proxy_pass $backend_upstream;
         proxy_connect_timeout 2s;
         proxy_read_timeout 8s;
         proxy_set_header Host $host;
