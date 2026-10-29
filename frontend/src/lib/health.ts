@@ -6,7 +6,14 @@ export async function checkBackendReadiness(): Promise<'UP'> {
   })
   if (!response.ok) throw new Error('Backend is unavailable.')
   const body: unknown = await response.json()
-  if (typeof body !== 'object' || body === null || !('status' in body) || body.status !== 'UP') {
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    Array.isArray(body) ||
+    Object.keys(body).length !== 1 ||
+    !('status' in body) ||
+    body.status !== 'UP'
+  ) {
     throw new Error('Backend readiness could not be verified.')
   }
   return 'UP'

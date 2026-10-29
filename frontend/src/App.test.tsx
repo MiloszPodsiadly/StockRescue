@@ -23,9 +23,15 @@ describe('workspace availability', () => {
   })
 
   it('requires a genuine UP envelope and does not turn malformed HTTP 200 into success', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"unexpected":"value"}')))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('{"status":"UP","components":{"db":{"status":"DOWN"}}}'),
+      ),
+    )
     renderApp()
     expect(await screen.findByRole('heading', { name: 'Backend unavailable' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Backend available' })).not.toBeInTheDocument()
   })
 
   it('shows availability after a real-shaped successful health response', async () => {

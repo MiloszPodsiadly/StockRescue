@@ -19,3 +19,14 @@ test('a failed browser request displays unavailability and never a green status'
   await expect(page.getByRole('heading', { name: 'Backend available' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Check again' })).toBeEnabled()
 })
+
+test('a malformed HTTP 200 readiness response never displays a green status', async ({ page }) => {
+  await page.route('**/api/health/readiness', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: '{"status":"UP","components":{"db":{"status":"DOWN"}}}',
+  }))
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Backend unavailable' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Backend available' })).toHaveCount(0)
+})
