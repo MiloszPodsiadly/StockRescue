@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 test('real workspace is available, keyboard accessible and fits a narrow viewport', async ({ page }) => {
+  test.skip(process.env.EXPECT_COLD_START === 'unavailable')
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Backend available' })).toBeVisible()
   await page.keyboard.press('Tab')
@@ -27,6 +28,22 @@ test('a malformed HTTP 200 readiness response never displays a green status', as
     body: '{"status":"UP","components":{"db":{"status":"DOWN"}}}',
   }))
   await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Backend unavailable' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Backend available' })).toHaveCount(0)
+})
+
+test('cold-start with a missing optional integration still reports database readiness', async ({ page }) => {
+  test.skip(process.env.EXPECT_COLD_START !== 'ready')
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Backend available' })).toBeVisible()
+  expect(await page.evaluate(async () => (await fetch('/api/health/integration')).status)).toBe(503)
+  await expect(page.getByText(/integrations? healthy/i)).toHaveCount(0)
+})
+
+test('cold-start without a backend serves the shell and reports it unavailable', async ({ page }) => {
+  test.skip(process.env.EXPECT_COLD_START !== 'unavailable')
+  const response = await page.goto('/')
+  expect(response?.status()).toBe(200)
   await expect(page.getByRole('heading', { name: 'Backend unavailable' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Backend available' })).toHaveCount(0)
 })

@@ -62,5 +62,6 @@ stockrescue:
     base-url: ${INTELLIGENCE_BASE_URL}
 
 logging:
-  pattern:
-    level: '%5p [correlationId:%X{correlationId:-}]'
+  structured:
+    format:
+      console: logstash
