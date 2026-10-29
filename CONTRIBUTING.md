@@ -20,8 +20,10 @@ requires only Docker; host development tools are needed for the checks below.
 From the repository root, run `./scripts/dev-check.ps1` on Windows or
 `bash scripts/dev-check.sh` on Linux/macOS. Add `-Integration` on Windows or
 `--integration` on Linux/macOS to build the images and check the real Compose
-services, dependency failures and recovery. These checks use an isolated Compose
-project and preserve its PostgreSQL volume when stopping.
+services, dependency failures and recovery. These checks use a uniquely named
+Compose project and remove only its containers and PostgreSQL test volume when
+they finish. For failure debugging, run the integration checker with
+`--keep-on-failure` to retain that project's resources.
 
 For browser checks, install Chromium with
 `pnpm --dir frontend exec playwright install chromium`, then run

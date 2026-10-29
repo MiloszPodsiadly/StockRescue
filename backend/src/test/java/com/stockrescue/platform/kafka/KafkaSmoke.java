@@ -14,20 +14,20 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
 
-@Component
-public class KafkaSmoke {
+final class KafkaSmoke {
 
     public static final String CORRELATION_HEADER = "correlation-id";
     public static final String PAYLOAD = "stockrescue-infrastructure-check";
     private final String bootstrapServers;
+    private final String topic;
 
-    public KafkaSmoke(@Value("${spring.kafka.bootstrap-servers}") String bootstrapServers) {
+    KafkaSmoke(String bootstrapServers, String topic) {
         this.bootstrapServers = bootstrapServers;
+        this.topic = topic;
     }
 
     public Receipt run(Duration timeout) throws Exception {
@@ -48,14 +48,14 @@ public class KafkaSmoke {
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers,
                 ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
                 ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
-                ConsumerConfig.GROUP_ID_CONFIG, "stockrescue-smoke-" + correlationId,
-                ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest",
                 ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false,
                 ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG, false,
                 ConsumerConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, 5000));
         try {
-            consumer.subscribe(List.of(KafkaInfrastructure.SMOKE_TOPIC));
-            var message = new ProducerRecord<>(KafkaInfrastructure.SMOKE_TOPIC, correlationId, PAYLOAD);
+            var partition = new TopicPartition(topic, 0);
+            consumer.assign(List.of(partition));
+            consumer.seekToBeginning(List.of(partition));
+            var message = new ProducerRecord<>(topic, correlationId, PAYLOAD);
             message.headers().add(CORRELATION_HEADER, correlationId.getBytes(StandardCharsets.UTF_8));
             producer.send(message).get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
             while (System.nanoTime() < deadline) {
@@ -74,8 +74,11 @@ public class KafkaSmoke {
             Thread.currentThread().interrupt();
             throw exception;
         } finally {
-            consumer.close(CloseOptions.timeout(Duration.ofMillis(100)));
-            producer.close(Duration.ofMillis(100));
+            try {
+                consumer.close(CloseOptions.timeout(Duration.ofMillis(100)));
+            } finally {
+                producer.close(Duration.ofMillis(100));
+            }
         }
     }
 

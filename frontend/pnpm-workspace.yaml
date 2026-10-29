@@ -8,9 +8,6 @@ allowBuilds: {}
 dangerouslyAllowAllBuilds: false
 blockExoticSubdeps: true
 trustPolicy: no-downgrade
-# Babel's official 2023 backport; registry signature and pinned SHA-512 are checked separately.
-trustPolicyExclude:
-  - semver@6.3.1
 trustLockfile: false
 verifyStoreIntegrity: true
 verifyDepsBeforeRun: error
@@ -25,5 +22,6 @@ minimumReleaseAgeExclude:
   - seroval@1.7.3
   - seroval-plugins@1.7.3
 overrides:
+  semver@6.3.1: 7.8.5
   seroval: 1.7.3
   seroval-plugins: 1.7.3

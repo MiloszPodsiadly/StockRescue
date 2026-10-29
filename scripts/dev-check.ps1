@@ -6,8 +6,6 @@ Push-Location $projectRoot
 try {
     & .\backend\gradlew.bat -p backend --no-daemon test bootJar
     if ($LASTEXITCODE -ne 0) { throw 'Backend checks failed' }
-    & node scripts/verify-npm-exceptions.mjs
-    if ($LASTEXITCODE -ne 0) { throw 'npm exception verification failed' }
     & pnpm --dir frontend install --frozen-lockfile
     if ($LASTEXITCODE -ne 0) { throw 'Frontend lockfile check failed' }
     foreach ($check in @('typecheck', 'lint', 'test', 'build')) {

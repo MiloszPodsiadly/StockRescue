@@ -4,7 +4,6 @@ project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
 bash backend/gradlew -p backend --no-daemon test bootJar
-node scripts/verify-npm-exceptions.mjs
 pnpm --dir frontend install --frozen-lockfile
 for check in typecheck lint test build; do
   pnpm --dir frontend run "$check"

@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - master
   pull_request:
 
 permissions:
@@ -46,7 +48,6 @@ jobs:
         with:
           node-version-file: frontend/.node-version
       - run: npm install --global pnpm@12.16.1
-      - run: node scripts/verify-npm-exceptions.mjs
       - run: pnpm --dir frontend install --frozen-lockfile
       - run: pnpm --dir frontend run typecheck
       - run: pnpm --dir frontend run lint
@@ -89,7 +90,6 @@ jobs:
         with:
           node-version-file: frontend/.node-version
       - run: npm install --global pnpm@12.16.1
-      - run: node scripts/verify-npm-exceptions.mjs
       - run: pnpm --dir frontend install --frozen-lockfile
       - run: pnpm --dir frontend exec playwright install --with-deps chromium
       - run: docker compose --env-file .env.example config --quiet
@@ -128,7 +128,13 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - run: git diff --check HEAD~1 HEAD
+      - name: Check full event diff for whitespace errors
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_AFTER: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/check-diff.sh
       - name: Workflow validation
         run: docker run --rm -v "$PWD/.github/workflows:/workflows:ro" rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 /workflows/ci.yaml
       - name: Secret scan
