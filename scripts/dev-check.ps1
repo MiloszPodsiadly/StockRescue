@@ -21,8 +21,6 @@ try {
     & uv run --project intelligence --locked pytest intelligence/tests
     if ($LASTEXITCODE -ne 0) { throw 'Python tests failed' }
     if ($Integration) {
-        & docker compose --env-file .env.example build
-        if ($LASTEXITCODE -ne 0) { throw 'Compose build failed' }
         & uv run --project intelligence --locked python scripts/integration-check.py
         if ($LASTEXITCODE -ne 0) { throw 'Integration checks failed' }
     }

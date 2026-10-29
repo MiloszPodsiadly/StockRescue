@@ -8,6 +8,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 import javax.sql.DataSource;
 
@@ -64,10 +66,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertThat(history.getString(1)).isEqualTo("public");
             assertThat(history.getString(2)).isEqualTo("stockrescue_app");
             assertThat(history.next()).isFalse();
-            var publicTables = statement.executeQuery("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
-            assertThat(publicTables.next()).isTrue();
-            assertThat(publicTables.getString(1)).isEqualTo("flyway_schema_history");
-            assertThat(publicTables.next()).as("application tables must not be created in public").isFalse();
+            assertPublicSchemaContainsOnlyFlywayHistory(connection);
             var tables = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'stockrescue'");
             assertThat(tables.next()).isTrue();
             assertThat(tables.getInt(1)).isZero();
@@ -80,6 +79,36 @@ class PostgresFoundationTest extends InfrastructureTestBase {
                     """);
             assertThat(publicGrants.next()).isTrue();
             assertThat(publicGrants.getInt(1)).as("PUBLIC privileges on the metadata schema").isZero();
+        }
+    }
+
+    @Test
+    void appliedMigrationGuardRejectsUnqualifiedApplicationObjectsInPublic() throws Exception {
+        try (var isolated = new PostgreSQLContainer(DockerImageName.parse(POSTGRES.getDockerImageName()))
+                .withDatabaseName("stockrescue_test")
+                .withUsername("test_admin")
+                .withPassword("test-admin-password")
+                .withInitScript("db/test-role.sql")) {
+            isolated.start();
+            var invalidPublicMigration = Flyway.configure()
+                    .dataSource(isolated.getJdbcUrl(), "stockrescue_app", "test-app-password")
+                    .schemas("public")
+                    .defaultSchema("public")
+                    .locations("classpath:db/invalid-public")
+                    .cleanDisabled(true)
+                    .load();
+            assertThat(invalidPublicMigration.migrate().migrationsExecuted).isEqualTo(1);
+            try (var connection = DriverManager.getConnection(
+                    isolated.getJdbcUrl(), "stockrescue_app", "test-app-password")) {
+                assertThatThrownBy(() -> assertPublicSchemaContainsOnlyFlywayHistory(connection))
+                        .isInstanceOf(AssertionError.class)
+                        .hasMessageContaining("table public.migration_leaked_table")
+                        .hasMessageContaining("view public.migration_leaked_view")
+                        .hasMessageContaining("sequence public.migration_leaked_sequence")
+                        .hasMessageContaining("materialized view public.migration_leaked_materialized_view")
+                        .hasMessageContaining("routine public.migration_leaked_function()")
+                        .hasMessageContaining("type public.migration_leaked_state");
+            }
         }
     }
 
@@ -191,6 +220,66 @@ class PostgresFoundationTest extends InfrastructureTestBase {
     private Flyway isolatedFlyway(String schema, String location) {
         return Flyway.configure().dataSource(POSTGRES.getJdbcUrl(), "stockrescue_app", "test-app-password")
                 .schemas(schema).defaultSchema(schema).locations(location).cleanDisabled(true).load();
+    }
+
+    private void assertPublicSchemaContainsOnlyFlywayHistory(Connection connection) throws SQLException {
+        assertThat(publicSchemaObjects(connection))
+                .as("unexpected application objects in public")
+                .isEmpty();
+    }
+
+    private List<String> publicSchemaObjects(Connection connection) throws SQLException {
+        var objects = new ArrayList<String>();
+        var query = """
+                SELECT format(
+                    CASE c.relkind
+                        WHEN 'r' THEN 'table public.%I'
+                        WHEN 'p' THEN 'partitioned table public.%I'
+                        WHEN 'v' THEN 'view public.%I'
+                        WHEN 'm' THEN 'materialized view public.%I'
+                        WHEN 'S' THEN 'sequence public.%I'
+                        WHEN 'f' THEN 'foreign table public.%I'
+                    END,
+                    c.relname
+                )
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+                  AND NOT (c.relkind = 'r' AND c.relname = 'flyway_schema_history')
+                UNION ALL
+                SELECT format('routine public.%I(%s)', p.proname, pg_get_function_identity_arguments(p.oid))
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'public'
+                UNION ALL
+                SELECT format('type public.%I', t.typname)
+                FROM pg_type t
+                JOIN pg_namespace n ON n.oid = t.typnamespace
+                WHERE n.nspname = 'public'
+                  AND t.oid NOT IN (
+                      SELECT c.reltype
+                      FROM pg_class c
+                      WHERE c.relnamespace = n.oid
+                        AND c.relname = 'flyway_schema_history'
+                      UNION
+                      SELECT row_type.typarray
+                      FROM pg_type row_type
+                      WHERE row_type.oid = (
+                          SELECT c.reltype
+                          FROM pg_class c
+                          WHERE c.relnamespace = n.oid
+                            AND c.relname = 'flyway_schema_history'
+                      )
+                  )
+                ORDER BY 1
+                """;
+        try (var statement = connection.createStatement(); var result = statement.executeQuery(query)) {
+            while (result.next()) {
+                objects.add(result.getString(1));
+            }
+        }
+        return objects;
     }
 
     @Test

@@ -14,6 +14,5 @@ uv run --project intelligence --locked ruff format --check intelligence
 uv run --project intelligence --locked pytest intelligence/tests
 
 if [[ "${1:-}" == "--integration" ]]; then
-  docker compose --env-file .env.example build
   uv run --project intelligence --locked python scripts/integration-check.py
 fi

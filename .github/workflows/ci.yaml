@@ -23,10 +23,27 @@ jobs:
         with:
           persist-credentials: false
       - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Download verified Oracle JDK archive
+        shell: bash
+        run: |
+          archive="${RUNNER_TEMP}/jdk-27.0.1.0.3_linux-x64_bin.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$archive" \
+            https://download.oracle.com/java/27/archive/jdk-27.0.1.0.3_linux-x64_bin.tar.gz
+          printf '%s  %s\n' \
+            d41bdc29a13920e90ee0f8e97a5bb9cb854ac06e0aa648a7fda1620db6c4e1ee \
+            "$archive" | sha256sum --check --strict
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
-          distribution: oracle
-          java-version: 27.0.1
+          distribution: jdkfile
+          java-version: '27.0.1.0.3+1'
+          jdk-file: ${{ runner.temp }}/jdk-27.0.1.0.3_linux-x64_bin.tar.gz
+      - name: Verify Oracle JDK security baseline
+        shell: bash
+        run: |
+          java --version
+          runtime_version="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.runtime.version = //p')"
+          test "$runtime_version" = '27.0.1.0.3+1-2'
       - run: bash backend/gradlew -p backend --no-daemon clean test bootJar
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -93,7 +110,6 @@ jobs:
       - run: pnpm --dir frontend install --frozen-lockfile
       - run: pnpm --dir frontend exec playwright install --with-deps chromium
       - run: docker compose --env-file .env.example config --quiet
-      - run: docker compose --env-file .env.example build
       - run: python scripts/integration-check.py --browser
 
   windows:
@@ -104,10 +120,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Download and verify Oracle JDK archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'jdk-27.0.1.0.3_windows-x64_bin.zip'
+          Invoke-WebRequest -Uri 'https://download.oracle.com/java/27/archive/jdk-27.0.1.0.3_windows-x64_bin.zip' -OutFile $archive
+          $expectedHash = '9655f039e3482fd365eec297fe6bd85885ea408853ca4a4e799affc2989df313'
+          $actualHash = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -cne $expectedHash) { throw "Oracle JDK archive SHA-256 mismatch: $actualHash" }
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
-          distribution: oracle
-          java-version: 27.0.1
+          distribution: jdkfile
+          java-version: '27.0.1.0.3+1'
+          jdk-file: ${{ runner.temp }}/jdk-27.0.1.0.3_windows-x64_bin.zip
+      - name: Verify Oracle JDK security baseline
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          java --version
+          if ($LASTEXITCODE -ne 0) { throw 'java --version failed' }
+          $settings = java -XshowSettings:properties -version 2>&1 | Out-String
+          $runtimeMatch = [regex]::Match($settings, 'java\.runtime\.version\s*=\s*(\S+)')
+          if (-not $runtimeMatch.Success -or $runtimeMatch.Groups[1].Value -cne '27.0.1.0.3+1-2') {
+            throw "Unexpected Oracle JDK runtime version: $($runtimeMatch.Groups[1].Value)"
+          }
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version-file: intelligence/.python-version

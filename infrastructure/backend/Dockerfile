@@ -1,9 +1,11 @@
-FROM container-registry.oracle.com/java/openjdk:27.0.1-oraclelinux9@sha256:69fdaaf1d4d388c1617055ae8417b203df3fae27058c4a7054479ca254d46819 AS build
+FROM container-registry.oracle.com/java/openjdk:27.0.1.0.3-oraclelinux9@sha256:ec8568d488454d0087e88a38b818abc46098ab8701843e9449db3468a641a326 AS build
 WORKDIR /workspace
 COPY backend/ backend/
 COPY contracts/ contracts/
 COPY infrastructure/backend/Healthcheck.java /tmp/Healthcheck.java
-RUN --mount=type=cache,target=/root/.gradle bash backend/gradlew -p backend --no-daemon bootJar \
+RUN --mount=type=cache,target=/root/.gradle test "$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.runtime.version = //p')" = "27.0.1.0.3+1-2" \
+    && java --version \
+    && bash backend/gradlew -p backend --no-daemon bootJar \
     && javac -d /tmp/healthcheck /tmp/Healthcheck.java \
     && mkdir -p /tmp/stockrescue-app \
     && cd /tmp/stockrescue-app \
@@ -21,6 +23,11 @@ COPY LICENSE /app/LICENSE
 RUN mkdir -p /tmp && chmod 1777 /tmp
 USER 10001:10001
 ENV JAVA_HOME=/opt/java-runtime PATH="/opt/java-runtime/bin:$PATH" JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=70 -Djava.io.tmpdir=/tmp" SERVER_ADDRESS=0.0.0.0
+RUN test "$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.runtime.version = //p')" = "27.0.1.0.3+1-2" \
+    && java --version \
+    && java --list-modules | cut -d@ -f1 | grep -Fxq java.sql \
+    && java --list-modules | cut -d@ -f1 | grep -Fxq java.xml \
+    && java --list-modules | cut -d@ -f1 | grep -Fxq jdk.crypto.ec
 EXPOSE 8080
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["java", "-jar", "/app/stockrescue.jar"]

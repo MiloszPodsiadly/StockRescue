@@ -11,13 +11,77 @@ import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def write_private_environment_file(path, contents):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(path.parent, 0o700)
+
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as environment:
+            descriptor = None
+            if os.name == "nt":
+                identity = subprocess.run(
+                    ["whoami"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=10,
+                )
+                principal = identity.stdout.strip()
+                if identity.returncode or not principal:
+                    raise PermissionError(
+                        "Could not resolve the current Windows ACL principal"
+                    )
+                acl = subprocess.run(
+                    [
+                        "icacls",
+                        str(path),
+                        "/inheritance:r",
+                        "/grant:r",
+                        f"{principal}:(F)",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=10,
+                )
+                if acl.returncode:
+                    raise PermissionError(
+                        "Could not restrict the integration env file ACL"
+                    )
+            else:
+                os.chmod(path, 0o600)
+                require(
+                    path.stat().st_mode & 0o777 == 0o600
+                    and path.parent.stat().st_mode & 0o077 == 0,
+                    "Integration env file or .tools directory is not private",
+                )
+            environment.write(contents)
+            environment.flush()
+            os.fsync(environment.fileno())
+    except BaseException as error:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as cleanup_error:
+                error.add_note(f"Could not close the integration env file: {cleanup_error}")
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            error.add_note(
+                f"Could not remove the partial integration env file {path}: {cleanup_error}"
+            )
+        raise
 
 
 def main():
@@ -47,10 +111,10 @@ def main():
     environment_file = working / f"{project}.env"
     postgres_admin_password = uuid4().hex
     database_password = uuid4().hex
-    environment_file.write_text(
-        f"POSTGRES_ADMIN_PASSWORD={postgres_admin_password}\nDATABASE_PASSWORD={database_password}\n"
-        f"WEB_PORT={arguments.port}\n",
-        encoding="utf-8",
+    write_private_environment_file(
+        environment_file,
+        f"POSTGRES_ADMIN_PASSWORD={postgres_admin_password}\n"
+        f"DATABASE_PASSWORD={database_password}\nWEB_PORT={arguments.port}\n",
     )
     compose = ["docker", "compose", "--env-file", str(environment_file), "-p", project]
     base_url = f"http://127.0.0.1:{arguments.port}"
@@ -60,6 +124,14 @@ def main():
         for secret in sensitive_values:
             text = text.replace(secret, "[REDACTED]")
         return text
+
+    def save_diagnostic(contents):
+        diagnostic = working / f"{project}-failure.log"
+        try:
+            write_private_environment_file(diagnostic, redact(contents))
+        except Exception:
+            return None
+        return diagnostic
 
     def execute(command, failure_expected=False, timeout=240, input_text=None):
         result = subprocess.run(
@@ -73,21 +145,66 @@ def main():
             timeout=timeout,
         )
         if not failure_expected and result.returncode:
-            try:
-                (working / f"{project}-failure.log").write_text(
-                    redact(result.stdout + result.stderr), encoding="utf-8"
-                )
-            except OSError:
-                pass
+            diagnostic = save_diagnostic(result.stdout + result.stderr)
+            detail = (
+                f"diagnostic log is in {diagnostic}"
+                if diagnostic
+                else "diagnostic could not be written"
+            )
             raise RuntimeError(
-                "Infrastructure check command failed; diagnostic log is in .tools/"
+                f"Infrastructure check command failed; {detail}"
             )
         if failure_expected and result.returncode == 0:
-            raise AssertionError("A command expected to fail unexpectedly succeeded")
+            diagnostic = save_diagnostic(result.stdout + result.stderr)
+            detail = (
+                f"diagnostic log is in {diagnostic}"
+                if diagnostic
+                else "diagnostic could not be written"
+            )
+            raise AssertionError(
+                f"A command expected to fail unexpectedly succeeded; {detail}"
+            )
         return result
 
     def run(*command, **options):
         return execute(compose + list(command), **options)
+
+    scenario_projects = []
+
+    def new_scenario(label, server_port=None):
+        scenario_project = f"{project}-{label}"
+        scenario_environment_file = working / f"{scenario_project}.env"
+        environment = (
+            f"POSTGRES_ADMIN_PASSWORD={postgres_admin_password}\n"
+            f"DATABASE_PASSWORD={database_password}\n"
+            f"WEB_PORT={arguments.port}\n"
+        )
+        if server_port is not None:
+            environment += f"SERVER_PORT={server_port}\n"
+        write_private_environment_file(scenario_environment_file, environment)
+        scenario = {
+            "project": scenario_project,
+            "environment_file": scenario_environment_file,
+            "compose": [
+                "docker",
+                "compose",
+                "--env-file",
+                str(scenario_environment_file),
+                "-p",
+                scenario_project,
+            ],
+            "base_url": base_url,
+        }
+        scenario_projects.append(scenario)
+        return scenario
+
+    def run_scenario(scenario, *command, **options):
+        return execute(scenario["compose"] + list(command), **options)
+
+    def cleanup_scenario(scenario):
+        run_scenario(scenario, "down", "--volumes", "--remove-orphans", timeout=60)
+        scenario["environment_file"].unlink(missing_ok=True)
+        scenario_projects.remove(scenario)
 
     def kafka_cli(tool, *command, **options):
         return execute(
@@ -119,8 +236,58 @@ def main():
             **options,
         )
 
-    def backend_process():
-        identifier = run("ps", "--quiet", "backend").stdout.strip()
+    def kafka_container_address():
+        identifiers = run("ps", "--quiet", "kafka").stdout.splitlines()
+        require(len(identifiers) == 1, "Running Kafka container could not be identified")
+        inspection = json.loads(
+            execute(["docker", "inspect", identifiers[0]], timeout=10).stdout
+        )[0]
+        network_name = configuration["networks"]["internal"]["name"]
+        network = inspection["NetworkSettings"]["Networks"].get(network_name, {})
+        address = network.get("IPAddress")
+        require(address, "Kafka container has no address on the integration network")
+        return f"{address}:9092"
+
+    def require_broker_stopped():
+        identifiers = run("ps", "--all", "--quiet", "kafka").stdout.splitlines()
+        require(len(identifiers) == 1, "Stopped Kafka container could not be identified")
+        state = execute(
+            ["docker", "inspect", "--format", "{{.State.Status}}", identifiers[0]],
+            timeout=10,
+        ).stdout.strip()
+        require(state == "exited", f"Kafka container should be stopped, observed state={state!r}")
+
+    def require_kafka_unavailable_failure(result):
+        output = result.stdout + result.stderr
+        broker_failure = (
+            "org.apache.kafka.common.errors.TimeoutException" in output
+            or "Broker may not be available" in output
+        )
+        network_failure = any(
+            marker in output
+            for marker in (
+                "UnknownHostException",
+                "Name or service not known",
+                "NoRouteToHostException",
+                "Network is unreachable",
+            )
+        )
+        if result.returncode == 1 and broker_failure and not network_failure:
+            return
+        diagnostic = save_diagnostic(output)
+        detail = (
+            f"diagnostic log is in {diagnostic}"
+            if diagnostic
+            else "diagnostic could not be written"
+        )
+        raise AssertionError(
+            f"Kafka CLI did not report broker unavailability with exit code 1; {detail}"
+        )
+
+    def backend_process(compose_command=None):
+        command = compose if compose_command is None else compose_command
+        identifier = execute(command + ["ps", "--quiet", "backend"]).stdout.strip()
+        require(identifier, "Backend container is not running")
         processes = subprocess.check_output(
             ["docker", "top", identifier, "-eo", "pid,args"], text=True, timeout=10
         )
@@ -142,14 +309,115 @@ def main():
         except (URLError, TimeoutError):
             return 0, b""
 
+    def request_at(url, path, headers=None):
+        request = Request(url + path, headers=headers or {})
+        try:
+            with urlopen(request, timeout=10) as response:
+                return response.status, response.read(), response.headers
+        except HTTPError as error:
+            return error.code, error.read(), error.headers
+        except (URLError, TimeoutError):
+            return 0, b"", {}
+
     def wait_for(path, expected, seconds=45):
+        return wait_for_at(base_url, path, expected, seconds)
+
+    def wait_for_at(url, path, expected, seconds=45):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            actual, body = status(path)
+            actual, body = status_at(url, path)
             if actual == expected:
                 return body
             time.sleep(0.25)
         raise AssertionError(f"{path} did not report HTTP {expected} within {seconds}s")
+
+    def verify_backend_structured_logs(container):
+        valid_id = "integration-valid-01"
+        valid_status, _, valid_headers = request_at(
+            base_url,
+            "/api/health/readiness",
+            {"X-Correlation-ID": valid_id},
+        )
+        require(
+            valid_status == 200 and valid_headers.get("X-Correlation-ID") == valid_id,
+            "Backend did not preserve a valid X-Correlation-ID",
+        )
+
+        invalid_id = "invalid correlation test secret"
+        invalid_status, _, invalid_headers = request_at(
+            base_url,
+            "/api/health/readiness",
+            {"X-Correlation-ID": invalid_id},
+        )
+        generated_id = invalid_headers.get("X-Correlation-ID")
+        require(
+            invalid_status == 400
+            and bool(re.fullmatch(r"[a-f0-9-]{36}", generated_id or "")),
+            "Backend did not reject an unsafe X-Correlation-ID and return a safe generated ID",
+        )
+
+        result = execute(["docker", "logs", container], timeout=15)
+        output = result.stdout + result.stderr
+        require(
+            all(secret not in output for secret in (*sensitive_values, invalid_id)),
+            "Backend logs exposed a database or invalid-header test secret",
+        )
+
+        records = []
+        jvm_diagnostics = []
+        jvm_prefixes = ("OpenJDK ", "Java HotSpot(TM) ", "WARNING: ", "Picked up ")
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                if line.startswith(jvm_prefixes):
+                    jvm_diagnostics.append(line)
+                    continue
+                raise AssertionError(
+                    f"Backend emitted a non-JSON application log line: {line[:160]}"
+                ) from error
+            require(isinstance(record, dict), "Backend log record is not a JSON object")
+            require(
+                all(
+                    record.get(field)
+                    for field in ("@timestamp", "level", "logger_name", "message")
+                ),
+                "Backend JSON log is missing timestamp, severity, logger or message",
+            )
+            records.append(record)
+
+        require(records, "Backend emitted no parseable Spring/SLF4J console records")
+        rejected_events = [
+            record
+            for record in records
+            if record["message"] == "Rejected request with invalid or duplicate X-Correlation-ID"
+        ]
+        require(
+            any(
+                record.get("correlationId") == generated_id
+                and record.get("logger_name") == "com.stockrescue.platform.http.CorrelationIdFilter"
+                and record.get("level") == "WARN"
+                for record in rejected_events
+            ),
+            "Invalid-header application log was not JSON-correlated with its safe response ID",
+        )
+        sample = next(
+            record
+            for record in rejected_events
+            if record.get("correlationId") == generated_id
+        )
+        print(
+            "SAMPLE_JSON_LOG: " + json.dumps(sample, ensure_ascii=False, separators=(",", ":")),
+            flush=True,
+        )
+        print(
+            "PASS: backend Spring/SLF4J logs are JSON with safe MDC correlation; "
+            f"non-JSON JVM diagnostics kept separate={len(jvm_diagnostics)}",
+            flush=True,
+        )
 
     def probe_container(container, command, seconds=60):
         deadline = time.monotonic() + seconds
@@ -222,18 +490,217 @@ def main():
         execute(["docker", "rm", container], timeout=15)
         standalone_containers.remove(container)
 
+    def browser_cold_start(url, expectation):
+        environment = {
+            **os.environ,
+            "BASE_URL": url,
+            "EXPECT_COLD_START": expectation,
+        }
+        scenario_test = (
+            "cold-start with a missing optional integration"
+            if expectation == "ready"
+            else "cold-start without a backend"
+        )
+        subprocess.run(
+            [
+                "pnpm",
+                "--dir",
+                "frontend",
+                "exec",
+                "playwright",
+                "test",
+                "--grep",
+                scenario_test,
+            ],
+            check=True,
+            env=environment,
+            timeout=120,
+        )
+
+    def verify_optional_dependency_cold_start(
+        label, available_service, server_port=None, browser=False
+    ):
+        scenario = new_scenario(label, server_port)
+        scenario_configuration = json.loads(
+            run_scenario(scenario, "config", "--format", "json").stdout
+        )
+        services = scenario_configuration["services"]
+        missing_service = "kafka" if available_service == "intelligence" else "intelligence"
+        require(
+            not run_scenario(scenario, "ps", "--quiet", "backend").stdout.strip(),
+            f"{label} is not a fresh backend project",
+        )
+        run_scenario(
+            scenario,
+            "up",
+            "--build",
+            "-d",
+            "--wait",
+            "--wait-timeout",
+            "180",
+            "postgres",
+            available_service,
+            timeout=240,
+        )
+        require(
+            bool(run_scenario(scenario, "ps", "--quiet", available_service).stdout.strip()),
+            f"The supporting {available_service} service did not start",
+        )
+        require(
+            not run_scenario(scenario, "ps", "--quiet", missing_service).stdout.strip(),
+            f"The optional {missing_service} service started before the cold-start check",
+        )
+        require(
+            not run_scenario(scenario, "ps", "--quiet", "backend").stdout.strip(),
+            f"{label} started the backend before the cold-start check",
+        )
+        run_scenario(
+            scenario,
+            "up",
+            "--build",
+            "-d",
+            "--wait",
+            "--wait-timeout",
+            "180",
+            "backend",
+            "web",
+            timeout=300,
+        )
+
+        backend_port = services["backend"]["environment"]["SERVER_PORT"]
+        proxy_port = services["web"]["environment"]["BACKEND_PORT"]
+        require(
+            str(backend_port) == str(proxy_port),
+            "Backend SERVER_PORT and web BACKEND_PORT do not share one effective value",
+        )
+        if server_port is not None:
+            require(
+                str(backend_port) == str(server_port),
+                "Compose did not apply the requested backend port override",
+            )
+
+        readiness_status, readiness_body = status_at(scenario["base_url"], "/api/health/readiness")
+        liveness_status, _ = status_at(scenario["base_url"], "/api/health/liveness")
+        integration_status, integration_body = status_at(
+            scenario["base_url"], "/api/health/integration"
+        )
+        require(
+            readiness_status == 200 and json.loads(readiness_body)["status"] == "UP",
+            f"{label} did not keep database readiness healthy",
+        )
+        require(liveness_status == 200, f"{label} did not keep liveness healthy")
+        require(
+            integration_status == 503 and json.loads(integration_body)["status"] == "DOWN",
+            f"{label} did not report the missing optional integration as degraded",
+        )
+        require(
+            status_at(scenario["base_url"], "/")[0] == 200,
+            f"{label} web shell did not start",
+        )
+
+        backend_pid = backend_process(scenario["compose"])
+        if browser:
+            browser_cold_start(scenario["base_url"], "ready")
+
+        run_scenario(
+            scenario,
+            "up",
+            "--build",
+            "-d",
+            "--wait",
+            "--wait-timeout",
+            "180",
+            missing_service,
+            timeout=240,
+        )
+        wait_for_at(scenario["base_url"], "/api/health/integration", 200)
+        require(
+            backend_process(scenario["compose"]) == backend_pid,
+            f"Starting {missing_service} restarted the backend instead of recovering health live",
+        )
+        if server_port is not None:
+            for invalid_port in ("0", "65536", "not-a-port"):
+                invalid_healthcheck = execute(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--env",
+                        f"SERVER_PORT={invalid_port}",
+                        "--entrypoint",
+                        "java",
+                        services["backend"]["image"],
+                        "-cp",
+                        "/app/healthcheck",
+                        "Healthcheck",
+                    ],
+                    failure_expected=True,
+                    timeout=30,
+                )
+                require(
+                    "SERVER_PORT must be"
+                    in invalid_healthcheck.stdout + invalid_healthcheck.stderr,
+                    f"Healthcheck accepted invalid SERVER_PORT={invalid_port}",
+                )
+        cleanup_scenario(scenario)
+        print(
+            f"PASS: cold start without {missing_service}; readiness, degraded integration "
+            "and live recovery",
+            flush=True,
+        )
+
+    def verify_web_cold_start_without_backend(browser=False):
+        scenario = new_scenario("cold-web-only")
+        require(
+            not run_scenario(scenario, "ps", "--quiet", "backend").stdout.strip(),
+            "Web-only scenario is not a fresh project",
+        )
+        run_scenario(
+            scenario,
+            "up",
+            "--build",
+            "-d",
+            "--wait",
+            "--wait-timeout",
+            "120",
+            "web",
+            timeout=240,
+        )
+        require(
+            wait_for_at(scenario["base_url"], "/healthz", 204) == b"",
+            "Web health endpoint failed without a backend container",
+        )
+        page_status, page = status_at(scenario["base_url"], "/")
+        require(
+            page_status == 200 and b"StockRescue" in page,
+            "Web shell failed without a backend",
+        )
+        api_status, _ = status_at(scenario["base_url"], "/api/health/readiness")
+        require(
+            api_status == 502,
+            f"Missing backend returned unexpected readiness status {api_status}",
+        )
+        require(
+            not run_scenario(scenario, "ps", "--quiet", "backend").stdout.strip(),
+            "Web-only scenario unexpectedly started a backend",
+        )
+        if browser:
+            browser_cold_start(scenario["base_url"], "unavailable")
+        cleanup_scenario(scenario)
+        print("PASS: web cold start without backend DNS; UI reports unavailable", flush=True)
+
     smoke_topic = f"stockrescue.infrastructure.smoke.{uuid4().hex}"
     smoke_offset = 0
 
-    def smoke(failure_expected=False):
+    def smoke(failure_expected=False, broker_address="kafka:9092"):
         nonlocal smoke_offset
         backend_pid = backend_process()
         correlation = uuid4().hex
         record = f"correlation-id:{correlation}\t{correlation}\tstockrescue-infrastructure-check"
-        kafka_cli(
+        produced = kafka_cli(
             "kafka-console-producer",
             "--bootstrap-server",
-            "kafka:9092",
+            broker_address,
             "--topic",
             smoke_topic,
             "--sync",
@@ -252,44 +719,45 @@ def main():
             input_text=record + "\n",
             failure_expected=failure_expected,
         )
-        if not failure_expected:
-            # Only this checker writes to partition 0 of its fresh, isolated topic.
-            consumed = kafka_cli(
-                "kafka-console-consumer",
-                "--bootstrap-server",
-                "kafka:9092",
-                "--topic",
-                smoke_topic,
-                "--partition",
-                "0",
-                "--offset",
-                str(smoke_offset),
-                "--max-messages",
-                "1",
-                "--timeout-ms",
-                "8000",
-                "--command-property",
-                "enable.auto.commit=false",
-                "--command-property",
-                "allow.auto.create.topics=false",
-                "--command-property",
-                "default.api.timeout.ms=5000",
-                "--command-property",
-                "request.timeout.ms=2000",
-                "--formatter-property",
-                "print.key=true",
-                "--formatter-property",
-                "print.headers=true",
-            )
-            require(
-                record in consumed.stdout.splitlines(),
-                "No matching Kafka key, payload and correlation header received",
-            )
-            smoke_offset += 1
-            print(
-                f"PASS: Kafka CLI consumed record; correlationId={correlation}",
-                flush=True,
-            )
+        if failure_expected:
+            return produced
+        # Only this checker writes to partition 0 of its fresh, isolated topic.
+        consumed = kafka_cli(
+            "kafka-console-consumer",
+            "--bootstrap-server",
+            "kafka:9092",
+            "--topic",
+            smoke_topic,
+            "--partition",
+            "0",
+            "--offset",
+            str(smoke_offset),
+            "--max-messages",
+            "1",
+            "--timeout-ms",
+            "8000",
+            "--command-property",
+            "enable.auto.commit=false",
+            "--command-property",
+            "allow.auto.create.topics=false",
+            "--command-property",
+            "default.api.timeout.ms=5000",
+            "--command-property",
+            "request.timeout.ms=2000",
+            "--formatter-property",
+            "print.key=true",
+            "--formatter-property",
+            "print.headers=true",
+        )
+        require(
+            record in consumed.stdout.splitlines(),
+            "No matching Kafka key, payload and correlation header received",
+        )
+        smoke_offset += 1
+        print(
+            f"PASS: Kafka CLI consumed record; correlationId={correlation}",
+            flush=True,
+        )
         require(
             backend_process() == backend_pid,
             "Smoke replaced the backend application process",
@@ -320,9 +788,30 @@ def main():
             ),
             "Python receives operational DB credentials",
         )
+        backend_dependencies = configuration["services"]["backend"].get("depends_on", {})
+        require(
+            set(backend_dependencies) == {"postgres"}
+            and backend_dependencies["postgres"]["condition"] == "service_healthy",
+            "Backend must wait only for healthy PostgreSQL before startup",
+        )
+        require(
+            not configuration["services"]["web"].get("depends_on"),
+            "Web startup must not depend on backend DNS or health",
+        )
+        require(
+            str(configuration["services"]["backend"]["environment"]["SERVER_PORT"])
+            == str(configuration["services"]["web"]["environment"]["BACKEND_PORT"]),
+            "Default backend and proxy ports do not share one Compose value",
+        )
         print(
             "PASS: private ports, loopback proxy and Python credential boundary", flush=True
         )
+
+        verify_optional_dependency_cold_start(
+            "cold-kafka", "intelligence", server_port=18081, browser=arguments.browser
+        )
+        verify_optional_dependency_cold_start("cold-python", "kafka")
+        verify_web_cold_start_without_backend(browser=arguments.browser)
 
         run("up", "--build", "-d", "--wait", "--wait-timeout", "180")
         require(
@@ -334,6 +823,7 @@ def main():
             "Integration is not healthy",
         )
         require(b"StockRescue" in wait_for("/", 200), "Frontend was not served")
+        verify_backend_structured_logs(run("ps", "--quiet", "backend").stdout.strip())
         intelligence_container = launch_standalone(
             "standalone-intelligence",
             configuration["services"]["intelligence"]["image"],
@@ -521,7 +1011,8 @@ def main():
         for container in (web_container, backend_container, intelligence_container):
             stop_standalone(container)
         print(
-            "PASS: app images run outside Compose with explicit service addresses, read-only roots, "
+            "PASS: app images run outside Compose with explicit service addresses, "
+            "read-only roots, "
             "health checks and clear missing-config failure",
             flush=True,
         )
@@ -579,6 +1070,7 @@ def main():
         for service in ("intelligence", "kafka", "postgres"):
             outage_error = None
             try:
+                broker_address = kafka_container_address() if service == "kafka" else "kafka:9092"
                 run("stop", service)
                 path = (
                     "/api/health/readiness"
@@ -596,14 +1088,17 @@ def main():
                         "Optional dependency blocks DB readiness",
                     )
                 if service == "kafka":
-                    smoke(failure_expected=True)
-            except BaseException as error:
+                    require_broker_stopped()
+                    require_kafka_unavailable_failure(
+                        smoke(failure_expected=True, broker_address=broker_address)
+                    )
+            except Exception as error:
                 outage_error = error
             try:
                 run("start", service)
                 wait_for("/api/health/readiness", 200)
                 wait_for("/api/health/integration", 200)
-            except BaseException:
+            except Exception:
                 if outage_error is None:
                     raise
                 outage_error.add_note(
@@ -611,6 +1106,8 @@ def main():
                 )
             if outage_error is not None:
                 raise outage_error
+            if service == "kafka":
+                smoke()
             print(
                 f"PASS: {service} outage is visible; liveness and recovery verified",
                 flush=True,
@@ -676,7 +1173,16 @@ def main():
         )
         if arguments.browser:
             subprocess.run(
-                ["pnpm", "--dir", "frontend", "run", "test:e2e"],
+                [
+                    "pnpm",
+                    "--dir",
+                    "frontend",
+                    "exec",
+                    "playwright",
+                    "test",
+                    "--grep-invert",
+                    "cold-start",
+                ],
                 check=True,
                 env={**os.environ, "BASE_URL": base_url},
                 timeout=120,
@@ -705,6 +1211,23 @@ def main():
                         cleanup_errors.append(redact(result.stderr or result.stdout))
                 except Exception as error:
                     cleanup_errors.append(redact(str(error)))
+            for scenario in reversed(scenario_projects):
+                try:
+                    result = subprocess.run(
+                        scenario["compose"] + ["down", "--volumes", "--remove-orphans"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=60,
+                    )
+                    if result.returncode:
+                        cleanup_errors.append(redact(result.stderr or result.stdout))
+                    else:
+                        scenario["environment_file"].unlink(missing_ok=True)
+                except Exception as error:
+                    cleanup_errors.append(redact(str(error)))
             try:
                 run("down", "--volumes", "--remove-orphans", timeout=60)
             except Exception as error:
@@ -722,6 +1245,12 @@ def main():
                 f"DEBUG: retained isolated project {project} and env file {environment_file}",
                 flush=True,
             )
+            for scenario in scenario_projects:
+                print(
+                    "DEBUG: retained isolated project "
+                    f"{scenario['project']} and env file {scenario['environment_file']}",
+                    flush=True,
+                )
         elif completed and not cleanup_errors:
             print(
                 f"PASS: isolated Compose project {project} and its ephemeral volume removed",
@@ -732,11 +1261,13 @@ def main():
             diagnostic = working / f"{project}-cleanup.log"
             diagnostic_written = True
             try:
-                diagnostic.write_text("\n".join(cleanup_errors), encoding="utf-8")
-            except OSError:
+                write_private_environment_file(diagnostic, "\n".join(cleanup_errors))
+            except Exception as error:
                 diagnostic_written = False
                 if primary_error is None:
-                    raise RuntimeError("Isolated project cleanup failed")
+                    raise RuntimeError(
+                        "Isolated project cleanup failed and its diagnostics could not be written"
+                    ) from error
             if primary_error is not None:
                 detail = (
                     f"safe diagnostics are in {diagnostic}"
