@@ -14,16 +14,17 @@ import org.springframework.stereotype.Component;
 @Component("kafka")
 public class KafkaHealthIndicator implements HealthIndicator, AutoCloseable {
 
-    private final Admin client;
+    private final KafkaAdmin admin;
+    private volatile Admin client;
 
     public KafkaHealthIndicator(KafkaAdmin admin) {
-        this.client = Admin.create(admin.getConfigurationProperties());
+        this.admin = admin;
     }
 
     @Override
     public Health health() {
         try {
-            var nodes = client.describeCluster(new DescribeClusterOptions().timeoutMs(2000))
+            var nodes = client().describeCluster(new DescribeClusterOptions().timeoutMs(2000))
                     .nodes().get(3, TimeUnit.SECONDS);
             return nodes.isEmpty() ? Health.down().build() : Health.up().build();
         } catch (InterruptedException exception) {
@@ -34,9 +35,26 @@ public class KafkaHealthIndicator implements HealthIndicator, AutoCloseable {
         }
     }
 
+    private Admin client() {
+        var current = client;
+        if (current == null) {
+            synchronized (this) {
+                current = client;
+                if (current == null) {
+                    current = Admin.create(admin.getConfigurationProperties());
+                    client = current;
+                }
+            }
+        }
+        return current;
+    }
+
     @Override
     @PreDestroy
     public void close() {
-        client.close(Duration.ofSeconds(1));
+        var current = client;
+        if (current != null) {
+            current.close(Duration.ofSeconds(1));
+        }
     }
 }

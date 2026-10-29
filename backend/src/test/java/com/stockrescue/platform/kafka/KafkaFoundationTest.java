@@ -77,7 +77,19 @@ class KafkaFoundationTest extends InfrastructureTestBase {
     }
 
     @Test
-    void unreachableBrokerMakesDiagnosticsFailWithinABoundedDeadline() {
+    void unresolvedBrokerDoesNotBreakDiagnosticConstruction() {
+        var configuration = new KafkaAdmin(Map.of(
+                AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, "kafka-cold-start.invalid:9092",
+                AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, 2000,
+                AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, 3000));
+        long started = System.nanoTime();
+        try (var unavailable = new KafkaHealthIndicator(configuration)) {
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(1));
+        }
+    }
+
+    @Test
+    void unreachableBrokerReportsDownWithinABoundedDeadline() {
         var configuration = new KafkaAdmin(Map.of(
                 AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:1",
                 AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, 2000,

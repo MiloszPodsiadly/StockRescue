@@ -10,11 +10,8 @@ services:
       - '127.0.0.1:${WEB_PORT:-8080}:8080'
     environment:
       BACKEND_HOST: ${BACKEND_HOST:-backend}
-      BACKEND_PORT: ${BACKEND_PORT:-8080}
+      BACKEND_PORT: ${SERVER_PORT:-8080}
       BACKEND_RESOLVER: ${BACKEND_RESOLVER:-127.0.0.11}
-    depends_on:
-      backend:
-        condition: service_healthy
     healthcheck:
       test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/healthz']
       interval: 10s
@@ -33,6 +30,7 @@ services:
       dockerfile: infrastructure/backend/Dockerfile
     environment:
       SERVER_ADDRESS: ${SERVER_ADDRESS:-0.0.0.0}
+      SERVER_PORT: ${SERVER_PORT:-8080}
       DATABASE_URL: ${DATABASE_URL:-jdbc:postgresql://postgres:5432/stockrescue}
       DATABASE_USERNAME: ${DATABASE_USERNAME:-stockrescue_app}
       DATABASE_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD in .env.local}
@@ -40,10 +38,6 @@ services:
       INTELLIGENCE_BASE_URL: ${INTELLIGENCE_BASE_URL:-http://intelligence:8000}
     depends_on:
       postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-      intelligence:
         condition: service_healthy
     healthcheck:
       test: [CMD, java, -Xms8m, -Xmx16m, -cp, /app/healthcheck, Healthcheck]
