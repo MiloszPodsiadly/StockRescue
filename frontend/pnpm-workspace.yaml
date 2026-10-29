@@ -1,0 +1,27 @@
+engineStrict: true
+saveExact: true
+strictPeerDependencies: true
+storeDir: .tools/pnpm-store
+strictSsl: true
+strictDepBuilds: true
+allowBuilds: {}
+dangerouslyAllowAllBuilds: false
+blockExoticSubdeps: true
+trustPolicy: no-downgrade
+trustLockfile: false
+verifyStoreIntegrity: true
+verifyDepsBeforeRun: error
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+skills:
+  dirs: []
+minimumReleaseAgeExclude:
+  - '@types/node@26.6.6'
+  - lucide-react@1.63.0
+  - seroval@1.7.3
+  - seroval-plugins@1.7.3
+overrides:
+  semver@6.3.1: 7.8.5
+  seroval: 1.7.3
+  seroval-plugins: 1.7.3

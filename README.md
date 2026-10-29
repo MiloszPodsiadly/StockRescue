@@ -18,7 +18,7 @@ The aim is to make recommendations useful in day-to-day operations, not just dis
 
 ## Technology
 
-StockRescue AI is planned as a full-stack application built with:
+The working foundation uses:
 
 - **Java and Spring Boot** for inventory management, business workflows, APIs, and security.
 - **PostgreSQL** for operational data and inventory history.
@@ -26,7 +26,28 @@ StockRescue AI is planned as a full-stack application built with:
 - **React and TypeScript** for the web application.
 - **Docker Compose** for local development.
 
+## Run locally
+
+With Docker Engine/Desktop and Docker Compose available, run:
+
+```sh
+docker compose --env-file .env.example up --build --wait
+```
+
+Open <http://localhost:8080>. This starts the web shell, Java backend,
+PostgreSQL, Kafka and private Python service. The example credentials are for
+local development only. Stop with `docker compose --env-file .env.example down`;
+the PostgreSQL development volume is preserved.
+
 ## Project status
+
+SR-001 provides the runnable technical foundation: migrations, service health,
+Java-to-Python communication, an explicit Kafka producer/consumer smoke check,
+and a responsive web shell showing real backend readiness. Inventory workflows,
+authentication and forecasting are still to be implemented.
+
+See the [architecture notes](documents/architecture.md) for service boundaries
+and [contributor instructions](CONTRIBUTING.md) for development checks.
 
 Questions and suggestions are welcome through [GitHub Issues](https://github.com/MiloszPodsiadly/StockRescue/issues).
 

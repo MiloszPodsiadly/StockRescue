@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "contractVersion": {
+      "const": "1",
+      "title": "Contractversion",
+      "type": "string"
+    },
+    "service": {
+      "const": "stockrescue-intelligence",
+      "title": "Service",
+      "type": "string"
+    },
+    "status": {
+      "const": "UP",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "contractVersion",
+    "service",
+    "status"
+  ],
+  "title": "ServiceHealth",
+  "type": "object"
+}

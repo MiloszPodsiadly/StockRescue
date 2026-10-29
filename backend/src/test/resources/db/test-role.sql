@@ -1,0 +1,4 @@
+CREATE ROLE stockrescue_app LOGIN PASSWORD 'test-app-password' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+GRANT CONNECT, CREATE ON DATABASE stockrescue_test TO stockrescue_app;
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT USAGE, CREATE ON SCHEMA public TO stockrescue_app;

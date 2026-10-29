@@ -16,7 +16,7 @@ indent_size = 2
 indent_size = 2
 trim_trailing_whitespace = false
 
-[*.{java,kt,py}]
+[*.{java,kt,kts,py}]
 indent_size = 4
 
 [Makefile]

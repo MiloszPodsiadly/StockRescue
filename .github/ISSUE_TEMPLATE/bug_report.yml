@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for reporting a bug. Please search existing issues first.
-        **Do not disclose security vulnerabilities here.** Read [Security Policy](https://github.com/MiloszPodsiadly/StockRescue/blob/master/SECURITY.md) and use a private reporting channel.
+        **Do not disclose security vulnerabilities here.** Use GitHub private vulnerability reporting if available, or request a private contact from the maintainer without posting vulnerability details.
   - type: input
     id: summary
     attributes:
