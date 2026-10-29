@@ -8,19 +8,18 @@ spring:
     username: ${DATABASE_USERNAME}
     password: ${DATABASE_PASSWORD}
     hikari:
+      schema: stockrescue
       connection-timeout: 2000
       validation-timeout: 1000
       maximum-pool-size: 5
   flyway:
+    default-schema: public
     validate-on-migrate: true
     clean-disabled: true
     baseline-on-migrate: false
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
     admin:
-      fail-fast: false
-      operation-timeout: 3s
-      close-timeout: 1s
       properties:
         request.timeout.ms: 2000
         default.api.timeout.ms: 3000
