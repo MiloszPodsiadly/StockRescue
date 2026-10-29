@@ -12,7 +12,7 @@ StockRescue AI currently provides its SR-001 technical foundation. Keep contribu
 
 ## Set up a development environment
 
-Use JDK 27.0.1, Node 26.13.0, pnpm 12.16.1, Python 3.15.2 and uv 0.13.6.
+Use Oracle JDK 27.0.1.0.3+1, Node 26.13.0, pnpm 12.16.1, Python 3.15.2 and uv 0.13.6.
 Gradle 9.8.2 is supplied by the committed wrapper. Docker must be running for
 the backend's PostgreSQL and Kafka tests. The Compose quickstart in the README
 requires only Docker; host development tools are needed for the checks below.
