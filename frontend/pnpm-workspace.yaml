@@ -1,4 +1,7 @@
 engineStrict: true
+packages:
+  - .
+  - tooling/openapi
 saveExact: true
 strictPeerDependencies: true
 storeDir: .tools/pnpm-store

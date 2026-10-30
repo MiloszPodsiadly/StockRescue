@@ -11,6 +11,8 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "api:generate": "pnpm --dir tooling/openapi run generate",
+    "api:check": "pnpm --dir tooling/openapi run check",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -24,6 +26,7 @@
     "class-variance-authority": "0.7.1",
     "cn": "0.5.0",
     "lucide-react": "1.63.0",
+    "openapi-fetch": "0.17.0",
     "radix-ui": "1.8.1",
     "react": "19.3.1",
     "react-dom": "19.3.1"
