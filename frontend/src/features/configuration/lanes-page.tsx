@@ -1,12 +1,12 @@
 import { AppLink } from '@/components/app-link'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
 import { StateMessage } from '@/components/state-message'
-import { errorMessage } from '@/api/client'
-import { createLane, listLanes } from '@/api/configuration'
-import type { Lane, LaneCreation, Revision } from '@/api/configuration'
+import { ApiError, errorMessage } from '@/api/client'
+import { createLane, listLanes, lookupLane } from '@/api/configuration'
+import type { Lane, LaneCreation, LaneUpdate, Revision } from '@/api/configuration'
 import { OrganizationPage } from '../organizations/organization-page'
 import { useTenantCommand } from '../organizations/use-tenant-command'
 import { useTenantKey } from '../organizations/tenant-requests'
@@ -18,32 +18,102 @@ import { useLaneControl } from './use-lane-control'
 
 export function LanesPage() {
   const { organizationId } = useParams({ strict: false })
-  return <OrganizationPage organizationId={organizationId}>{organizationId && <Lanes organizationId={organizationId} />}</OrganizationPage>
+  return <OrganizationPage organizationId={organizationId}>{organizationId && <Lanes key={organizationId} organizationId={organizationId} />}</OrganizationPage>
 }
+
+type LaneCreationOutcome =
+  | { kind: 'created', lane: Lane }
+  | { kind: 'recovered', lane: Lane, zonesMatch: boolean }
+  | { kind: 'unconfirmed', request: LaneCreation, message: string }
 
 function Lanes({ organizationId }: { organizationId: string }) {
   const client = useQueryClient()
   const scope = useTenantKey()
   const [offset, setOffset] = useState(0)
-  const [createdLane, setCreatedLane] = useState<Lane | null>(null)
+  const [creationOutcome, setCreationOutcome] = useState<LaneCreationOutcome | null>(null)
+  const commandLock = useRef(false)
+  const refreshLaneList = useRef(false)
   const lanes = useQuery({ queryKey: [...scope, 'lanes', offset], queryFn: ({ signal }) => listLanes(organizationId, offset, signal), refetchInterval: 30000 })
-  const command = useTenantCommand(async () => { await client.invalidateQueries({ queryKey: [...scope, 'lanes'] }) })
+  const command = useTenantCommand(async () => {
+    if (refreshLaneList.current) await client.invalidateQueries({ queryKey: [...scope, 'lanes'] })
+  })
+  async function reconcileCreation(request: LaneCreation, signal: AbortSignal) {
+    try {
+      const lookup = await lookupLane(organizationId, request.originStoreId, request.destinationStoreId, signal)
+      signal.throwIfAborted()
+      if (!lookup.lane) {
+        setCreationOutcome({ kind: 'unconfirmed', request, message: 'No saved lane is visible yet. The earlier request may still be completing; check again before submitting another creation request.' })
+        return
+      }
+      refreshLaneList.current = true
+      setCreationOutcome({ kind: 'recovered', lane: lookup.lane, zonesMatch: lookup.lane.originZoneId === request.originZoneId && lookup.lane.destinationZoneId === request.destinationZoneId })
+    } catch (error) {
+      if (signal.aborted) throw error
+      if (error instanceof ApiError && [401, 403, 404].includes(error.status)) {
+        setCreationOutcome({ kind: 'unconfirmed', request, message: 'Access is unavailable. Restore access and check for the saved lane before submitting another creation request.' })
+        throw error
+      }
+      setCreationOutcome({ kind: 'unconfirmed', request, message: 'We could not check whether the lane was saved. Check again before submitting another creation request.' })
+    }
+  }
+  function runCreationCommand(action: (signal: AbortSignal) => Promise<void>) {
+    if (commandLock.current) return
+    commandLock.current = true
+    refreshLaneList.current = false
+    command.reset()
+    command.mutate(action, { onSettled: () => { commandLock.current = false } })
+  }
+  function submitLane(body: LaneCreation | LaneUpdate) {
+    if ('version' in body || commandLock.current) return
+    setCreationOutcome(null)
+    runCreationCommand(async signal => {
+      try {
+        const saved = await createLane(organizationId, body, signal)
+        signal.throwIfAborted()
+        refreshLaneList.current = true
+        setCreationOutcome({ kind: 'created', lane: saved })
+      } catch (error) {
+        if (!isAmbiguousCreateFailure(error)) throw error
+        if (signal.aborted) {
+          setCreationOutcome({ kind: 'unconfirmed', request: body, message: 'The request was interrupted. Confirm the saved lane before submitting another creation request.' })
+          return
+        }
+        await reconcileCreation(body, signal)
+      }
+    })
+  }
+  function recheckCreation() {
+    const pending = creationOutcome
+    if (pending?.kind !== 'unconfirmed' || commandLock.current) return
+    runCreationCommand(signal => reconcileCreation(pending.request, signal))
+  }
   if (lanes.isPending) return <StateMessage state="loading" title="Loading transport lanes" description="Checking organization configuration and your access." />
-  if (lanes.isError) return <div className="space-y-4"><StateMessage state="unavailable" title="Transport lanes unavailable" description={errorMessage(lanes.error)} /><Button onClick={() => { void lanes.refetch() }}>Reload saved lanes</Button></div>
+  if (lanes.isError) return <section className="space-y-4"><StateMessage state="unavailable" title="Transport lanes unavailable" description={errorMessage(lanes.error)} /><Button disabled={lanes.isFetching} onClick={() => { command.reset(); void lanes.refetch() }}>Reload saved lanes</Button>{command.isError && <CommandError error={command.error} />}{creationOutcome && <LaneCreationFeedback organizationId={organizationId} outcome={creationOutcome} busy={command.isPending} onRecheck={recheckCreation} />}</section>
+  const creationNeedsReview = creationOutcome?.kind === 'recovered' || creationOutcome?.kind === 'unconfirmed'
   return <section className="space-y-7">
     <div><h2 className="text-3xl font-semibold">Transport lanes</h2><p className="mt-3 text-muted-foreground">Directed routes between this organization's stores. An absent route or cost is unconfigured. These settings do not establish available vehicles, space or permission to ship goods.</p></div>
-    {command.isSuccess && <p role="status">Transport lane saved. Add a cost revision to finish its configuration.</p>}
-    {createdLane && <AppLink className="inline-flex text-primary underline" href={`/organizations/${organizationId}/transport-lanes/${createdLane.id}`}>Open saved lane</AppLink>}
     <Button variant="outline" disabled={lanes.isFetching || command.isPending} onClick={() => { command.reset(); void lanes.refetch() }}>Reload saved lanes</Button>
     {command.isError && <CommandError error={command.error} />}
+    {creationOutcome && <LaneCreationFeedback organizationId={organizationId} outcome={creationOutcome} busy={command.isPending} onRecheck={recheckCreation} />}
     {lanes.isFetching && <StateMessage state="loading" title="Refreshing transport lanes" description="Checking saved configuration." />}
     <div hidden={lanes.isFetching} className="space-y-7">
-      <LaneSetupForm key={createdLane?.id ?? 'new'} organizationId={organizationId} saving={command.isPending} onSubmit={body => { command.mutate(async signal => { const saved = await createLane(organizationId, body as LaneCreation, signal); setCreatedLane(saved) }) }} />
+      {!creationNeedsReview && <LaneSetupForm key={creationOutcome?.kind === 'created' ? creationOutcome.lane.id : 'new'} organizationId={organizationId} saving={command.isPending} onSubmit={submitLane} />}
       {!lanes.data.items.length && <StateMessage state="empty" title="No transport lanes" description="Routes, costs and journey durations are unconfigured." />}
       <div className="space-y-4">{lanes.data.items.map(lane => <article key={lane.id} className={panelClass}><h3 className="break-words text-xl font-semibold"><AppLink className="text-primary underline" href={`/organizations/${organizationId}/transport-lanes/${lane.id}`}>{lane.originStoreName} → {lane.destinationStoreName}</AppLink></h3><LaneStatus lane={lane} /></article>)}</div>
       <div className="flex gap-3"><Button variant="outline" disabled={!offset} onClick={() => { setOffset(value => Math.max(0, value - 25)) }}>Previous lanes</Button><Button variant="outline" disabled={!lanes.data.hasMore} onClick={() => { setOffset(value => value + 25) }}>Next lanes</Button></div>
     </div>
   </section>
+}
+
+function LaneCreationFeedback({ organizationId, outcome, busy, onRecheck }: { organizationId: string, outcome: LaneCreationOutcome, busy: boolean, onRecheck: () => void }) {
+  if (outcome.kind === 'created') return <div className="space-y-2"><p role="status">Transport lane saved. Add a cost revision to finish its configuration.</p><AppLink className="inline-flex text-primary underline" href={`/organizations/${organizationId}/transport-lanes/${outcome.lane.id}`}>Open saved lane</AppLink></div>
+  if (outcome.kind === 'recovered') return <div className="space-y-2"><p role="status">An existing lane was found after the creation result became uncertain. The lookup cannot establish who created it; review the saved lane and its history before continuing.</p>{!outcome.zonesMatch && <p role="alert">The saved origin or destination zone differs from the requested configuration. Review the existing lane manually before making changes.</p>}<AppLink className="inline-flex text-primary underline" href={`/organizations/${organizationId}/transport-lanes/${outcome.lane.id}`}>Open existing lane</AppLink></div>
+  return <div className="space-y-3"><p role="status">Lane creation result is unconfirmed. {outcome.message}</p><Button disabled={busy} onClick={onRecheck}>{busy ? 'Checking saved lane…' : 'Check for saved lane'}</Button></div>
+}
+
+function isAmbiguousCreateFailure(error: unknown) {
+  if (error instanceof ApiError) return error.status === 408 || error.status === 425 || error.status >= 500
+  return error instanceof TypeError || error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')
 }
 
 const missingLabels: Record<Lane['missing'][number], string> = {
@@ -81,7 +151,7 @@ function LaneDetail({ organizationId, laneId }: { organizationId: string, laneId
         : <LaneSetupForm key={`setup:${current.version}:${state.preparedDraft ? 'prepared' : 'live'}`} organizationId={organizationId} lane={current} draft={state.preparedDraft ?? undefined} saving={busy || Boolean(review)} onSubmit={body => { void control.saveLane(body) }} />}
       {!current.active && !current.missing.includes('INACTIVE_STORE') && <p className="text-sm text-muted-foreground">To recover this lane, select compatible active zones, enable the lane and save. Approving a new cost is a separate action after the lane is enabled.</p>}
       <Button variant="outline" disabled={refreshing || busy || Boolean(review)} onClick={() => { void control.reviewScheduledCosts() }}>Review and cancel scheduled costs</Button>
-      {review && <ScheduleCancellationReview review={review} reason={state.reason} confirmed={state.confirmed} saving={busy} onReasonChange={control.setReason} onConfirmedChange={control.setConfirmed} onCancel={() => { void control.cancelSchedule() }} onClose={control.closeReview} />}
+      {review && state.phase === 'REVIEWING' && <ScheduleCancellationReview review={review} reason={state.reason} confirmed={state.confirmed} saving={busy} onReasonChange={control.setReason} onConfirmedChange={control.setConfirmed} onCancel={() => { void control.cancelSchedule() }} onClose={control.closeReview} />}
       {current.active && !current.missing.some(value => ['INACTIVE_STORE', 'MISSING_ZONES', 'INACTIVE_ZONE', 'INCOMPATIBLE_ZONES'].includes(value)) && <CostRevisionForm key={`cost:${current.version}`} lane={current} codes={currencies.data.codes} saving={busy || Boolean(review)} onSubmit={body => { void control.approveCost(body) }} />}
       <section aria-labelledby="cost-history-heading" className="space-y-5"><h3 id="cost-history-heading" className="text-2xl font-semibold">Cost history</h3><p className="text-sm text-muted-foreground">Validity starts at the recorded effective time and ends just before the next revision takes effect. Future approvals do not change today's cost. Zone identifiers preserve each revision's original compatibility evidence.</p>
         {!history.data.items.length && <p>No cost revisions have been approved.</p>}

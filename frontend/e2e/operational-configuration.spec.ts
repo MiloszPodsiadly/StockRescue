@@ -64,8 +64,23 @@ test('scheduled lane costs can be reviewed, cancelled and reconciled across a Co
     await page.getByLabel('Origin zone', { exact: true }).selectOption({ label: 'NORTH ambient · AMBIENT' })
     await page.getByLabel('Destination zone', { exact: true }).selectOption({ label: 'SOUTH ambient · AMBIENT' })
     await page.getByLabel('Reason for lane configuration').fill('Approved ambient route configuration')
+    let laneCreatePosts = 0
+    const laneCreatePath = `**/api/v1/organizations/${org.id}/transport-lanes`
+    await page.route(laneCreatePath, async route => {
+      if (route.request().method() !== 'POST') return route.continue()
+      laneCreatePosts += 1
+      const committed = await route.fetch()
+      expect(committed.status()).toBe(201)
+      await route.abort('failed')
+    })
     await page.getByRole('button', { name: 'Create lane', exact: true }).click()
-    await page.getByRole('link', { name: 'Open saved lane', exact: true }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'An existing lane was found after the creation result became uncertain.' })).toBeVisible()
+    const recoveredLaneLink = page.getByRole('link', { name: 'Open existing lane', exact: true })
+    await expect(recoveredLaneLink).toBeVisible()
+    expect(await recoveredLaneLink.getAttribute('href')).toMatch(new RegExp(`^/organizations/${org.id}/transport-lanes/[0-9a-f-]{36}$`))
+    expect(laneCreatePosts).toBe(1)
+    await page.unroute(laneCreatePath)
+    await recoveredLaneLink.click()
     await expect(page.getByText('UNCONFIGURED', { exact: true })).toBeVisible()
     await expect(page.getByText('Current cost and duration: unavailable.', { exact: true })).toBeVisible()
 
@@ -133,6 +148,20 @@ test('scheduled lane costs can be reviewed, cancelled and reconciled across a Co
       await expect(scheduledList.getByText(`Effective time (UTC): ${revision.effectiveAt}`, { exact: true })).toBeVisible()
     }
     await expect(page.getByRole('button', { name: 'Cancel all 2 scheduled revisions' })).toBeDisabled()
+    await page.getByLabel('Reason for cancelling scheduled costs').fill('Carrier agreement changed before the planned start')
+    await page.getByLabel('I reviewed the listed revisions and confirm cancelling all of them.').check()
+    await page.getByRole('button', { name: 'Reload saved configuration' }).click()
+    await expect(page.getByRole('region', { name: 'Review and cancel scheduled costs' })).toHaveCount(0)
+    expect(cancellationPosts).toBe(0)
+
+    await page.getByRole('button', { name: 'Review and cancel scheduled costs' }).click()
+    const refreshedScheduledList = page.getByRole('list', { name: 'Scheduled cost revisions to cancel' })
+    for (const revision of scheduledRevisions) {
+      await expect(refreshedScheduledList.getByText(`Revision ${revision.revision} · ${revision.id}`, { exact: true })).toBeVisible()
+    }
+    await expect(page.getByLabel('Reason for cancelling scheduled costs')).toHaveValue('')
+    await expect(page.getByLabel('I reviewed the listed revisions and confirm cancelling all of them.')).not.toBeChecked()
+    await expect(page.getByRole('button', { name: 'Cancel all 2 scheduled revisions' })).toBeDisabled()
     await page.getByRole('button', { name: 'Close review without cancelling' }).click()
     expect(cancellationPosts).toBe(0)
     const laneBeforeIndependentCancel = await (await context.request.get(apiLanePath)).json() as components['schemas']['LaneResponse']
@@ -140,6 +169,18 @@ test('scheduled lane costs can be reviewed, cancelled and reconciled across a Co
     expect(laneBeforeIndependentCancel.destinationZoneId).toBe(beforeUnsafeEdit.destinationZoneId)
 
     let dropCommittedResponse = true
+    let reconciliationReadFailures = 3
+    await page.getByRole('button', { name: 'Review and cancel scheduled costs' }).click()
+    await page.getByLabel('Reason for cancelling scheduled costs').fill('Carrier agreement changed before the planned start')
+    await page.getByLabel('I reviewed the listed revisions and confirm cancelling all of them.').check()
+    await page.route(`**${apiLanePath}`, async route => {
+      if (route.request().method() === 'GET' && reconciliationReadFailures > 0) {
+        reconciliationReadFailures -= 1
+        await route.abort('failed')
+        return
+      }
+      await route.continue()
+    })
     await page.route('**/scheduled-revisions/cancel', async route => {
       if (!dropCommittedResponse) return route.continue()
       dropCommittedResponse = false
@@ -147,13 +188,26 @@ test('scheduled lane costs can be reviewed, cancelled and reconciled across a Co
       expect(committed.status()).toBe(200)
       await route.abort('failed')
     })
-    await page.getByRole('button', { name: 'Review and cancel scheduled costs' }).click()
-    await page.getByLabel('Reason for cancelling scheduled costs').fill('Carrier agreement changed before the planned start')
-    await page.getByLabel('I reviewed the listed revisions and confirm cancelling all of them.').check()
     await page.getByRole('button', { name: 'Cancel all 2 scheduled revisions' }).click()
+
+    const expectLaneRecoveryBlocked = async () => {
+      await expect(page.getByRole('heading', { name: 'Lane state needs reconciliation' })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Save lane configuration' })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Review and cancel scheduled costs' })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Approve cost revision' })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Reload lane and history before continuing' })).toBeEnabled()
+    }
+    await expectLaneRecoveryBlocked()
+    for (let retry = 0; retry < 2; retry += 1) {
+      await page.getByRole('button', { name: 'Reload lane and history before continuing' }).click()
+      await expectLaneRecoveryBlocked()
+    }
+    await page.getByRole('button', { name: 'Reload lane and history before continuing' }).click()
     await expect(page.locator('[role="status"]').filter({ hasText: 'Saved history confirms 2 reviewed scheduled costs cancelled.' })).toBeVisible()
     await page.unroute('**/scheduled-revisions/cancel')
+    await page.unroute(`**${apiLanePath}`)
     expect(cancellationPosts).toBe(1)
+    expect(reconciliationReadFailures).toBe(0)
     const independentlyCancelled = await (await context.request.get(historyPath)).json() as components['schemas']['RevisionPageResponse']
     expect(scheduledRevisions.every(scheduled => independentlyCancelled.items.find(item => item.id === scheduled.id)?.cancellation !== null)).toBe(true)
     const laneAfterIndependentCancel = await (await context.request.get(apiLanePath)).json() as components['schemas']['LaneResponse']

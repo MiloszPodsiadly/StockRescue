@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -194,6 +194,103 @@ it('cancels scheduled costs independently, leaves zones alone and allows a fresh
   expect(api.reviseLane.mock.calls[0]?.[2]).not.toHaveProperty('effectiveAt')
 })
 
+it('requires a fresh reason and confirmation after reloading an open schedule review', async () => {
+  let savedCancellation = false
+  let laneReads = 0
+  api.getLane.mockImplementation(async () => {
+    laneReads += 1
+    return lane(laneReads >= 3 ? 4 : 3)
+  })
+  api.laneHistory.mockImplementation(async () => history(savedCancellation
+    ? { ...scheduledRevision, cancellation: {
+      id: 'cancellation-3', revision: 3, revisionId: scheduledRevision.id, cancelledAt: '2026-10-31T12:05:00Z', cancelledByMembershipId: 'member-a', reason: 'Carrier agreement changed before the planned start',
+    } }
+    : scheduledRevision))
+  api.cancelScheduledLaneRevisions.mockImplementation(async () => {
+    savedCancellation = true
+    return {
+      lane: lane(4),
+      cancelledRevisions: [{ id: 'cancellation-3', revisionId: scheduledRevision.id, revision: 3, version: 4, cancelledAt: '2026-10-31T12:05:00Z', role: 'ORG_ADMIN', cancelledByMembershipId: 'member-a', reason: 'Carrier agreement changed before the planned start' }],
+    }
+  })
+  const { user } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
+  await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
+  await user.click(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
+  expect(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' })).toBeEnabled()
+
+  await user.click(screen.getByRole('button', { name: 'Reload saved configuration' }))
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Review and cancel scheduled costs' })).not.toBeInTheDocument())
+  expect(api.cancelScheduledLaneRevisions).not.toHaveBeenCalled()
+
+  await user.click(screen.getByRole('button', { name: 'Review and cancel scheduled costs' }))
+  const refreshedReview = await screen.findByRole('region', { name: 'Review and cancel scheduled costs' })
+  expect(within(refreshedReview).getByLabelText('Reason for cancelling scheduled costs')).toHaveValue('')
+  expect(within(refreshedReview).getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.')).not.toBeChecked()
+  expect(within(refreshedReview).getByRole('button', { name: 'Cancel all 1 scheduled revision' })).toBeDisabled()
+
+  await user.type(within(refreshedReview).getByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
+  await user.click(within(refreshedReview).getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
+  await user.click(within(refreshedReview).getByRole('button', { name: 'Cancel all 1 scheduled revision' }))
+  expect(await screen.findByRole('status')).toHaveTextContent('Saved history confirms 1 reviewed scheduled cost cancelled.')
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledWith('org', 'lane', {
+    laneVersion: 4, expectedRevision: 3, reason: 'Carrier agreement changed before the planned start',
+  }, expect.any(AbortSignal))
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
+})
+
+it('includes future costs added during reload in the next review', async () => {
+  const newerRevision: Revision = {
+    ...scheduledRevision, id: 'revision-4', revision: 4, effectiveAt: '2031-01-01T00:00:00Z', costAmount: '120.0000',
+  }
+  let laneReads = 0
+  let newerScheduleSaved = false
+  api.getLane.mockImplementation(async () => {
+    laneReads += 1
+    if (laneReads >= 3) newerScheduleSaved = true
+    return lane(laneReads >= 3 ? 4 : 3)
+  })
+  api.laneHistory.mockImplementation(async () => history(newerScheduleSaved
+    ? [scheduledRevision, newerRevision]
+    : scheduledRevision))
+  const { user } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
+  expect(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' })).toBeDisabled()
+
+  await user.click(screen.getByRole('button', { name: 'Reload saved configuration' }))
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Review and cancel scheduled costs' })).not.toBeInTheDocument())
+  await user.click(screen.getByRole('button', { name: 'Review and cancel scheduled costs' }))
+
+  const refreshedReview = await screen.findByRole('region', { name: 'Review and cancel scheduled costs' })
+  expect(refreshedReview).toHaveTextContent('Revision 4')
+  expect(refreshedReview).toHaveTextContent('120.0000 EUR · 60 minutes')
+  expect(within(refreshedReview).getByRole('button', { name: 'Cancel all 2 scheduled revisions' })).toBeDisabled()
+  expect(api.cancelScheduledLaneRevisions).not.toHaveBeenCalled()
+})
+
+it('clears a review after reload failure and allows an explicit retry', async () => {
+  let laneReads = 0
+  api.getLane.mockImplementation(async () => {
+    laneReads += 1
+    if (laneReads === 3) throw new TypeError('Saved lane could not be reloaded')
+    return lane(3)
+  })
+  const { user } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
+  await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
+  await user.click(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
+
+  await user.click(screen.getByRole('button', { name: 'Reload saved configuration' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('We could not confirm the request. Check your connection and try again.')
+  expect(screen.queryByRole('region', { name: 'Review and cancel scheduled costs' })).not.toBeInTheDocument()
+  expect(api.cancelScheduledLaneRevisions).not.toHaveBeenCalled()
+
+  await user.click(screen.getByRole('button', { name: 'Reload saved configuration' }))
+  await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  await user.click(screen.getByRole('button', { name: 'Review and cancel scheduled costs' }))
+  expect(await screen.findByRole('region', { name: 'Review and cancel scheduled costs' })).toBeInTheDocument()
+})
+
 it('keeps a zone-change draft prepared after cancellation and waits for a separate save', async () => {
   let savedCancellation = false
   api.getLane.mockImplementation(async () => lane(savedCancellation ? 4 : 3))
@@ -225,6 +322,19 @@ it('keeps a zone-change draft prepared after cancellation and waits for a separa
   }), expect.any(AbortSignal)))
 })
 
+it('does not apply a prepared zone draft when reload closes an unfinished review', async () => {
+  const { user } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Save lane configuration' }))
+  await screen.findByRole('region', { name: 'Review future costs before changing lane zones' })
+  expect(screen.getByTestId('prepared-zone-draft')).toHaveTextContent('north-chilled')
+
+  await user.click(screen.getByRole('button', { name: 'Reload saved configuration' }))
+
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Review future costs before changing lane zones' })).not.toBeInTheDocument())
+  expect(screen.getByTestId('prepared-zone-draft')).toHaveTextContent('no prepared draft')
+  expect(api.updateLane).not.toHaveBeenCalled()
+})
+
 it('reconciles a lost cancellation response from saved evidence without retrying the command', async () => {
   let savedCancellation = false
   api.getLane.mockImplementation(async () => lane(savedCancellation ? 4 : 3))
@@ -247,6 +357,87 @@ it('reconciles a lost cancellation response from saved evidence without retrying
   expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
   expect(api.laneHistory.mock.calls.length).toBeGreaterThan(3)
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it('keeps lane writes blocked through repeated reconciliation failures until saved cancellation evidence is confirmed', async () => {
+  let savedCancellation = false
+  let readFailuresRemaining = 3
+  api.getLane.mockImplementation(async () => {
+    if (savedCancellation && readFailuresRemaining > 0) {
+      readFailuresRemaining -= 1
+      throw new TypeError('Lane read unavailable during reconciliation')
+    }
+    return lane(savedCancellation ? 4 : 3)
+  })
+  api.laneHistory.mockImplementation(async () => history(savedCancellation
+    ? { ...scheduledRevision, cancellation: {
+      id: 'cancellation-3', revision: 3, revisionId: scheduledRevision.id, cancelledAt: '2026-10-31T12:05:00Z', cancelledByMembershipId: 'member-a', reason: 'Carrier agreement changed before the planned start',
+    } }
+    : scheduledRevision))
+  api.cancelScheduledLaneRevisions.mockImplementation(async () => {
+    savedCancellation = true
+    throw new TypeError('Network disconnected after server commit')
+  })
+  const { user } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
+  await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
+  await user.click(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
+  await user.click(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' }))
+
+  const expectWritesBlocked = async () => {
+    expect(await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reload lane and history before continuing' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Save lane configuration' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Review and cancel scheduled costs' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve current cost for test' })).not.toBeInTheDocument()
+  }
+  await expectWritesBlocked()
+  await user.click(screen.getByRole('button', { name: 'Reload lane and history before continuing' }))
+  await expectWritesBlocked()
+  await user.click(screen.getByRole('button', { name: 'Reload lane and history before continuing' }))
+  await expectWritesBlocked()
+  await user.click(screen.getByRole('button', { name: 'Reload lane and history before continuing' }))
+
+  expect(await screen.findByRole('status')).toHaveTextContent('Saved history confirms 1 reviewed scheduled cost cancelled.')
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
+  expect(api.getLane).toHaveBeenCalledTimes(6)
+  expect(screen.getByRole('button', { name: 'Approve current cost for test' })).toBeEnabled()
+})
+
+it('requires a fresh review when another future cost appears during cancellation reconciliation', async () => {
+  let savedCancellation = false
+  const newerRevision: Revision = {
+    ...scheduledRevision, id: 'revision-4', revision: 4, effectiveAt: '2031-01-01T00:00:00Z', costAmount: '120.0000',
+  }
+  api.getLane.mockImplementation(async () => lane(savedCancellation ? 4 : 3))
+  api.laneHistory.mockImplementation(async () => history(savedCancellation
+    ? [
+      { ...scheduledRevision, cancellation: {
+        id: 'cancellation-3', revision: 3, revisionId: scheduledRevision.id, cancelledAt: '2026-10-31T12:05:00Z', cancelledByMembershipId: 'member-a', reason: 'Carrier agreement changed before the planned start',
+      } },
+      newerRevision,
+    ]
+    : scheduledRevision))
+  api.cancelScheduledLaneRevisions.mockImplementation(async () => {
+    savedCancellation = true
+    return {
+      lane: lane(4),
+      cancelledRevisions: [{ id: 'cancellation-3', revisionId: scheduledRevision.id, revision: 3, version: 4, cancelledAt: '2026-10-31T12:05:00Z', role: 'ORG_ADMIN', cancelledByMembershipId: 'member-a', reason: 'Carrier agreement changed before the planned start' }],
+    }
+  })
+  const { user } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
+  await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
+  await user.click(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
+  await user.click(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' }))
+
+  const refreshedReview = await screen.findByRole('region', { name: 'Review and cancel scheduled costs' })
+  expect(refreshedReview).toHaveTextContent('Revision 4')
+  expect(refreshedReview).toHaveTextContent('120.0000 EUR · 60 minutes')
+  expect(await screen.findByRole('status')).toHaveTextContent('Newer future costs appeared; review them before continuing.')
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
+  expect(api.updateLane).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' })).toBeDisabled()
 })
 
 it('refreshes the complete schedule and requires new confirmation after a stale cancellation conflict', async () => {
@@ -320,6 +511,37 @@ it('aborts an in-flight lane command when the lane screen unmounts', async () =>
   expect(commandSignal?.aborted).toBe(true)
 })
 
+it('aborts an in-flight reconciliation retry when the tenant scope ends', async () => {
+  const tenantRequests = new AbortController()
+  tenant.signal = tenantRequests.signal
+  let retrySignal: AbortSignal | undefined
+  let resolveRetry!: (value: Lane) => void
+  api.cancelScheduledLaneRevisions.mockImplementation(async () => {
+    throw new TypeError('Network disconnected after server commit')
+  })
+  api.getLane.mockImplementationOnce(async () => lane(3)).mockImplementationOnce(async () => lane(3)).mockImplementationOnce(async () => {
+    throw new TypeError('Initial reconciliation read unavailable')
+  }).mockImplementation((_organizationId: string, _laneId: string, signal: AbortSignal) => {
+    retrySignal = signal
+    return new Promise(resolve => { resolveRetry = resolve })
+  })
+  const { user, view } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
+  await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
+  await user.click(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
+  await user.click(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' }))
+  await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })
+  await user.click(screen.getByRole('button', { name: 'Reload lane and history before continuing' }))
+  await waitFor(() => expect(retrySignal).toBeDefined())
+
+  tenantRequests.abort()
+  view.unmount()
+  expect(retrySignal?.aborted).toBe(true)
+  resolveRetry(lane(4))
+  await act(async () => { await Promise.resolve() })
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
+})
+
 it('blocks further lane actions when refreshed authorization is revoked during cancellation', async () => {
   let revoked = false
   const denied = () => new ApiError(new Response(null, { status: 403 }), { code: 'ACCESS_DENIED' } as never)
@@ -334,6 +556,13 @@ it('blocks further lane actions when refreshed authorization is revoked during c
   expect(await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })).toBeInTheDocument()
   expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
   expect(screen.getByRole('button', { name: 'Reload lane and history before continuing' })).toBeEnabled()
+  await user.click(screen.getByRole('button', { name: 'Reload lane and history before continuing' }))
+  expect(await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Save lane configuration' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Review and cancel scheduled costs' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Approve current cost for test' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Reload lane and history before continuing' })).toBeEnabled()
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
 })
 
 it('loads every future schedule across history pages larger than the initial page', async () => {

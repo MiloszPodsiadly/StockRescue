@@ -54,7 +54,9 @@ function reducer(state: State, action: Action): State {
         preparedDraft: action.kind === 'zone-change' ? action.draft : null, reason: '', confirmed: false,
         notice: '', unresolved: null,
       }
-    case 'close-review': return { ...state, phase: 'IDLE', review: null, preparedDraft: null, reason: '', confirmed: false }
+    case 'close-review':
+      if (state.unresolved !== null) return { ...state, phase: 'NEEDS_RECONCILIATION' }
+      return { ...state, phase: 'IDLE', review: null, preparedDraft: null, reason: '', confirmed: false }
     case 'clear-review': return { ...state, review: null, preparedDraft: null, reason: '', confirmed: false }
     case 'reason': return { ...state, reason: action.value }
     case 'confirmed': return { ...state, confirmed: action.value }
@@ -62,9 +64,11 @@ function reducer(state: State, action: Action): State {
     case 'error': return { ...state, error: action.value }
     case 'needs-reconciliation': return { ...state, phase: 'NEEDS_RECONCILIATION', unresolved: action.pending }
     case 'reconciled': return { ...state, review: null, reason: '', confirmed: false, unresolved: null, error: null, notice: action.notice, preparedDraft: action.preparedDraft ?? null }
-    case 'settled': return state.phase === 'REVIEWING' || state.phase === 'NEEDS_RECONCILIATION'
-      ? state
-      : { ...state, phase: 'IDLE' }
+    case 'settled':
+      if (state.unresolved !== null) return { ...state, phase: 'NEEDS_RECONCILIATION' }
+      return state.phase === 'REVIEWING' || state.phase === 'NEEDS_RECONCILIATION'
+        ? state
+        : { ...state, phase: 'IDLE' }
   }
 }
 
@@ -264,6 +268,8 @@ export function useLaneControl(organizationId: string, laneId: string) {
   }
 
   async function reload() {
+    if (commandLock.current || state.unresolved !== null || state.phase === 'NEEDS_RECONCILIATION') return
+    dispatch({ type: 'close-review' })
     dispatch({ type: 'notice', value: '' })
     await runCommand('RELOADING', async signal => {
       await reloadLaneAndHistory(signal)
