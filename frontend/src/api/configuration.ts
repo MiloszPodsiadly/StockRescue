@@ -2,6 +2,7 @@ import type { components } from './schema'
 import { api, ApiError, csrf, requestSignal } from './client'
 
 export type Zone = components['schemas']['ZoneResponse']
+export type ZoneArchiveImpact = components['schemas']['ZoneArchiveImpactResponse']
 export type Temperature = Zone['temperatureClass']
 export type Lane = components['schemas']['LaneResponse']
 export type Revision = components['schemas']['RevisionResponse']
@@ -24,8 +25,12 @@ export async function renameZone(organizationId: string, storeId: string, zone: 
   const result = await api.PATCH('/api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}', { params: { path: { organizationId, storeId, zoneId: zone.id }, ...await csrf(signal) }, body: { name, version: zone.version, reason }, signal: requestSignal(signal) })
   signal.throwIfAborted(); return data(result)
 }
-export async function archiveZone(organizationId: string, storeId: string, zone: Zone, reason: string, signal: AbortSignal) {
-  const result = await api.POST('/api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive', { params: { path: { organizationId, storeId, zoneId: zone.id }, ...await csrf(signal) }, body: { version: zone.version, reason }, signal: requestSignal(signal) })
+export async function getZoneArchiveImpact(organizationId: string, storeId: string, zone: Zone, signal: AbortSignal) {
+  const result = await api.GET('/api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive-impact', { params: { path: { organizationId, storeId, zoneId: zone.id } }, signal: requestSignal(signal) })
+  return data(result)
+}
+export async function archiveZone(organizationId: string, storeId: string, zone: Zone, reason: string, impact: ZoneArchiveImpact, signal: AbortSignal) {
+  const result = await api.POST('/api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive', { params: { path: { organizationId, storeId, zoneId: zone.id }, ...await csrf(signal) }, body: { version: impact.zoneVersion, reason, impactFingerprint: impact.impactFingerprint }, signal: requestSignal(signal) })
   signal.throwIfAborted(); return data(result)
 }
 export async function listLanes(organizationId: string, offset: number, signal: AbortSignal) {

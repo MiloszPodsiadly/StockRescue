@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { cancelScheduledLaneRevisions } from './configuration'
+import { archiveZone, cancelScheduledLaneRevisions } from './configuration'
 import { clearCsrf } from './client'
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -40,4 +40,24 @@ it('does not retry a rejected cancellation command after a lane conflict', async
     laneVersion: 3, expectedRevision: 2, reason: 'Reviewed cost schedule change',
   }, new AbortController().signal)).rejects.toMatchObject({ code: 'SCHEDULED_REVISIONS_PENDING', status: 409 })
   expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
+it('submits the zone version and fingerprint from the same reviewed impact snapshot', async () => {
+  const fetcher = vi.fn()
+    .mockResolvedValueOnce(json({ token: 'session-token', headerName: 'X-CSRF-TOKEN' }))
+    .mockResolvedValueOnce(json({ id: 'zone-a', active: false, version: 6 }))
+  vi.stubGlobal('fetch', fetcher)
+  const zone = {
+    id: 'zone-a', name: 'Ambient', temperatureClass: 'AMBIENT' as const, active: true, version: 4,
+    createdAt: '2026-10-31T12:00:00Z', updatedAt: '2026-10-31T12:00:00Z',
+  }
+  const impact = {
+    activeLaneCount: 1, inactiveLaneCount: 0, futureScheduledRevisionCount: 1,
+    zoneVersion: 5, impactFingerprint: 'A'.repeat(43), asOf: '2026-10-31T12:00:00Z',
+  }
+
+  await archiveZone('org-a', 'store-a', zone, 'Reviewed the current route impact', impact, new AbortController().signal)
+
+  const request = fetcher.mock.calls[1]?.[0] as Request
+  expect(await request.json()).toEqual({ version: 5, reason: 'Reviewed the current route impact', impactFingerprint: impact.impactFingerprint })
 })

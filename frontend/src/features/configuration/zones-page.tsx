@@ -4,10 +4,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
 import { StateMessage } from '@/components/state-message'
-import { errorMessage } from '@/api/client'
+import { ApiError, errorMessage } from '@/api/client'
 import { getStore } from '@/api/stores'
-import { archiveZone, createZone, listZones, renameZone } from '@/api/configuration'
-import type { Temperature, Zone } from '@/api/configuration'
+import { archiveZone, createZone, getZoneArchiveImpact, listZones, renameZone } from '@/api/configuration'
+import type { Temperature, Zone, ZoneArchiveImpact } from '@/api/configuration'
 import { OrganizationPage } from '../organizations/organization-page'
 import { useTenantCommand } from '../organizations/use-tenant-command'
 import { useTenantKey } from '../organizations/tenant-requests'
@@ -59,18 +59,70 @@ function ZoneCard({ zone, canManage, organizationId, storeId, onSaved }: { zone:
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(zone.name)
   const [reason, setReason] = useState('')
+  const [archiveReason, setArchiveReason] = useState('')
+  const [impact, setImpact] = useState<ZoneArchiveImpact | null>(null)
   const [confirmed, setConfirmed] = useState(false)
   const command = useTenantCommand(onSaved)
+  const scope = useTenantKey()
+  const impactQuery = useQuery({
+    queryKey: [...scope, 'zone-archive-impact', storeId, zone.id, zone.version],
+    queryFn: ({ signal }) => getZoneArchiveImpact(organizationId, storeId, zone, signal),
+    enabled: false, retry: false, staleTime: 0, gcTime: 0,
+  })
+  async function reviewImpact() {
+    setImpact(null)
+    setConfirmed(false)
+    const result = await impactQuery.refetch()
+    if (result.isSuccess) setImpact(result.data)
+  }
+  function submitArchive(signal: AbortSignal) {
+    if (!impact) return Promise.resolve()
+    return archiveZone(organizationId, storeId, zone, archiveReason, impact, signal).catch(error => {
+      if (error instanceof ApiError && error.code === 'ZONE_IMPACT_CHANGED') {
+        setImpact(null)
+        setConfirmed(false)
+        void reviewImpact()
+      }
+      throw error
+    })
+  }
+  const hasDependencies = impact !== null && impact.activeLaneCount + impact.inactiveLaneCount + impact.futureScheduledRevisionCount > 0
   return <article className={panelClass}>
     <h3 className="break-words text-xl font-semibold">{zone.name}</h3><p className="text-sm text-muted-foreground">{zone.temperatureClass} · {zone.active ? 'Active' : 'Inactive'} · Version {zone.version}</p>
-    {canManage && zone.active && <Button variant="outline" onClick={() => { setEditing(value => !value) }} disabled={command.isPending}>Edit {zone.name}</Button>}
+    {canManage && zone.active && <Button variant="outline" onClick={() => { setEditing(value => !value); setImpact(null); setConfirmed(false) }} disabled={command.isPending}>Edit {zone.name}</Button>}
     {editing && <form className="space-y-5" onSubmit={event => { event.preventDefault(); if (!command.isPending) command.mutate(signal => renameZone(organizationId, storeId, zone, name, reason, signal)) }}>
       <Field label="Updated zone name">{id => <input id={id} required maxLength={100} value={name} disabled={command.isPending} onChange={event => { setName(event.target.value) }} className={inputClass} />}</Field>
       <Field label="Reason for zone change">{id => <textarea id={id} required maxLength={500} value={reason} disabled={command.isPending} onChange={event => { setReason(event.target.value) }} className={inputClass} />}</Field>
       <Button type="submit" disabled={command.isPending}>Save zone name</Button>
-      <label className="flex items-start gap-3 text-sm"><input type="checkbox" checked={confirmed} disabled={command.isPending} onChange={event => { setConfirmed(event.target.checked) }} />Permanently deactivate this zone. Routes using it will be unavailable.</label>
-      <Button type="button" variant="outline" disabled={!confirmed || !reason.trim() || command.isPending} onClick={() => { command.mutate(signal => archiveZone(organizationId, storeId, zone, reason, signal)) }}>Deactivate zone</Button>
     </form>}
     {command.isError && <CommandError error={command.error} />}
+    {editing && <section aria-label="Permanent zone deactivation" className="space-y-5 rounded-xl border border-destructive/30 p-5">
+      <div><h4 className="text-lg font-semibold">Permanent zone deactivation</h4><p className="mt-2 text-sm text-muted-foreground">Deactivation cannot be undone. Review affected routes and scheduled costs before confirming.</p></div>
+      <Field label="Reason for deactivation">{id => <textarea id={id} required maxLength={500} value={archiveReason} disabled={command.isPending} onChange={event => { setArchiveReason(event.target.value) }} className={inputClass} />}</Field>
+      {impactQuery.isError && !impact && <CommandError error={impactQuery.error} />}
+      {impact && <div role="region" aria-label="Zone archive impact" className="space-y-3 rounded-xl bg-muted p-4">
+        <p className="font-medium">Impact preview as of {new Date(impact.asOf).toLocaleString()}.</p>
+        <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+          <div><dt className="text-muted-foreground">Active lanes affected</dt><dd className="font-semibold">{impact.activeLaneCount}</dd></div>
+          <div><dt className="text-muted-foreground">Inactive lanes affected</dt><dd className="font-semibold">{impact.inactiveLaneCount}</dd></div>
+          <div><dt className="text-muted-foreground">Future scheduled revisions</dt><dd className="font-semibold">{impact.futureScheduledRevisionCount}</dd></div>
+        </dl>
+        {hasDependencies
+          ? <p className="text-sm">Affected lanes become unavailable. Future revisions remain in history and are not cancelled automatically.</p>
+          : <p className="text-sm">No lanes or future scheduled revisions currently depend on this zone.</p>}
+      </div>}
+      <Button type="button" variant="outline" disabled={impactQuery.isFetching || command.isPending} onClick={() => { void reviewImpact() }}>
+        {impactQuery.isFetching ? 'Refreshing impact…' : impact ? 'Refresh impact preview' : 'Review impact before deactivation'}
+      </Button>
+      {impact && <>
+        <label className="flex items-start gap-3 text-sm"><input type="checkbox" checked={confirmed} disabled={command.isPending} onChange={event => { setConfirmed(event.target.checked) }} />I reviewed this impact and confirm permanent deactivation.</label>
+        <div className="flex flex-wrap gap-3">
+          <Button type="button" variant="outline" disabled={!confirmed || !archiveReason.trim() || command.isPending} onClick={() => { command.mutate(submitArchive) }}>
+            {command.isPending ? 'Deactivating zone…' : 'Confirm zone deactivation'}
+          </Button>
+          <Button type="button" variant="outline" disabled={command.isPending} onClick={() => { setImpact(null); setConfirmed(false); setArchiveReason('') }}>Cancel deactivation review</Button>
+        </div>
+      </>}
+    </section>}
   </article>
 }

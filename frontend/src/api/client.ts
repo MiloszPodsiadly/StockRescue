@@ -59,6 +59,7 @@ function problemMessage(error: ApiError): string {
     case 'STORE_CONFLICT': return 'This store code is reserved, the retry changed, or a newer version was saved. Reload and review.'
     case 'STORE_INACTIVE': return 'This store is inactive. New operations are unavailable.'
     case 'CONFIGURATION_CONFLICT': return 'A newer configuration was saved or this route already exists. Reload the saved values and review before trying again.'
+    case 'ZONE_IMPACT_CHANGED': return 'The zone or its lane impact changed. Refresh the impact preview and confirm again.'
     case 'CONFIGURATION_INACTIVE': return 'A store, zone or lane is inactive. Choose active configuration before continuing.'
     case 'INCOMPATIBLE_ZONES': return 'Both zones must use the same temperature class. Select compatible active zones.'
     case 'SCHEDULED_REVISIONS_PENDING': return 'Future scheduled costs are still active. Review and explicitly cancel them before changing the lane zones.'
