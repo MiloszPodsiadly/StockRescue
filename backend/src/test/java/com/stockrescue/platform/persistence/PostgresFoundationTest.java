@@ -70,6 +70,26 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             var tables = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'stockrescue'");
             assertThat(tables.next()).isTrue();
             assertThat(tables.getInt(1)).isEqualTo(19);
+            var auditTimeDefault = statement.executeQuery("""
+                    SELECT pg_get_expr(d.adbin,d.adrelid)
+                    FROM pg_attrdef d
+                    JOIN pg_class c ON c.oid=d.adrelid
+                    JOIN pg_namespace n ON n.oid=c.relnamespace
+                    JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=d.adnum
+                    WHERE n.nspname='stockrescue' AND c.relname='audit_entry' AND a.attname='occurred_at'
+                    """);
+            assertThat(auditTimeDefault.next()).isTrue();
+            assertThat(auditTimeDefault.getString(1)).isEqualTo("clock_timestamp()");
+            var revocationTimeDefault = statement.executeQuery("""
+                    SELECT pg_get_expr(d.adbin,d.adrelid)
+                    FROM pg_attrdef d
+                    JOIN pg_class c ON c.oid=d.adrelid
+                    JOIN pg_namespace n ON n.oid=c.relnamespace
+                    JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=d.adnum
+                    WHERE n.nspname='stockrescue' AND c.relname='revocation_record' AND a.attname='occurred_at'
+                    """);
+            assertThat(revocationTimeDefault.next()).isTrue();
+            assertThat(revocationTimeDefault.getString(1)).isEqualTo("clock_timestamp()");
             var role = statement.executeQuery("SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = current_user");
             assertThat(role.next()).isTrue();
             assertThat(role.getBoolean(1) || role.getBoolean(2) || role.getBoolean(3)).isFalse();

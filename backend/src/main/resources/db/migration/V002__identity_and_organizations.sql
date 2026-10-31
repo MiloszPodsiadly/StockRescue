@@ -57,7 +57,7 @@ CREATE TABLE stockrescue.audit_entry (
     changes JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(changes) = 'object'),
     reason VARCHAR(500),
     correlation_id VARCHAR(64) NOT NULL CHECK (correlation_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'),
-    occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX audit_entry_org_time_idx ON stockrescue.audit_entry(org_id, occurred_at, id);
 CREATE INDEX audit_entry_actor_time_idx ON stockrescue.audit_entry(actor_user_id, occurred_at);

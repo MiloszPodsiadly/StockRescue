@@ -57,10 +57,11 @@ public class ZoneService {
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public ZoneArchiveImpact archiveImpact(UUID actor,UUID org,UUID store,UUID id) {
+        var asOf=lanes.snapshotTime();
         access.requireStore(actor,org,store,StoreAction.MANAGE_STORAGE_ZONES,false);
         var zone=zones.detail(org,store,id,false).orElseThrow(OrganizationUnavailableException::new);
         if(!zone.active()) throw new ConfigurationFailure(ConfigurationFailure.Kind.INACTIVE);
-        return impact(org,store,zone,lanes.databaseNow());
+        return impact(org,store,zone,asOf);
     }
     @Transactional
     public Zone archive(UUID actor,UUID org,UUID store,UUID id,long version,String reason,String expectedImpactFingerprint) {

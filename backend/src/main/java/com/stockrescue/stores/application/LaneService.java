@@ -28,18 +28,18 @@ public class LaneService {
     public List<String> currencies(UUID actor,UUID org) { access.requireAdmin(actor,org,false);return CostParameters.supportedCurrencies(); }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public LanePage list(UUID actor,UUID org,int offset,int limit) {
-        access.requireAdmin(actor,org,false);ZoneService.page(offset,limit);
-        var asOf=lanes.databaseNow();var rows=lanes.list(org,offset,limit+1);var visible=rows.stream().limit(limit).toList();
+        ZoneService.page(offset,limit);var asOf=lanes.snapshotTime();access.requireAdmin(actor,org,false);
+        var rows=lanes.list(org,offset,limit+1);var visible=rows.stream().limit(limit).toList();
         var costs=lanes.currentCosts(org,visible.stream().map(Lane::id).toList(),asOf);
         return new LanePage(visible.stream().map(lane->view(lane,costs.stream().filter(cost->cost.laneId().equals(lane.id())).map(LaneRepository.CostRow::revision).findFirst().orElse(null),asOf)).toList(),rows.size()>limit,asOf);
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
-    public LaneView detail(UUID actor,UUID org,UUID id) { access.requireAdmin(actor,org,false);return view(org,existing(org,id),lanes.databaseNow()); }
+    public LaneView detail(UUID actor,UUID org,UUID id) { var asOf=lanes.snapshotTime();access.requireAdmin(actor,org,false);return view(org,existing(org,id),asOf); }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public RouteLookup lookup(UUID actor,UUID org,UUID origin,UUID destination) {
-        access.requireAdmin(actor,org,false);pair(origin,destination);
+        pair(origin,destination);var asOf=lanes.snapshotTime();access.requireAdmin(actor,org,false);
         for(var store:List.of(origin,destination).stream().sorted().toList()) access.requireStoreIncludingArchived(actor,org,store,StoreAction.READ_STORE,false);
-        var asOf=lanes.databaseNow();return new RouteLookup(lanes.route(org,origin,destination).map(lane->view(org,lane,asOf)).orElse(null),asOf);
+        return new RouteLookup(lanes.route(org,origin,destination).map(lane->view(org,lane,asOf)).orElse(null),asOf);
     }
     @Transactional
     public LaneView create(UUID actor,UUID org,UUID origin,UUID destination,UUID originZone,UUID destinationZone,String reason) {

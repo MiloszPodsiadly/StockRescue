@@ -43,6 +43,10 @@ public class LaneRepository {
         // Wall-clock time, rather than transaction-start time; mutation callers take the lane lock first.
         return jdbc.sql("SELECT clock_timestamp()").query(Timestamp.class).single().toInstant();
     }
+    public Instant snapshotTime() {
+        // Call first in a repeatable-read transaction so the response time shares its database snapshot.
+        return jdbc.sql("SELECT statement_timestamp()").query(Timestamp.class).single().toInstant();
+    }
     public List<Lane> list(UUID org,int offset,int limit) {
         return jdbc.sql(SELECT+" WHERE l.org_id=:org ORDER BY l.origin_store_id,l.destination_store_id,l.id LIMIT :limit OFFSET :offset")
                 .param("org",org).param("offset",offset).param("limit",limit).query((row,index)->lane(row)).list();

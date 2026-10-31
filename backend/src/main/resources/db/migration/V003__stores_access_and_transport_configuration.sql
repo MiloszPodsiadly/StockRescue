@@ -151,7 +151,7 @@ CREATE TABLE stockrescue.revocation_record (
     store_grant_id UUID,
     revoked_by_membership_id UUID NOT NULL,
     reason VARCHAR(500) NOT NULL CHECK (length(btrim(reason)) > 0),
-    occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     CHECK ((membership_id IS NULL) <> (store_grant_id IS NULL)),
     FOREIGN KEY (org_id, membership_id) REFERENCES stockrescue.membership(org_id, id) ON DELETE RESTRICT,
     FOREIGN KEY (org_id, store_grant_id) REFERENCES stockrescue.store_grant(org_id, id) ON DELETE RESTRICT,
