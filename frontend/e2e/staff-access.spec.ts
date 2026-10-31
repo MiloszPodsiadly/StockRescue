@@ -16,9 +16,30 @@ test('administrator invites, verifies, changes roles and revokes staff while the
     await expect(ownerPage.getByRole('heading', { name: 'Members and access' })).toBeVisible()
     await ownerPage.getByLabel('Recipient email').fill(recipient.email)
     await ownerPage.getByLabel('Reason for invitation').fill('New colleague identity review')
-    await ownerPage.getByRole('button', { name: 'Create private invitation' }).click()
+    const invitationCreated = ownerPage.getByText('Invitation created. It has not been emailed.', { exact: false })
+    let csrfRequests = 0
+    let invitationWrites = 0
+    ownerPage.on('request', request => {
+      if (request.method() === 'POST' && new URL(request.url()).pathname === `/api/v1/organizations/${orgA}/invitations`) invitationWrites += 1
+    })
+    await ownerPage.route('**/api/v1/auth/csrf', async route => {
+      csrfRequests += 1
+      if (csrfRequests === 1) {
+        await route.fulfill({
+          status: 429,
+          contentType: 'application/problem+json',
+          body: JSON.stringify({ status: 429, code: 'AUTH_RATE_LIMITED', title: 'Too Many Requests' }),
+        })
+        return
+      }
+      await route.continue()
+    })
+    await clickWhenAdmitted(ownerPage, ownerPage.getByRole('button', { name: 'Create private invitation' }), invitationCreated)
+    await ownerPage.unroute('**/api/v1/auth/csrf')
+    expect(csrfRequests).toBe(2)
+    expect(invitationWrites).toBe(1)
     const privateLink = await ownerPage.getByLabel('Private invitation link').inputValue()
-    await expect(ownerPage.getByText('Invitation created. It has not been emailed.', { exact: false })).toBeVisible()
+    await expect(invitationCreated).toBeVisible()
     expect(await ownerPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     const recipientPage = await recipient.context.newPage()
     await recipientPage.goto(privateLink)

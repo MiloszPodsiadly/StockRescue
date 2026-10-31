@@ -136,8 +136,12 @@ test('scheduled lane costs can be reviewed, cancelled and reconciled across a Co
     expect((await context.request.get(apiLanePath)).status()).toBe(200)
 
     let cancellationPosts = 0
+    let cancellationResolutionPosts = 0
     page.on('request', request => {
-      if (request.method() === 'POST' && request.url().includes('/scheduled-revisions/cancel')) cancellationPosts += 1
+      if (request.method() !== 'POST') return
+      const path = new URL(request.url()).pathname
+      if (path.endsWith('/scheduled-revisions/cancel')) cancellationPosts += 1
+      if (path.endsWith('/scheduled-revisions/cancellation-resolution')) cancellationResolutionPosts += 1
     })
     await page.getByRole('button', { name: 'Review and cancel scheduled costs' }).click()
     await expect(page.getByRole('heading', { name: 'Review and cancel scheduled costs' })).toBeVisible()
@@ -207,6 +211,7 @@ test('scheduled lane costs can be reviewed, cancelled and reconciled across a Co
     await page.unroute('**/scheduled-revisions/cancel')
     await page.unroute(`**${apiLanePath}`)
     expect(cancellationPosts).toBe(1)
+    expect(cancellationResolutionPosts).toBe(4)
     expect(reconciliationReadFailures).toBe(0)
     const independentlyCancelled = await (await context.request.get(historyPath)).json() as components['schemas']['RevisionPageResponse']
     expect(scheduledRevisions.every(scheduled => independentlyCancelled.items.find(item => item.id === scheduled.id)?.cancellation !== null)).toBe(true)
