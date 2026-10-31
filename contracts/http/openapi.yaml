@@ -1,0 +1,4597 @@
+openapi: 3.1.0
+info:
+  title: StockRescue HTTP API
+  version: "1"
+servers:
+- url: /
+paths:
+  /api/v1/auth/active-organization:
+    get:
+      operationId: getActiveOrganization
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationResponse"
+          description: Current authorized selection
+        "204":
+          description: No current authorized selection
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF invalid or no organization selected
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Onboarding already completed or retry payload changed
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      security:
+      - session: []
+      summary: Resolve the session selection through current membership; discard stale
+        selectors
+      tags:
+      - organization-controller
+    post:
+      operationId: selectOrganization
+      parameters:
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SelectionRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationResponse"
+          description: Validated selection
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF invalid or no organization selected
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Onboarding already completed or retry payload changed
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      security:
+      - session: []
+      summary: Select a currently authorized organization; this selection grants no
+        authority
+      tags:
+      - organization-controller
+  /api/v1/auth/csrf:
+    get:
+      operationId: csrf
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CsrfResponse"
+          description: Session-bound CSRF token
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required or invalid credentials
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or access denied
+        "413":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request too large
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      summary: Obtain a session-bound CSRF token
+      tags:
+      - auth-controller
+  /api/v1/auth/me:
+    get:
+      operationId: me
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+          description: Current account
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required or invalid credentials
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or access denied
+        "413":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request too large
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      security:
+      - session: []
+      summary: Read the currently authenticated account
+      tags:
+      - auth-controller
+  /api/v1/auth/me/effective-permissions:
+    get:
+      operationId: effectivePermissions
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermissionsResponse"
+          description: Current persisted permissions for UX; every command still checks
+            authority
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF invalid or no organization selected
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Onboarding already completed or retry payload changed
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      security:
+      - session: []
+      summary: Resolve current membership and store grants for the session selection
+      tags:
+      - organization-controller
+  /api/v1/auth/sign-in:
+    post:
+      operationId: signIn
+      parameters:
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+          description: Authenticated account
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required or invalid credentials
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or access denied
+        "413":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request too large
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      summary: Authenticate and rotate the server session
+      tags:
+      - auth-controller
+  /api/v1/auth/sign-out:
+    post:
+      operationId: signOut
+      parameters:
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: Session invalidated
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required or invalid credentials
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or access denied
+        "413":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request too large
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      security:
+      - session: []
+      summary: Invalidate the current session
+      tags:
+      - auth-controller
+  /api/v1/auth/sign-up:
+    post:
+      operationId: signUp
+      parameters:
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationResponse"
+          description: Registration request processed
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required or invalid credentials
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or access denied
+        "413":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request too large
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      summary: Submit registration without disclosing existing accounts
+      tags:
+      - auth-controller
+  /api/v1/invitations/accept:
+    post:
+      operationId: acceptInvitation
+      parameters:
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptInvitationRequest"
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationClaimResponse"
+          description: Accepted
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Consume the recipient-bound secret once; request manual review without
+        activating any authority
+      tags:
+      - staff-controller
+  /api/v1/organizations:
+    get:
+      operationId: listOrganizations
+      parameters:
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationListResponse"
+          description: Actor-scoped organization page
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF invalid or no organization selected
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Onboarding already completed or retry payload changed
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      security:
+      - session: []
+      summary: "List only current, active actor memberships without global totals"
+      tags:
+      - organization-controller
+    post:
+      operationId: onboardOrganization
+      parameters:
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardingRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationResponse"
+          description: Unchanged retry of completed onboarding
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationResponse"
+          description: Organization and initial ownership created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF invalid or no organization selected
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Onboarding already completed or retry payload changed
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      security:
+      - session: []
+      summary: Create the actor's first owned organization and its initial Org Admin
+        atomically
+      tags:
+      - organization-controller
+  /api/v1/organizations/{organizationId}:
+    get:
+      operationId: getOrganization
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationResponse"
+          description: Authorized organization
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF invalid or no organization selected
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Onboarding already completed or retry payload changed
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request could not be completed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Session storage temporarily unavailable
+      security:
+      - session: []
+      summary: Read an organization through the actor's current membership
+      tags:
+      - organization-controller
+  /api/v1/organizations/{organizationId}/access-stores:
+    get:
+      operationId: listAccessStores
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreOptionPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Org Admin selects only active stores in this organization for explicit
+        grants
+      tags:
+      - staff-controller
+  /api/v1/organizations/{organizationId}/invitations:
+    get:
+      operationId: listInvitations
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Org Admin lists scoped invitation history without secrets
+      tags:
+      - staff-controller
+    post:
+      operationId: inviteStaff
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteRequest"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationIssuedResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Create a 24-hour invite; return its secret once for manual secure\
+        \ sharing, without sending email"
+      tags:
+      - staff-controller
+  /api/v1/organizations/{organizationId}/invitations/{invitationId}:
+    delete:
+      operationId: revokeInvitation
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: invitationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VersionedReason"
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Revoke a pending invitation without deleting its history
+      tags:
+      - staff-controller
+  /api/v1/organizations/{organizationId}/members:
+    get:
+      operationId: listMembers
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      - in: query
+        name: state
+        required: false
+        schema:
+          type: string
+          enum:
+          - ACTIVE
+          - PENDING
+          - REVOKED
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Org Admin lists scoped memberships, including pending and revoked\
+        \ history"
+      tags:
+      - staff-controller
+  /api/v1/organizations/{organizationId}/members/{membershipId}:
+    delete:
+      operationId: revokeMembership
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: membershipId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VersionedReason"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Revoke membership and all current store grants while retaining history
+      tags:
+      - staff-controller
+    get:
+      operationId: getMember
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: membershipId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Org Admin reads one scoped membership and its explicit grants
+      tags:
+      - staff-controller
+  /api/v1/organizations/{organizationId}/members/{membershipId}/approve:
+    post:
+      operationId: approveMembership
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: membershipId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Activate a claimed membership only after administrator verification
+        of the person and account reference
+      tags:
+      - staff-controller
+  /api/v1/organizations/{organizationId}/members/{membershipId}/role:
+    patch:
+      operationId: changeMemberRole
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: membershipId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Org Admin changes an active member's role with version and last-admin
+        protection
+      tags:
+      - staff-controller
+  /api/v1/organizations/{organizationId}/members/{membershipId}/store-grants/{storeId}:
+    delete:
+      operationId: revokeStoreGrant
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: membershipId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantRevocationRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Org Admin revokes a specific store grant with current member and grant
+        versions
+      tags:
+      - staff-controller
+    put:
+      operationId: setStoreGrant
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: membershipId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid input
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: CSRF or action denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Resource or invitation unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid transition, duplicate invitation or\
+            \ last administrator"
+        "429":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Durable per-account invitation rate limit
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Org Admin grants one store role to another active member; no self grant
+      tags:
+      - staff-controller
+  /api/v1/organizations/{organizationId}/stores:
+    get:
+      operationId: listStores
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: state
+        required: false
+        schema:
+          type: string
+          default: ACTIVE
+          enum:
+          - ACTIVE
+          - ARCHIVED
+          - ALL
+      - in: query
+        name: q
+        required: false
+        schema:
+          type: string
+          default: ""
+          maxLength: 100
+          minLength: 0
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorePage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid store data, timezone or page"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or store unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved code, changed retry, stale version or inactive store"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: List only current actor scope with fixed code ordering and no global
+        totals
+      tags:
+      - store-controller
+    post:
+      operationId: createStore
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStoreRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreResponse"
+          description: Unchanged creation retry; current store state returned
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid store data, timezone or page"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or store unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved code, changed retry, stale version or inactive store"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Org Admin creates one durable store with an actor/tenant-scoped retry
+        key
+      tags:
+      - store-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}:
+    get:
+      operationId: getStore
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid store data, timezone or page"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or store unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved code, changed retry, stale version or inactive store"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read an assigned active store; Org Admin can also read archived history
+      tags:
+      - store-controller
+    patch:
+      operationId: updateStore
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateStoreRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid store data, timezone or page"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or store unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved code, changed retry, stale version or inactive store"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Admin or assigned Store Manager updates metadata at the current version;
+        code is immutable
+      tags:
+      - store-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/archive:
+    post:
+      operationId: archiveStore
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchiveStoreRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid store data, timezone or page"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or store unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved code, changed retry, stale version or inactive store"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Org Admin deactivates a store without deleting its identity, code\
+        \ or history"
+      tags:
+      - store-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones:
+    get:
+      operationId: listStorageZones
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: includeInactive
+        required: false
+        schema:
+          type: boolean
+          default: false
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZonePageResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid fields
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Duplicate, stale version, changed archive impact or inactive\
+            \ zone"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read declared temperature compatibility in the current store scope;
+        no capacity or availability assertion
+      tags:
+      - zone-controller
+    post:
+      operationId: createStorageZone
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateZoneRequest"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZoneResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid fields
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Duplicate, stale version, changed archive impact or inactive\
+            \ zone"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Admin or assigned Store Manager declares a storage zone with fixed
+        temperature class
+      tags:
+      - zone-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}:
+    patch:
+      operationId: renameStorageZone
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: zoneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameZoneRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZoneResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid fields
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Duplicate, stale version, changed archive impact or inactive\
+            \ zone"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Rename a current active zone without changing its identity or temperature
+        class
+      tags:
+      - zone-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive:
+    post:
+      operationId: archiveStorageZone
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: zoneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchiveZoneRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZoneResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid fields
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Duplicate, stale version, changed archive impact or inactive\
+            \ zone"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Permanently deactivate a zone after confirming its current operational
+        impact
+      tags:
+      - zone-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive-impact:
+    get:
+      operationId: previewStorageZoneArchiveImpact
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: zoneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZoneArchiveImpactResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid fields
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Duplicate, stale version, changed archive impact or inactive\
+            \ zone"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Preview scoped active-lane and future-schedule counts before irreversible
+        zone archival
+      tags:
+      - zone-controller
+  /api/v1/organizations/{organizationId}/transport-lanes:
+    get:
+      operationId: listTransportLanes
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LanePageResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Admin reads scoped configured routes and explicit missing configuration
+      tags:
+      - lane-controller
+    post:
+      operationId: createTransportLane
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLaneRequest"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaneResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Configure one ordered store pair through compatible active zones; cost
+        starts unconfigured
+      tags:
+      - lane-controller
+  /api/v1/organizations/{organizationId}/transport-lanes/currencies:
+    get:
+      operationId: supportedLaneCurrencies
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrencyOptions"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: ISO country currencies recognized by the current JDK; no historic/fund/test-unit
+        pricing
+      tags:
+      - lane-controller
+  /api/v1/organizations/{organizationId}/transport-lanes/lookup:
+    get:
+      operationId: lookupTransportLane
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: originStoreId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: destinationStoreId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaneLookupResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Report a missing directed route as UNCONFIGURED, never a zero-price\
+        \ route"
+      tags:
+      - lane-controller
+  /api/v1/organizations/{organizationId}/transport-lanes/{laneId}:
+    get:
+      operationId: getTransportLane
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: laneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaneResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Read a lane's current configuration state and effective cost, if available"
+      tags:
+      - lane-controller
+    patch:
+      operationId: updateTransportLane
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: laneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateLaneRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaneResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Update declared zones or disable a lane at its current version; store
+        endpoints stay fixed
+      tags:
+      - lane-controller
+  /api/v1/organizations/{organizationId}/transport-lanes/{laneId}/revisions:
+    get:
+      operationId: laneCostHistory
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: laneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevisionPageResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Immutable price evidence; validity intervals end at the next revision's
+        effective time
+      tags:
+      - lane-controller
+    post:
+      description: "PostgreSQL wall-clock time is authoritative. The database samples\
+        \ it after locking the lane; an omitted effectiveAt uses that sample, and\
+        \ an earlier explicit value is rejected."
+      operationId: appendLaneCostRevision
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: laneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CostRevisionRequest"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaneResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Approve an immutable decimal cost/duration version; omitted effectiveAt
+        means server approval time
+      tags:
+      - lane-controller
+  /api/v1/organizations/{organizationId}/transport-lanes/{laneId}/scheduled-revisions/cancel:
+    post:
+      description: "Org Admins may cancel future revisions when a lane is inactive\
+        \ or an endpoint store is archived. After locking the lane and candidate revisions,\
+        \ PostgreSQL samples wall-clock time; only revisions with effectiveAt strictly\
+        \ later than that instant can be cancelled. Cancellation does not reactivate\
+        \ the lane or store."
+      operationId: cancelScheduledLaneRevisions
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: laneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelScheduledRevisionsRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduledRevisionCancellationResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Explicitly cancel every future cost revision for a lane and preserve
+        its history
+      tags:
+      - lane-controller
+components:
+  schemas:
+    AcceptInvitationRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 1
+          pattern: "[A-Za-z0-9_-]{43}"
+      required:
+      - token
+    ApiProblem:
+      type: object
+      properties:
+        code:
+          type: string
+          enum:
+          - ACCESS_DENIED
+          - ACCESS_CONFLICT
+          - ACCESS_RATE_LIMITED
+          - AUTH_RATE_LIMITED
+          - AUTH_REQUIRED
+          - CSRF_INVALID
+          - CONFIGURATION_CONFLICT
+          - CONFIGURATION_INACTIVE
+          - INCOMPATIBLE_ZONES
+          - INTERNAL_ERROR
+          - INVALID_CORRELATION_ID
+          - INVALID_CREDENTIALS
+          - INVALID_REQUEST
+          - INVITATION_UNAVAILABLE
+          - NO_FUTURE_REVISIONS
+          - ONBOARDING_CONFLICT
+          - ORGANIZATION_REQUIRED
+          - REQUEST_TOO_LARGE
+          - RESOURCE_NOT_FOUND
+          - SERVICE_UNAVAILABLE
+          - SCHEDULED_REVISIONS_PENDING
+          - SESSION_EXPIRED
+          - STORE_CONFLICT
+          - STORE_INACTIVE
+          - ZONE_IMPACT_CHANGED
+        correlationId:
+          type: string
+        detail:
+          type: string
+        status:
+          type: integer
+          format: int32
+        title:
+          type: string
+        type:
+          type: string
+          format: uri
+      required:
+      - code
+      - correlationId
+      - detail
+      - status
+      - title
+      - type
+    ApprovalRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        verifiedUserId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+      - reason
+      - verifiedUserId
+      - version
+    ArchiveStoreRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+      - reason
+      - version
+    ArchiveZoneRequest:
+      type: object
+      properties:
+        impactFingerprint:
+          type: string
+          description: Opaque impact snapshot returned by the scoped preview endpoint.
+          minLength: 1
+          pattern: "[A-Za-z0-9_-]{43}"
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+      - impactFingerprint
+      - reason
+      - version
+    CancelScheduledRevisionsRequest:
+      type: object
+      properties:
+        expectedRevision:
+          type: integer
+          format: int64
+          minimum: 0
+        laneVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+      required:
+      - expectedRevision
+      - laneVersion
+      - reason
+    CancelledRevisionResponse:
+      type: object
+      properties:
+        cancelledAt:
+          type: string
+          format: date-time
+          description: Database wall-clock instant when cancellation was checked and
+            recorded.
+        cancelledByMembershipId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        revision:
+          type: integer
+          format: int64
+        revisionId:
+          type: string
+          format: uuid
+      required:
+      - cancelledAt
+      - cancelledByMembershipId
+      - id
+      - reason
+      - revision
+      - revisionId
+    CostRevisionRequest:
+      type: object
+      properties:
+        costAmount:
+          type: string
+          maxLength: 20
+          minLength: 0
+          pattern: "(?:0|[1-9][0-9]{0,14})(?:\\.[0-9]{1,4})?"
+        currencyCode:
+          type: string
+          minLength: 1
+          pattern: "[A-Z]{3}"
+        durationMinutes:
+          type: integer
+          format: int32
+          minimum: 1
+        effectiveAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+          description: Omit to use PostgreSQL wall-clock time sampled after the lane
+            is locked.
+        expectedRevision:
+          type: integer
+          format: int64
+          minimum: 0
+        laneVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+      required:
+      - costAmount
+      - currencyCode
+      - durationMinutes
+      - expectedRevision
+      - laneVersion
+      - reason
+    CreateLaneRequest:
+      type: object
+      properties:
+        destinationStoreId:
+          type: string
+          format: uuid
+        destinationZoneId:
+          type: string
+          format: uuid
+        originStoreId:
+          type: string
+          format: uuid
+        originZoneId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+      required:
+      - destinationStoreId
+      - destinationZoneId
+      - originStoreId
+      - originZoneId
+      - reason
+    CreateStoreRequest:
+      type: object
+      properties:
+        addressLine1:
+          type: string
+          maxLength: 200
+          minLength: 0
+        city:
+          type: string
+          maxLength: 100
+          minLength: 0
+        code:
+          type: string
+          maxLength: 32
+          minLength: 0
+        countryCode:
+          type: string
+          maxLength: 2
+          minLength: 0
+        name:
+          type: string
+          maxLength: 160
+          minLength: 0
+        postalCode:
+          type: string
+          maxLength: 20
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        zoneId:
+          type: string
+          maxLength: 100
+          minLength: 0
+      required:
+      - code
+      - name
+      - requestId
+      - zoneId
+    CreateZoneRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 0
+        temperatureClass:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+      required:
+      - name
+      - temperatureClass
+    Credentials:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          minLength: 0
+          pattern: "[\\x21-\\x7E]+"
+        password:
+          type: string
+          maxLength: 72
+          minLength: 12
+      required:
+      - email
+      - password
+    CsrfResponse:
+      type: object
+      properties:
+        headerName:
+          type: string
+        token:
+          type: string
+      required:
+      - headerName
+      - token
+    CurrencyOptions:
+      type: object
+      properties:
+        codes:
+          type: array
+          items:
+            type: string
+      required:
+      - codes
+    GrantRequest:
+      type: object
+      properties:
+        grantVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        memberVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        role:
+          type: string
+          enum:
+          - STORE_MANAGER
+          - INVENTORY_OPERATOR
+          - READ_ONLY_ANALYST
+      required:
+      - memberVersion
+      - reason
+      - role
+    GrantResponse:
+      type: object
+      properties:
+        role:
+          type: string
+          enum:
+          - STORE_MANAGER
+          - INVENTORY_OPERATOR
+          - READ_ONLY_ANALYST
+        state:
+          type: string
+        storeId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+      required:
+      - role
+      - state
+      - storeId
+      - version
+    GrantRevocationRequest:
+      type: object
+      properties:
+        grantVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        memberVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+      required:
+      - grantVersion
+      - memberVersion
+      - reason
+    InvitationClaimResponse:
+      type: object
+      properties:
+        membershipId:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+      required:
+      - membershipId
+      - organizationId
+      - status
+    InvitationIssuedResponse:
+      type: object
+      properties:
+        expiresAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        token:
+          type: string
+      required:
+      - expiresAt
+      - id
+      - token
+    InvitationPage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvitationResponse"
+      required:
+      - hasMore
+      - items
+    InvitationResponse:
+      type: object
+      properties:
+        email:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        version:
+          type: integer
+          format: int64
+      required:
+      - email
+      - expiresAt
+      - id
+      - status
+      - version
+    InviteRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          minLength: 0
+          pattern: "[!-~]+"
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        storeGrants:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlannedGrantRequest"
+          maxItems: 50
+          minItems: 0
+      required:
+      - email
+      - reason
+      - storeGrants
+    LaneLookupResponse:
+      type: object
+      properties:
+        asOf:
+          type: string
+          format: date-time
+          description: Database wall-clock instant used to resolve current cost.
+        lane:
+          anyOf:
+          - $ref: "#/components/schemas/LaneResponse"
+          - type: "null"
+        missing:
+          type: array
+          items:
+            type: string
+            enum:
+            - NO_LANE
+            - INACTIVE_LANE
+            - INACTIVE_STORE
+            - MISSING_ZONES
+            - INACTIVE_ZONE
+            - INCOMPATIBLE_ZONES
+            - NO_EFFECTIVE_COST
+            - COST_ZONE_MISMATCH
+        status:
+          type: string
+          enum:
+          - CONFIGURED
+          - UNCONFIGURED
+          - INACTIVE
+      required:
+      - asOf
+      - lane
+      - missing
+      - status
+    LanePageResponse:
+      type: object
+      properties:
+        asOf:
+          type: string
+          format: date-time
+          description: Database wall-clock instant used to resolve current costs.
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LaneResponse"
+      required:
+      - asOf
+      - hasMore
+      - items
+    LaneResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+        asOf:
+          type: string
+          format: date-time
+          description: Database wall-clock instant used to resolve current cost.
+        currentCost:
+          anyOf:
+          - $ref: "#/components/schemas/RevisionResponse"
+          - type: "null"
+        destinationStoreId:
+          type: string
+          format: uuid
+        destinationStoreName:
+          type: string
+        destinationZoneId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        latestEffectiveAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        latestRevision:
+          type: integer
+          format: int64
+        missing:
+          type: array
+          items:
+            type: string
+            enum:
+            - NO_LANE
+            - INACTIVE_LANE
+            - INACTIVE_STORE
+            - MISSING_ZONES
+            - INACTIVE_ZONE
+            - INCOMPATIBLE_ZONES
+            - NO_EFFECTIVE_COST
+            - COST_ZONE_MISMATCH
+        originStoreId:
+          type: string
+          format: uuid
+        originStoreName:
+          type: string
+        originZoneId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        status:
+          type: string
+          enum:
+          - CONFIGURED
+          - UNCONFIGURED
+          - INACTIVE
+        version:
+          type: integer
+          format: int64
+      required:
+      - active
+      - asOf
+      - currentCost
+      - destinationStoreId
+      - destinationStoreName
+      - destinationZoneId
+      - id
+      - latestEffectiveAt
+      - latestRevision
+      - missing
+      - originStoreId
+      - originStoreName
+      - originZoneId
+      - status
+      - version
+    MemberPage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemberResponse"
+      required:
+      - hasMore
+      - items
+    MemberResponse:
+      type: object
+      properties:
+        allowedActions:
+          type: array
+          items:
+            type: string
+            enum:
+            - APPROVE
+            - CHANGE_ROLE
+            - REVOKE
+            - SET_GRANT
+            - REVOKE_GRANT
+        email:
+          type: string
+        grants:
+          type: array
+          items:
+            $ref: "#/components/schemas/GrantResponse"
+        id:
+          type: string
+          format: uuid
+        plannedGrants:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlannedGrantResponse"
+        role:
+          type: string
+          enum:
+          - ORG_ADMIN
+          - MEMBER
+        state:
+          type: string
+          enum:
+          - ACTIVE
+          - PENDING
+          - REVOKED
+        userId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+      required:
+      - allowedActions
+      - email
+      - grants
+      - id
+      - plannedGrants
+      - role
+      - state
+      - userId
+      - version
+    OnboardingRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 160
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - name
+      - requestId
+    OrganizationListResponse:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationResponse"
+        limit:
+          type: integer
+          format: int32
+        offset:
+          type: integer
+          format: int32
+      required:
+      - hasMore
+      - items
+      - limit
+      - offset
+    OrganizationResponse:
+      type: object
+      properties:
+        createdAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        membershipId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        role:
+          type: string
+          enum:
+          - ORG_ADMIN
+          - MEMBER
+      required:
+      - createdAt
+      - id
+      - membershipId
+      - name
+      - role
+    PermissionsResponse:
+      type: object
+      properties:
+        allStoreActions:
+          type: array
+          items:
+            type: string
+            enum:
+            - READ_STORE
+            - EDIT_STORE
+            - ARCHIVE_STORE
+            - MANAGE_STORAGE_ZONES
+        organization:
+          $ref: "#/components/schemas/OrganizationResponse"
+        organizationActions:
+          type: array
+          items:
+            type: string
+            enum:
+            - READ_ORGANIZATION
+            - MANAGE_ACCESS
+            - CREATE_STORE
+            - MANAGE_TRANSPORT_LANES
+        storeGrants:
+          type: array
+          items:
+            $ref: "#/components/schemas/StorePermissionResponse"
+      required:
+      - allStoreActions
+      - organization
+      - organizationActions
+      - storeGrants
+    PlannedGrantRequest:
+      type: object
+      properties:
+        role:
+          type: string
+          enum:
+          - STORE_MANAGER
+          - INVENTORY_OPERATOR
+          - READ_ONLY_ANALYST
+        storeId:
+          type: string
+          format: uuid
+      required:
+      - role
+      - storeId
+    PlannedGrantResponse:
+      type: object
+      properties:
+        role:
+          type: string
+          enum:
+          - STORE_MANAGER
+          - INVENTORY_OPERATOR
+          - READ_ONLY_ANALYST
+        storeId:
+          type: string
+          format: uuid
+      required:
+      - role
+      - storeId
+    RegistrationResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+      - message
+    RenameZoneRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+      - name
+      - reason
+      - version
+    RevisionPageResponse:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RevisionResponse"
+      required:
+      - hasMore
+      - items
+    RevisionResponse:
+      type: object
+      properties:
+        cancellation:
+          anyOf:
+          - $ref: "#/components/schemas/CancelledRevisionResponse"
+          - type: "null"
+        costAmount:
+          type: string
+        currencyCode:
+          type: string
+        destinationZoneId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        durationMinutes:
+          type: integer
+          format: int32
+        effectiveAt:
+          type: string
+          format: date-time
+          description: Database wall-clock instant when this revision becomes effective.
+        id:
+          type: string
+          format: uuid
+        originZoneId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        recordedAt:
+          type: string
+          format: date-time
+          description: Database wall-clock instant sampled for approval after the
+            lane lock.
+        recordedByMembershipId:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+          format: int64
+        temperatureClass:
+          type:
+          - string
+          - "null"
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+          - null
+        validUntil:
+          type:
+          - string
+          - "null"
+          format: date-time
+          description: Exclusive end of this revision's active validity interval.
+      required:
+      - cancellation
+      - costAmount
+      - currencyCode
+      - destinationZoneId
+      - durationMinutes
+      - effectiveAt
+      - id
+      - originZoneId
+      - recordedAt
+      - recordedByMembershipId
+      - revision
+      - temperatureClass
+      - validUntil
+    RoleRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        role:
+          type: string
+          enum:
+          - ORG_ADMIN
+          - MEMBER
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+      - reason
+      - role
+      - version
+    ScheduledRevisionCancellationResponse:
+      type: object
+      properties:
+        cancelledRevisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/CancelledRevisionResponse"
+        lane:
+          $ref: "#/components/schemas/LaneResponse"
+      required:
+      - cancelledRevisions
+      - lane
+    SelectionRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+      required:
+      - organizationId
+    StoreOptionPage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StoreOptionResponse"
+      required:
+      - hasMore
+      - items
+    StoreOptionResponse:
+      type: object
+      properties:
+        code:
+          type: string
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+      required:
+      - code
+      - id
+      - name
+    StorePage:
+      type: object
+      properties:
+        canCreate:
+          type: boolean
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StoreResponse"
+      required:
+      - canCreate
+      - hasMore
+      - items
+    StorePermissionResponse:
+      type: object
+      properties:
+        actions:
+          type: array
+          items:
+            type: string
+            enum:
+            - READ_STORE
+            - EDIT_STORE
+            - ARCHIVE_STORE
+            - MANAGE_STORAGE_ZONES
+        role:
+          type: string
+          enum:
+          - STORE_MANAGER
+          - INVENTORY_OPERATOR
+          - READ_ONLY_ANALYST
+        storeId:
+          type: string
+          format: uuid
+      required:
+      - actions
+      - role
+      - storeId
+    StoreResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+        addressLine1:
+          type:
+          - string
+          - "null"
+        allowedActions:
+          type: array
+          items:
+            type: string
+            enum:
+            - READ_STORE
+            - EDIT_STORE
+            - ARCHIVE_STORE
+            - MANAGE_STORAGE_ZONES
+        city:
+          type:
+          - string
+          - "null"
+        code:
+          type: string
+        countryCode:
+          type:
+          - string
+          - "null"
+        createdAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        postalCode:
+          type:
+          - string
+          - "null"
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int64
+        zoneId:
+          type: string
+      required:
+      - active
+      - addressLine1
+      - allowedActions
+      - city
+      - code
+      - countryCode
+      - createdAt
+      - id
+      - name
+      - postalCode
+      - updatedAt
+      - version
+      - zoneId
+    UpdateLaneRequest:
+      type: object
+      properties:
+        active:
+          type: boolean
+        destinationZoneId:
+          type: string
+          format: uuid
+        originZoneId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+      - active
+      - reason
+      - version
+    UpdateStoreRequest:
+      type: object
+      properties:
+        addressLine1:
+          type: string
+          maxLength: 200
+          minLength: 0
+        city:
+          type: string
+          maxLength: 100
+          minLength: 0
+        countryCode:
+          type: string
+          maxLength: 2
+          minLength: 0
+        name:
+          type: string
+          maxLength: 160
+          minLength: 0
+        postalCode:
+          type: string
+          maxLength: 20
+          minLength: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+        zoneId:
+          type: string
+          maxLength: 100
+          minLength: 0
+      required:
+      - name
+      - reason
+      - version
+      - zoneId
+    UserResponse:
+      type: object
+      properties:
+        createdAt:
+          type: string
+          format: date-time
+        email:
+          type: string
+        id:
+          type: string
+          format: uuid
+      required:
+      - createdAt
+      - email
+      - id
+    VersionedReason:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+      - reason
+      - version
+    ZoneArchiveImpactResponse:
+      type: object
+      properties:
+        activeLaneCount:
+          type: integer
+          format: int32
+        asOf:
+          type: string
+          format: date-time
+          description: PostgreSQL wall-clock instant used to count future active revisions.
+        futureScheduledRevisionCount:
+          type: integer
+          format: int32
+        impactFingerprint:
+          type: string
+          description: Opaque scoped snapshot; send unchanged when confirming archival.
+        inactiveLaneCount:
+          type: integer
+          format: int32
+        zoneVersion:
+          type: integer
+          format: int64
+      required:
+      - activeLaneCount
+      - asOf
+      - futureScheduledRevisionCount
+      - impactFingerprint
+      - inactiveLaneCount
+      - zoneVersion
+    ZonePageResponse:
+      type: object
+      properties:
+        canManage:
+          type: boolean
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ZoneResponse"
+      required:
+      - canManage
+      - hasMore
+      - items
+    ZoneResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        temperatureClass:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int64
+      required:
+      - active
+      - createdAt
+      - id
+      - name
+      - temperatureClass
+      - updatedAt
+      - version
+  securitySchemes:
+    session:
+      in: cookie
+      name: SRSESSION
+      type: apiKey

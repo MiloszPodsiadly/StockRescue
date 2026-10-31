@@ -1,3 +1,9 @@
+map $uri $identity_rate_key {
+    default "";
+    ~^/api/v1/auth/(csrf|sign-in|sign-up)$ $binary_remote_addr;
+}
+limit_req_zone $identity_rate_key zone=identity:1m rate=2r/s;
+
 server {
     listen 8080;
     server_name _;
@@ -5,6 +11,7 @@ server {
     index index.html;
     server_tokens off;
     client_max_body_size 16k;
+    client_body_timeout 5s;
 
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy no-referrer always;
@@ -16,6 +23,9 @@ server {
     }
 
     location /api/ {
+        limit_req zone=identity burst=6 nodelay;
+        limit_req_status 429;
+        error_page 429 = @identity_rate_limited;
         resolver ${BACKEND_RESOLVER} valid=10s ipv6=off;
         set $backend_upstream http://${BACKEND_HOST}:${BACKEND_PORT};
         proxy_pass $backend_upstream;
@@ -23,6 +33,17 @@ server {
         proxy_read_timeout 8s;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location @identity_rate_limited {
+        default_type application/problem+json;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header X-Frame-Options DENY always;
+        add_header X-Correlation-ID $request_id always;
+        add_header Cache-Control no-store always;
+        add_header Retry-After 2 always;
+        return 429 '{"type":"about:blank","title":"Too Many Requests","status":429,"detail":"Wait a moment before trying again.","code":"AUTH_RATE_LIMITED","correlationId":"$request_id"}';
     }
 
     location / {

@@ -1,0 +1,15 @@
+{
+  "name": "stockrescue-http-types",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "generate": "openapi-typescript ../../../contracts/http/openapi.yaml -o ../../src/api/schema.d.ts",
+    "check": "openapi-typescript ../../../contracts/http/openapi.yaml -o ../../src/api/schema.d.ts --check"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -39,12 +39,37 @@ PostgreSQL, Kafka and private Python service. The example credentials are for
 local development only. Stop with `docker compose --env-file .env.example down`;
 the PostgreSQL development volume is preserved.
 
+Use **Sign in** to register an account, then sign in with its email and password.
+Registration gives no organization or store access. The local Compose profile
+uses HTTP cookies for development; other profiles require Secure cookies and
+an HTTPS origin. Account/session data persists in PostgreSQL across restarts.
+From your account, create your first organization to become its initial Org Admin.
+Choose an organization to open its workspace; access is checked against current
+membership on every request. This onboarding can be completed once per account.
+Org Admins can open **Manage members** to create a private invitation link,
+review the recipient's account, and manage roles or store grants. Links are
+shared manually; no email is sent. Claiming a link alone does not activate access.
+Use **Open stores** to create stores with a code, name and explicit IANA timezone.
+Codes stay reserved within the organization. Administrators can edit/deactivate
+stores; Store Managers can edit assigned stores. Deactivation retains history.
+Open a store's **Storage zones** to declare its temperature classes. Org Admins
+can configure **Transport lanes** between compatible zones, approve decimal
+costs with a currency and journey duration, and review previous or future prices.
+Missing configuration is explicit; configured routes do not prove capacity.
+The workspace navigation connects stores, access, transport and **Settings**.
+Switch organizations from the selector and sign out from any workspace page.
+Your account reference is available on the account page for invitation review.
+
 ## Project status
 
 SR-001 provides the runnable technical foundation: migrations, service health,
 Java-to-Python communication, an explicit Kafka producer/consumer smoke check,
-and a responsive web shell showing real backend readiness. Inventory workflows,
-authentication and forecasting are still to be implemented.
+and a responsive web shell showing real backend readiness. Account registration,
+sign-in/sign-out, persisted sessions, CSRF protection, organization onboarding and
+membership-validated organization selection, reviewed invitations and audited
+access management, store creation/editing/deactivation, storage zones and
+transport lanes with immutable cost revisions are implemented.
+Inventory, transfers and forecasting are still being built.
 
 See the [architecture notes](documents/architecture.md) for service boundaries
 and [contributor instructions](CONTRIBUTING.md) for development checks.

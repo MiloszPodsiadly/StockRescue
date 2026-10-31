@@ -1,0 +1,4 @@
+# Explicit local HTTP development only; all other profiles keep Secure cookies.
+stockrescue:
+  security:
+    secure-cookie: false

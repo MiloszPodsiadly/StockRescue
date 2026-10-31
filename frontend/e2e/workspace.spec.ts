@@ -8,7 +8,7 @@ test('real workspace is available, keyboard accessible and fits a narrow viewpor
   await expect(page.getByRole('link', { name: 'Skip to content' })).toBeFocused()
   await page.screenshot({ path: '../.tools/screenshots/workspace-desktop.png', fullPage: true })
   await page.setViewportSize({ width: 360, height: 800 })
-  await expect(page.getByRole('heading', { name: /A strong start/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /Your team/ })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await page.screenshot({ path: '../.tools/screenshots/workspace-mobile.png', fullPage: true })
 })

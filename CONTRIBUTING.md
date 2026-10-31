@@ -1,6 +1,6 @@
 # Contributing to StockRescue AI
 
-StockRescue AI currently provides its SR-001 technical foundation. Keep contributions focused and document only what helps someone run, change or review the application.
+StockRescue AI provides its technical foundation, account authentication, organization onboarding, audited access management and store workflows. Keep contributions focused and document only what helps someone run, change or review the application.
 
 ## Before you begin
 
@@ -28,8 +28,24 @@ they finish. For failure debugging, run the integration checker with
 For browser checks, install Chromium with
 `pnpm --dir frontend exec playwright install chromium`, then run
 `uv run --project intelligence --locked python scripts/integration-check.py --browser`
-after building the Compose images. Prefer targeted checks for subsequent changes;
+against the Compose images built by the checker. Prefer targeted checks for subsequent changes;
 the commands for individual components are in the development scripts and CI.
+The store browser scenario creates four stores, restarts only the generated
+test PostgreSQL service and replaces its backend, then compares persisted data.
+The checker supplies and validates that isolated project's name and environment path.
+The operator journey provisions its accounts, organizations, stores, zones,
+transport and reviewed staff access entirely through the UI. It also checks
+revocation, organization switching, cross-tab logout and a different account's
+subsequent login. Mobile, keyboard and form-label checks are accessibility smoke
+coverage, not a complete accessibility audit.
+
+For an intentional HTTP contract change, run
+`./backend/gradlew -p backend generateOpenApi` and
+`pnpm --dir frontend run api:generate`, then review both generated artifacts.
+The normal backend tests and `pnpm --dir frontend run api:check` reject drift.
+The OpenAPI generator workspace owns its supported TypeScript 5 API dependency;
+the application continues to compile with TypeScript 7. API documentation endpoints
+are enabled only by the explicit `contract` profile used by the generator test.
 
 ## Contribution workflow
 

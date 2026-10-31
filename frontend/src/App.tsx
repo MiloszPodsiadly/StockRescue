@@ -26,28 +26,24 @@ export function App() {
             </span>
             <span className="text-xl font-semibold tracking-tight">StockRescue<span className="text-primary">.</span></span>
           </a>
-          <span className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground">Foundation</span>
+          <nav aria-label="Account navigation" className="flex flex-wrap items-center gap-4"><a href="/account" className="text-sm font-medium text-primary hover:underline">Open workspace</a><a href="/sign-in" className="text-sm font-medium text-primary hover:underline">Sign in</a></nav>
         </div>
       </header>
 
       <main id="workspace" tabIndex={-1} className="mx-auto max-w-6xl px-5 py-12 outline-none sm:px-8 sm:py-20">
         <div className="mb-8 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-          <span className="size-1.5 rounded-full bg-primary" /> Your workspace, taking root
+          <span className="size-1.5 rounded-full bg-primary" /> Your team workspace
         </div>
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1.3fr)_minmax(18rem,0.8fr)] lg:gap-16">
           <section aria-labelledby="welcome-title" className="min-w-0">
             <h1 id="welcome-title" className="max-w-xl text-4xl leading-[1.12] font-semibold tracking-[-0.045em] sm:text-6xl">
-              A strong start.<br /><span className="text-primary">Less waste ahead.</span>
+              Your team.<br /><span className="text-primary">One workspace.</span>
             </h1>
             <p className="mt-6 max-w-lg text-base leading-relaxed text-muted-foreground sm:text-lg">
-              Turn surplus into opportunity. A clearer view of your stock starts with a dependable workspace.
+              Set up your stores, give colleagues the access they need and keep transport assumptions clear.
             </p>
             <div className="mt-10 rounded-2xl border border-border bg-card p-6 sm:p-8">
-              <StateMessage state="empty" title="Your inventory journey starts here"
-                description="Inventory onboarding and stock operations are not available in this foundation yet. No retailer results or forecasts are displayed." />
-              <div className="mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground">
-                <Leaf aria-hidden="true" className="size-3.5" /> Built around better stock decisions
-              </div>
+              <h2 className="text-xl font-semibold">Start with your organization</h2><p className="mt-3 text-sm leading-relaxed text-muted-foreground">Create your account, configure stores and storage zones, invite your team and review transport costs with their history.</p><a href="/sign-up" className="mt-5 inline-flex rounded-xl bg-primary px-5 py-3 font-medium text-primary-foreground">Create an account</a><p className="mt-5 text-sm text-muted-foreground">Inventory onboarding and stock operations are not available yet. No retailer results or forecasts are displayed.</p>
             </div>
           </section>
 

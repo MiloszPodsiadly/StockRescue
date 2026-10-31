@@ -44,11 +44,11 @@ class PostgresFoundationTest extends InfrastructureTestBase {
     private int port;
 
     @Test
-    void baselineCreatesOnlyTheApplicationSchemaAndRevalidatesWithoutDrift() throws Exception {
+    void schemaMigrationsPreserveApplicationOwnershipAndRevalidateWithoutDrift() throws Exception {
         var flyway = applicationFlyway;
         flyway.validate();
         assertThat(flyway.migrate().migrationsExecuted).isZero();
-        assertThat(flyway.info().applied()).hasSize(1);
+        assertThat(flyway.info().applied()).hasSize(8);
         try (var connection = appConnection(); var statement = connection.createStatement()) {
             var current = statement.executeQuery("SELECT current_schema(), current_user");
             assertThat(current.next()).isTrue();
@@ -69,7 +69,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertPublicSchemaContainsOnlyFlywayHistory(connection);
             var tables = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'stockrescue'");
             assertThat(tables.next()).isTrue();
-            assertThat(tables.getInt(1)).isZero();
+            assertThat(tables.getInt(1)).isEqualTo(19);
             var role = statement.executeQuery("SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = current_user");
             assertThat(role.next()).isTrue();
             assertThat(role.getBoolean(1) || role.getBoolean(2) || role.getBoolean(3)).isFalse();
@@ -117,10 +117,10 @@ class PostgresFoundationTest extends InfrastructureTestBase {
         try (var connection = appConnection(); var statement = connection.createStatement()) {
             connection.setAutoCommit(false);
             try {
-                statement.execute("CREATE TABLE sr1_schema_probe (id INTEGER)");
+                statement.execute("CREATE TABLE schema_probe (id INTEGER)");
                 var table = statement.executeQuery("""
                         SELECT schemaname, tableowner FROM pg_tables
-                        WHERE tablename = 'sr1_schema_probe' AND schemaname IN ('public', 'stockrescue')
+                        WHERE tablename = 'schema_probe' AND schemaname IN ('public', 'stockrescue')
                         """);
                 assertThat(table.next()).isTrue();
                 assertThat(table.getString(1)).isEqualTo("stockrescue");
@@ -130,8 +130,8 @@ class PostgresFoundationTest extends InfrastructureTestBase {
                 connection.rollback();
             }
             try {
-                statement.execute("ALTER SCHEMA stockrescue RENAME TO sr1_hidden_schema");
-                assertThatThrownBy(() -> statement.execute("CREATE TABLE sr1_schema_probe (id INTEGER)"))
+                statement.execute("ALTER SCHEMA stockrescue RENAME TO hidden_application_schema");
+                assertThatThrownBy(() -> statement.execute("CREATE TABLE schema_probe (id INTEGER)"))
                         .isInstanceOfSatisfying(SQLException.class,
                                 failure -> assertThat(failure.getSQLState()).isEqualTo("3F000"));
             } finally {
@@ -150,12 +150,16 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             previous.start();
             // Reproduce the published SR-001 setup: unchanged V001 and the driver's default search path.
             var legacy = Flyway.configure().dataSource(previous.getJdbcUrl(), "stockrescue_app", "test-app-password")
-                    .locations("classpath:db/migration").cleanDisabled(true).load();
+                    .locations("classpath:db/migration").target("1").cleanDisabled(true).load();
             assertThat(legacy.migrate().migrationsExecuted).isEqualTo(1);
             String previousHistory;
             try (var connection = DriverManager.getConnection(previous.getJdbcUrl(), "stockrescue_app", "test-app-password")) {
                 assertThat(connection.getSchema()).as("published SR-001 connection schema").isEqualTo("public");
                 previousHistory = migrationHistory(connection);
+                try (var statement = connection.createStatement()) {
+                    statement.execute("CREATE TABLE stockrescue.migration_upgrade_probe (value TEXT NOT NULL)");
+                    statement.execute("INSERT INTO stockrescue.migration_upgrade_probe VALUES ('persisted before identity migrations')");
+                }
             }
 
             for (int startup = 0; startup < 2; startup++) {
@@ -169,10 +173,17 @@ class PostgresFoundationTest extends InfrastructureTestBase {
                     var flyway = upgraded.getBean(Flyway.class);
                     assertThat(flyway.getConfiguration().getDefaultSchema()).isEqualTo("public");
                     flyway.validate();
+                    assertThat(flyway.info().applied()).hasSize(8);
                     assertThat(flyway.migrate().migrationsExecuted).isZero();
                     try (var connection = upgraded.getBean(DataSource.class).getConnection()) {
                         assertThat(connection.getSchema()).isEqualTo("stockrescue");
                         assertThat(migrationHistory(connection)).isEqualTo(previousHistory);
+                        try (var statement = connection.createStatement();
+                             var data = statement.executeQuery("SELECT value FROM stockrescue.migration_upgrade_probe")) {
+                            assertThat(data.next()).isTrue();
+                            assertThat(data.getString(1)).isEqualTo("persisted before identity migrations");
+                            assertThat(data.next()).isFalse();
+                        }
                     }
                 }
             }
@@ -308,7 +319,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
 
     private String migrationHistory(Connection connection) throws Exception {
         try (var statement = connection.createStatement();
-             var result = statement.executeQuery("SELECT row_to_json(history)::text FROM public.flyway_schema_history history")) {
+             var result = statement.executeQuery("SELECT row_to_json(history)::text FROM public.flyway_schema_history history WHERE installed_rank = 1")) {
             assertThat(result.next()).isTrue();
             var snapshot = result.getString(1);
             assertThat(result.next()).isFalse();

@@ -10,8 +10,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 from uuid import uuid4
 
 
@@ -318,6 +319,84 @@ def main():
             return error.code, error.read(), error.headers
         except (URLError, TimeoutError):
             return 0, b"", {}
+
+    def account_request(browser, path, payload=None):
+        nonlocal sensitive_values
+        headers = {"Accept": "application/json"}
+        if payload is not None:
+            code, contents = account_request(browser, "/api/v1/auth/csrf")
+            require(code == 200, "CSRF bootstrap failed through the proxy")
+            csrf = json.loads(contents)
+            headers[csrf["headerName"]] = csrf["token"]
+            headers["Content-Type"] = "application/json"
+            sensitive_values += (csrf["token"],)
+        request = Request(
+            base_url + path,
+            data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+            headers=headers,
+        )
+        try:
+            with browser.open(request, timeout=15) as response:
+                return response.status, response.read()
+        except HTTPError as error:
+            return error.code, error.read()
+
+    def verify_account_login():
+        nonlocal sensitive_values
+        jar = CookieJar()
+        browser = build_opener(HTTPCookieProcessor(jar))
+        credentials = {"email": f"operator-{uuid4().hex}@example.test", "password": uuid4().hex}
+        sensitive_values += (credentials["password"],)
+        code, _ = account_request(browser, "/api/v1/auth/sign-up", credentials)
+        require(code == 202, "Account registration failed through the proxy")
+        require(
+            account_request(browser, "/api/v1/auth/me")[0] == 401,
+            "Registration unexpectedly granted an authenticated session",
+        )
+        code, contents = account_request(browser, "/api/v1/auth/sign-in", credentials)
+        require(code == 200, "Account sign-in failed through the proxy")
+        account = json.loads(contents)
+        cookies = [cookie for cookie in jar if cookie.name == "SRSESSION"]
+        require(len(cookies) == 1, "Proxy did not preserve the server session cookie")
+        cookie = cookies[0]
+        sensitive_values += (cookie.value,)
+        require(
+            cookie.has_nonstandard_attr("HttpOnly")
+            and cookie.get_nonstandard_attr("SameSite") == "Lax"
+            and not cookie.secure,
+            "Local HTTP session cookie flags are incorrect",
+        )
+        require(
+            json.loads(account_request(browser, "/api/v1/auth/me")[1])["id"] == account["id"],
+            "Session introspection returned a different identity",
+        )
+        print("PASS: real registration, login and session cookie through Nginx", flush=True)
+        onboarding = {"requestId": str(uuid4()), "name": "Durable cooperative"}
+        code, contents = account_request(browser, "/api/v1/organizations", onboarding)
+        require(code == 201, "Organization onboarding failed through the proxy")
+        organization = json.loads(contents)
+        require(organization["role"] == "ORG_ADMIN", "Server did not assign the initial owner")
+        code, contents = account_request(browser, "/api/v1/organizations", onboarding)
+        require(code == 200 and json.loads(contents)["id"] == organization["id"], "Onboarding retry created a different organization")
+        code, _ = account_request(browser, "/api/v1/auth/active-organization", {"organizationId": organization["id"]})
+        require(code == 200, "Organization selection failed through the proxy")
+        code, contents = account_request(browser, "/api/v1/auth/me/effective-permissions")
+        require(code == 200 and json.loads(contents)["organization"]["id"] == organization["id"], "Current permissions did not match the selection")
+        print("PASS: real organization onboarding, idempotent retry and current owner permissions through Nginx", flush=True)
+        return browser, account["id"], organization["id"]
+
+    def verify_account_restart_and_logout(browser, user_id, organization_id):
+        code, contents = account_request(browser, "/api/v1/auth/me")
+        require(code == 200 and json.loads(contents)["id"] == user_id, "JDBC session did not survive restart")
+        code, contents = account_request(browser, "/api/v1/auth/active-organization")
+        require(code == 200 and json.loads(contents)["id"] == organization_id, "Organization selection did not survive restart")
+        code, contents = account_request(browser, f"/api/v1/organizations/{organization_id}")
+        require(code == 200 and json.loads(contents)["role"] == "ORG_ADMIN", "Durable organization or initial ownership was lost")
+        code, contents = account_request(browser, "/api/v1/auth/me/effective-permissions")
+        require(code == 200 and "MANAGE_ACCESS" in json.loads(contents)["organizationActions"], "Current owner permission was lost after restart")
+        require(account_request(browser, "/api/v1/auth/sign-out", {})[0] == 204, "Sign-out failed")
+        require(account_request(browser, "/api/v1/auth/me")[0] == 401, "Signed-out session remained usable")
+        print("PASS: JDBC session, organization and selected ownership survive dependency/backend restarts; logout invalidates access", flush=True)
 
     def wait_for(path, expected, seconds=45):
         return wait_for_at(base_url, path, expected, seconds)
@@ -824,6 +903,7 @@ def main():
         )
         require(b"StockRescue" in wait_for("/", 200), "Frontend was not served")
         verify_backend_structured_logs(run("ps", "--quiet", "backend").stdout.strip())
+        account_browser, account_user_id, account_organization_id = verify_account_login()
         intelligence_container = launch_standalone(
             "standalone-intelligence",
             configuration["services"]["intelligence"]["image"],
@@ -899,7 +979,7 @@ def main():
         )
         missing_message = missing_config.stdout + missing_config.stderr
         require(
-            "Could not resolve placeholder" in missing_message
+            "Required service setting" in missing_message
             and any(
                 name in missing_message
                 for name in (
@@ -1092,6 +1172,12 @@ def main():
                     require_kafka_unavailable_failure(
                         smoke(failure_expected=True, broker_address=broker_address)
                     )
+                if service == "postgres":
+                    session_status, _ = account_request(account_browser, "/api/v1/auth/me")
+                    require(
+                        session_status == 503,
+                        f"Session storage outage returned HTTP {session_status}, expected 503",
+                    )
             except Exception as error:
                 outage_error = error
             try:
@@ -1116,6 +1202,7 @@ def main():
         run("up", "-d", "--force-recreate", "--wait", "--wait-timeout", "180", "backend")
         wait_for("/api/health/readiness", 200)
         wait_for("/api/health/integration", 200)
+        verify_account_restart_and_logout(account_browser, account_user_id, account_organization_id)
         version = run(
             "exec",
             "-T",
@@ -1128,8 +1215,10 @@ def main():
             "-Atc",
             "SELECT count(*) FROM public.flyway_schema_history WHERE success AND type = 'SQL'",
         ).stdout.strip()
+        migrations = root / "backend/src/main/resources/db/migration"
         require(
-            version == "1", "Migration history changed across non-destructive restart"
+            version == str(len(list(migrations.glob("V*__*.sql")))),
+            "Migration history changed across non-destructive restart",
         )
         privileges = run(
             "exec",
@@ -1184,8 +1273,13 @@ def main():
                     "cold-start",
                 ],
                 check=True,
-                env={**os.environ, "BASE_URL": base_url},
-                timeout=120,
+                env={
+                    **os.environ,
+                    "BASE_URL": base_url,
+                    "STOCKRESCUE_TEST_PROJECT": project,
+                    "STOCKRESCUE_TEST_ENV_FILE": str(environment_file),
+                },
+                timeout=240,
             )
         print("PASS: integrated foundation checks", flush=True)
         completed = True
