@@ -58,6 +58,7 @@ class StaffAccessSecurityTest extends InfrastructureTestBase {
     @Autowired private TransactionTemplate transactions;
     @Autowired private InvitationTokens tokens;
     @MockitoSpyBean private AuditWriter audit;
+    @MockitoSpyBean private com.stockrescue.access.persistence.StaffRepository staff;
     private String hash;
     private Fixture f;
 
@@ -224,6 +225,175 @@ class StaffAccessSecurityTest extends InfrastructureTestBase {
         problem(f.target.browser().write("PUT", grant(f.orgA, f.membership(f.manager, f.orgA), f.a2), grantBody("STORE_MANAGER", 0, null)), 403, "ACCESS_DENIED");
         assertThat(f.target.browser().get("/api/v1/auth/me").statusCode()).isEqualTo(200);
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.revocation_record WHERE org_id=:org").param("org", f.orgA).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void promotionRevokesEveryStoreGrantAndDemotionRequiresAnExplicitRegrant() throws Exception {
+        for (var store : List.of(f.a1, f.a2)) {
+            jdbc.sql("INSERT INTO stockrescue.store_grant(id,org_id,membership_id,store_id,role) VALUES (:id,:org,:member,:store,'STORE_MANAGER')")
+                    .param("id", UUID.randomUUID()).param("org", f.orgA).param("member", f.memberTarget).param("store", store).update();
+        }
+
+        var owner = f.ownerA.browser();
+        var promoted = owner.write("PATCH", member(f.orgA, f.memberTarget) + "/role", role("ORG_ADMIN", 0));
+        assertThat(promoted.statusCode()).as(promoted.body()).isEqualTo(200);
+        assertThat(tree(promoted).path("role").asString()).isEqualTo("ORG_ADMIN");
+        assertThat(tree(promoted).path("version").asLong()).isEqualTo(1);
+        assertThat(tree(promoted).path("grants")).hasSize(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.store_grant WHERE membership_id=:member AND state='REVOKED' AND version=1")
+                .param("member", f.memberTarget).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM stockrescue.revocation_record r
+                JOIN stockrescue.store_grant g ON g.id=r.store_grant_id
+                WHERE r.org_id=:org AND g.membership_id=:member AND r.revoked_by_membership_id=:actor AND r.reason=:reason
+                """).param("org", f.orgA).param("member", f.memberTarget).param("actor", f.adminA).param("reason", REASON)
+                .query(Long.class).single()).isEqualTo(2);
+
+        // The same authenticated browser session receives org-wide rights from the current role.
+        assertThat(f.target.browser().get(base(f.orgA) + "/members").statusCode()).isEqualTo(200);
+        transactions.executeWithoutResult(status -> policy.requireStore(f.target.id, f.orgA, f.a2, StoreAction.ARCHIVE_STORE, true));
+
+        var demoted = owner.write("PATCH", member(f.orgA, f.memberTarget) + "/role", role("MEMBER", 1));
+        assertThat(demoted.statusCode()).as(demoted.body()).isEqualTo(200);
+        assertThat(tree(demoted).path("version").asLong()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.store_grant WHERE membership_id=:member AND state='ACTIVE'")
+                .param("member", f.memberTarget).query(Long.class).single()).isZero();
+        problem(f.target.browser().get(base(f.orgA) + "/members"), 403, "ACCESS_DENIED");
+        assertThatThrownBy(() -> policy.requireStore(f.target.id, f.orgA, f.a1, StoreAction.READ_STORE, false))
+                .isInstanceOf(OrganizationUnavailableException.class);
+
+        var regranted = owner.write("PUT", grant(f.orgA, f.memberTarget, f.a1), grantBody("STORE_MANAGER", 2, 1L));
+        assertThat(regranted.statusCode()).as(regranted.body()).isEqualTo(200);
+        assertThat(tree(regranted).path("version").asLong()).isEqualTo(3);
+        assertThat(jdbc.sql("SELECT state FROM stockrescue.store_grant WHERE membership_id=:member AND store_id=:store")
+                .param("member", f.memberTarget).param("store", f.a1).query(String.class).single()).isEqualTo("ACTIVE");
+        assertThat(jdbc.sql("SELECT version FROM stockrescue.store_grant WHERE membership_id=:member AND store_id=:store")
+                .param("member", f.memberTarget).param("store", f.a1).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.revocation_record r JOIN stockrescue.store_grant g ON g.id=r.store_grant_id WHERE g.membership_id=:member")
+                .param("member", f.memberTarget).query(Long.class).single()).isEqualTo(2);
+        policy.requireStore(f.target.id, f.orgA, f.a1, StoreAction.EDIT_STORE, false);
+        assertThatThrownBy(() -> policy.requireStore(f.target.id, f.orgA, f.a2, StoreAction.READ_STORE, false))
+                .isInstanceOf(OrganizationUnavailableException.class);
+    }
+
+    @Test
+    void promotionRecordsGrantRevocationsAfterTheActualRevocationTimeWhenLockWaits() throws Exception {
+        var grantId=UUID.randomUUID();
+        jdbc.sql("INSERT INTO stockrescue.store_grant(id,org_id,membership_id,store_id,role) VALUES (:id,:org,:member,:store,'STORE_MANAGER')")
+                .param("id",grantId).param("org",f.orgA).param("member",f.memberTarget).param("store",f.a1).update();
+        var owner=f.ownerA.browser();
+        var grantLocked=new CountDownLatch(1);
+        var releaseGrant=new CountDownLatch(1);
+
+        try(var workers=Executors.newFixedThreadPool(2)) {
+            var holder=workers.submit(()->transactions.executeWithoutResult(status->{
+                jdbc.sql("SELECT id FROM stockrescue.store_grant WHERE org_id=:org AND id=:id FOR UPDATE")
+                        .param("org",f.orgA).param("id",grantId).query(UUID.class).single();
+                grantLocked.countDown();
+                try {
+                    if(!releaseGrant.await(15,TimeUnit.SECONDS)) throw new IllegalStateException("Grant lock holder timed out");
+                } catch(InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }));
+            try {
+                assertThat(grantLocked.await(10,TimeUnit.SECONDS)).isTrue();
+                var promotion=workers.submit(()->owner.write("PATCH",member(f.orgA,f.memberTarget)+"/role",role("ORG_ADMIN",0)));
+                await().atMost(Duration.ofSeconds(8)).untilAsserted(()->assertThat(jdbc.sql("""
+                        SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'
+                          AND query LIKE '%locked_grants%'
+                        """).query(Long.class).single()).isPositive());
+                TimeUnit.MILLISECONDS.sleep(1100);
+                releaseGrant.countDown();
+                holder.get(20,TimeUnit.SECONDS);
+                var response=promotion.get(20,TimeUnit.SECONDS);
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            } finally {
+                releaseGrant.countDown();
+            }
+        }
+
+        assertThat(jdbc.sql("""
+                SELECT r.occurred_at>=g.revoked_at FROM stockrescue.revocation_record r
+                JOIN stockrescue.store_grant g ON g.id=r.store_grant_id
+                WHERE g.org_id=:org AND g.id=:grant
+                """).param("org",f.orgA).param("grant",grantId).query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void aGrantCommittedBeforePromotionIsRevokedByThatPromotion() throws Exception {
+        orderedPromotion(true);
+    }
+
+    @Test
+    void aGrantWaitingBehindPromotionCannotRestoreMemberAccess() throws Exception {
+        orderedPromotion(false);
+    }
+
+    private void orderedPromotion(boolean grantFirst) throws Exception {
+        var target = f.newUser();
+        var membership = f.member(target, f.orgA, "MEMBER");
+        var owner = f.ownerA.browser();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var blockedAction = grantFirst ? "STORE_GRANT_CHANGED" : "MEMBERSHIP_ROLE_CHANGED";
+        doAnswer(call -> {
+            entered.countDown();
+            if (!release.await(15, TimeUnit.SECONDS)) throw new IllegalStateException("Test promotion barrier timed out");
+            return call.callRealMethod();
+        }).when(audit).securityChange(any(), eq(f.orgA), any(), any(), eq(blockedAction), anyMap(), anyString());
+        try (var workers = Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<HttpResponse<String>> grant = () -> owner.write("PUT", grant(f.orgA, membership, f.a1), grantBody("STORE_MANAGER", 0, null));
+            java.util.concurrent.Callable<HttpResponse<String>> promote = () -> owner.write("PATCH", member(f.orgA, membership) + "/role", role("ORG_ADMIN", grantFirst ? 1 : 0));
+            var first = workers.submit(grantFirst ? grant : promote);
+            assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
+            var second = workers.submit(grantFirst ? promote : grant);
+            await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(jdbc.sql("""
+                    SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'
+                      AND query LIKE '%stockrescue.organization%'
+                    """).query(Long.class).single()).isPositive());
+            assertThat(second.isDone()).isFalse();
+            release.countDown();
+            assertThat(first.get(15, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+            var secondResponse = second.get(15, TimeUnit.SECONDS);
+            if (grantFirst) assertThat(secondResponse.statusCode()).as(secondResponse.body()).isEqualTo(200);
+            else problem(secondResponse, 409, "ACCESS_CONFLICT");
+        } finally {
+            release.countDown();
+        }
+
+        assertThat(jdbc.sql("SELECT org_role FROM stockrescue.membership WHERE id=:id").param("id", membership).query(String.class).single())
+                .isEqualTo("ORG_ADMIN");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.store_grant WHERE membership_id=:id AND state='ACTIVE'")
+                .param("id", membership).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.revocation_record r JOIN stockrescue.store_grant g ON g.id=r.store_grant_id WHERE g.membership_id=:id")
+                .param("id", membership).query(Long.class).single()).isEqualTo(grantFirst ? 1 : 0);
+    }
+
+    @Test
+    void aMidwayGrantRevocationFailureRollsBackRoleVersionsEvidenceAndAudit() throws Exception {
+        for (var store : List.of(f.a1, f.a2)) {
+            jdbc.sql("INSERT INTO stockrescue.store_grant(id,org_id,membership_id,store_id,role) VALUES (:id,:org,:member,:store,'STORE_MANAGER')")
+                    .param("id", UUID.randomUUID()).param("org", f.orgA).param("member", f.memberTarget).param("store", store).update();
+        }
+        var revocations = new int[1];
+        doAnswer(call -> {
+            var result = call.callRealMethod();
+            if (++revocations[0] == 2) throw new IllegalStateException("Test second grant revocation failure");
+            return result;
+        }).when(staff).revocation(eq(f.orgA), any(UUID.class), eq(true), eq(f.adminA), eq(REASON));
+
+        problem(f.ownerA.browser().write("PATCH", member(f.orgA, f.memberTarget) + "/role", role("ORG_ADMIN", 0)), 500, "INTERNAL_ERROR");
+
+        assertThat(jdbc.sql("SELECT org_role FROM stockrescue.membership WHERE id=:id").param("id", f.memberTarget).query(String.class).single()).isEqualTo("MEMBER");
+        assertThat(jdbc.sql("SELECT version FROM stockrescue.membership WHERE id=:id").param("id", f.memberTarget).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.store_grant WHERE membership_id=:id AND state='ACTIVE' AND version=0")
+                .param("id", f.memberTarget).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.revocation_record r JOIN stockrescue.store_grant g ON g.id=r.store_grant_id WHERE g.membership_id=:id")
+                .param("id", f.memberTarget).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:member AND action='MEMBERSHIP_ROLE_CHANGED'")
+                .param("org", f.orgA).param("member", f.memberTarget).query(Long.class).single()).isZero();
     }
 
     @Test

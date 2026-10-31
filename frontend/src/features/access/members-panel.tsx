@@ -57,7 +57,7 @@ export function MembersPanel({ organizationId }: { organizationId: string }) {
   const selected = members.data.items.find(member => member.id === editing)
   return (
     <section aria-labelledby="members-heading" className="space-y-7">
-      <div><h2 id="members-heading" className="text-2xl font-semibold">Members and access</h2><p className="mt-3 leading-relaxed text-muted-foreground">Org Admins manage organization access. Store Manager, Inventory Operator and Read-only Analyst roles apply only to explicitly assigned stores. Revoking organization membership also revokes its store grants.</p></div>
+      <div><h2 id="members-heading" className="text-2xl font-semibold">Members and access</h2><p className="mt-3 leading-relaxed text-muted-foreground">Org Admins manage organization access. Store Manager, Inventory Operator and Read-only Analyst roles apply only to explicitly assigned stores. Promoting a Member to Org Admin revokes their store grants; an Org Admin demoted to Member needs store access granted again. Revoking organization membership also revokes its store grants.</p></div>
       <Button variant="outline" disabled={action.isPending} onClick={() => { void client.invalidateQueries({ queryKey: key }) }}>Reload access</Button>
       {notice && <p role="status">{notice}</p>}
       {action.isError && <p role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">{errorMessage(action.error)}</p>}

@@ -69,6 +69,22 @@ public class StaffRepository {
                 .param("org", org).param("id", id).param("role", role.name()).update();
     }
 
+    public List<UUID> revokeActiveGrants(UUID org, UUID member) {
+        return jdbc.sql("""
+                WITH locked_grants AS MATERIALIZED (
+                    SELECT id FROM stockrescue.store_grant
+                    WHERE org_id=:org AND membership_id=:member AND state='ACTIVE'
+                    ORDER BY store_id,id
+                    FOR UPDATE
+                )
+                UPDATE stockrescue.store_grant g
+                SET state='REVOKED',revoked_at=clock_timestamp(),version=g.version+1
+                FROM locked_grants
+                WHERE g.id=locked_grants.id AND g.org_id=:org AND g.membership_id=:member AND g.state='ACTIVE'
+                RETURNING g.id
+                """).param("org", org).param("member", member).query(UUID.class).list();
+    }
+
     public void revoke(UUID org, UUID id) {
         jdbc.sql("""
                 UPDATE stockrescue.membership SET state='REVOKED',pending_invitation_id=NULL,revoked_at=clock_timestamp(),version=version+1

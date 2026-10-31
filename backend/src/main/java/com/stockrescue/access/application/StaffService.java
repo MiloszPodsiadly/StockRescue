@@ -63,7 +63,7 @@ public class StaffService {
 
     @Transactional
     public Member changeRole(UUID actor, UUID org, UUID id, OrganizationRole role, long version, String reason) {
-        access.requireAdmin(actor, org, true);
+        var administrator = access.requireAdmin(actor, org, true);
         var before = current(org, id, true);
         version(before, version);
         reason(reason);
@@ -71,6 +71,11 @@ public class StaffService {
         if (role == null || before.state() != MembershipState.ACTIVE || before.role() == role || !staff.activeAccount(before.userId())) conflict();
         if (role == OrganizationRole.ORG_ADMIN && before.userId().equals(actor)) throw new AccessDeniedException("Self elevation unavailable");
         if (role == OrganizationRole.MEMBER) preserveAdmin(org, before);
+        if (before.role() == OrganizationRole.MEMBER && role == OrganizationRole.ORG_ADMIN) {
+            for (var grant : staff.revokeActiveGrants(org, id)) {
+                staff.revocation(org, grant, true, administrator.membershipId(), reason);
+            }
+        }
         staff.role(org, id, role);
         return changed(actor, org, before, "MEMBERSHIP_ROLE_CHANGED", reason);
     }
