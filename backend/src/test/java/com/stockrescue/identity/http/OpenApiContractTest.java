@@ -66,5 +66,17 @@ class OpenApiContractTest extends InfrastructureTestBase {
         var operation=document.path("paths").path(cancellationPath).path("post");
         assertThat(operation.path("operationId").asString()).isEqualTo("cancelScheduledLaneRevisions");
         assertThat(operation.path("responses").has("200")).isTrue();
+
+        var archiveImpactPath="/api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive-impact";
+        var archiveImpact=document.path("paths").path(archiveImpactPath).path("get");
+        assertThat(archiveImpact.path("operationId").asString()).isEqualTo("previewStorageZoneArchiveImpact");
+        assertThat(archiveImpact.path("responses").has("200")).isTrue();
+        var impactProperties=schemas.path("ZoneArchiveImpactResponse").path("properties");
+        for(var field:java.util.List.of("activeLaneCount","inactiveLaneCount","futureScheduledRevisionCount","zoneVersion","impactFingerprint","asOf"))
+            assertThat(impactProperties.has(field)).isTrue();
+        var archiveOperation=document.path("paths").path("/api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive").path("post");
+        assertThat(archiveOperation.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/ArchiveZoneRequest");
+        assertThat(schemas.path("ArchiveZoneRequest").path("properties").has("impactFingerprint")).isTrue();
     }
 }

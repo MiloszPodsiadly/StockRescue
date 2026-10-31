@@ -184,14 +184,14 @@ class IdentityAndStorePersistenceTest extends InfrastructureTestBase {
         sql(revisionSql(), revision, f.orgA, f.laneA, new BigDecimal("12.3456"), "PLN", 20, f.memberA);
         assertThat(text("SELECT cost_amount::text FROM stockrescue.lane_revision WHERE id=? AND org_id=?", revision, f.orgA)).isEqualTo("12.3456");
         reject("23514", revisionSql(), UUID.randomUUID(), f.orgA, f.laneA, BigDecimal.ONE, "PLN", 20, f.memberA);
-        reject("23514", "INSERT INTO stockrescue.lane_revision(id,org_id,lane_id,revision_no,cost_amount,currency_code,duration_minutes,effective_at,recorded_by_membership_id) VALUES (?,?,?,2,10,'PLN',20,now()-interval '1 day',?)", UUID.randomUUID(), f.orgA, f.laneA, f.memberA);
+        reject("PZ002", "INSERT INTO stockrescue.lane_revision(id,org_id,lane_id,revision_no,cost_amount,currency_code,duration_minutes,effective_at,recorded_by_membership_id) VALUES (?,?,?,2,10,'PLN',20,now()-interval '1 day',?)", UUID.randomUUID(), f.orgA, f.laneA, f.memberA);
         var scheduledRevision=UUID.randomUUID();
         sql("INSERT INTO stockrescue.lane_revision(id,org_id,lane_id,revision_no,cost_amount,currency_code,duration_minutes,effective_at,recorded_by_membership_id) VALUES (?,?,?,2,15,'PLN',25,now()+interval '1 day',?)", scheduledRevision, f.orgA, f.laneA, f.memberA);
         String cancel="INSERT INTO stockrescue.lane_revision_cancellation(id,org_id,lane_id,revision_id,cancelled_by_membership_id,reason,correlation_id) VALUES (?,?,?,?,?,?,'scheduled-cost-test')";
         var cancellation=UUID.randomUUID();
         reject("23503", cancel, cancellation, f.orgB, f.laneA, scheduledRevision, f.memberB, "reviewed schedule change");
         reject("23503", cancel, cancellation, f.orgA, f.laneA, scheduledRevision, f.memberB, "reviewed schedule change");
-        reject("23514", cancel, cancellation, f.orgA, f.laneA, revision, f.memberA, "reviewed schedule change");
+        reject("PZ001", cancel, cancellation, f.orgA, f.laneA, revision, f.memberA, "reviewed schedule change");
         sql(cancel, cancellation, f.orgA, f.laneA, scheduledRevision, f.memberA, "reviewed schedule change");
         assertThat(text("SELECT correlation_id FROM stockrescue.lane_revision_cancellation WHERE id=?", cancellation)).isEqualTo("scheduled-cost-test");
         reject("23505", cancel, UUID.randomUUID(), f.orgA, f.laneA, scheduledRevision, f.memberA, "duplicate cancellation");
@@ -308,7 +308,7 @@ class IdentityAndStorePersistenceTest extends InfrastructureTestBase {
     }
 
     private String revisionSql() {
-        return "INSERT INTO stockrescue.lane_revision(id,org_id,lane_id,revision_no,cost_amount,currency_code,duration_minutes,effective_at,recorded_by_membership_id) VALUES (?,?,?,1,?::numeric,?,?,now(),?)";
+        return "INSERT INTO stockrescue.lane_revision(id,org_id,lane_id,revision_no,cost_amount,currency_code,duration_minutes,effective_at,recorded_by_membership_id) VALUES (?,?,?,1,?::numeric,?,?,NULL,?)";
     }
 
     private Fixture fixture() throws Exception {

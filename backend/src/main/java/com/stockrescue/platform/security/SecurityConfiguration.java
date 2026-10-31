@@ -100,6 +100,7 @@ public class SecurityConfiguration {
                             .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/stores", "/api/v1/organizations/*/stores/*/archive").authenticated()
                             .requestMatchers(HttpMethod.PATCH, "/api/v1/organizations/*/stores/*").authenticated()
                             .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/stores/*/storage-zones",
+                                    "/api/v1/organizations/*/stores/*/storage-zones/*/archive-impact",
                                     "/api/v1/organizations/*/transport-lanes", "/api/v1/organizations/*/transport-lanes/*", "/api/v1/organizations/*/transport-lanes/*/revisions").authenticated()
                             .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/stores/*/storage-zones", "/api/v1/organizations/*/stores/*/storage-zones/*/archive",
                                     "/api/v1/organizations/*/transport-lanes", "/api/v1/organizations/*/transport-lanes/*/revisions",

@@ -29,7 +29,7 @@ import org.springframework.web.bind.annotation.*;
         @ApiResponse(responseCode="401",description="Authentication required",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
         @ApiResponse(responseCode="403",description="Action or CSRF denied",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
         @ApiResponse(responseCode="404",description="Scoped resource unavailable",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
-        @ApiResponse(responseCode="409",description="Duplicate, stale version or inactive zone",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
+        @ApiResponse(responseCode="409",description="Duplicate, stale version, changed archive impact or inactive zone",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
         @ApiResponse(responseCode="500",description="Request failed",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
         @ApiResponse(responseCode="503",description="Service unavailable",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class)))
 })
@@ -58,11 +58,17 @@ public class ZoneController {
     public ZoneResponse rename(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID storeId,@PathVariable UUID zoneId,@Valid @RequestBody RenameZoneRequest request) {
         return ZoneResponse.from(zones.rename(actor(actor),organizationId,storeId,zoneId,request.name(),request.version(),request.reason()));
     }
+    @GetMapping("/{zoneId}/archive-impact")
+    @Operation(operationId="previewStorageZoneArchiveImpact",summary="Preview scoped active-lane and future-schedule counts before irreversible zone archival")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=ZoneArchiveImpactResponse.class)))
+    public ZoneArchiveImpactResponse archiveImpact(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID storeId,@PathVariable UUID zoneId) {
+        return ZoneArchiveImpactResponse.from(zones.archiveImpact(actor(actor),organizationId,storeId,zoneId));
+    }
     @PostMapping(value="/{zoneId}/archive",consumes=MediaType.APPLICATION_JSON_VALUE)
-    @Operation(operationId="archiveStorageZone",summary="Deactivate a zone without deleting history or checking future inventory transfers")
+    @Operation(operationId="archiveStorageZone",summary="Permanently deactivate a zone after confirming its current operational impact")
     @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=ZoneResponse.class)))
-    public ZoneResponse archive(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID storeId,@PathVariable UUID zoneId,@Valid @RequestBody StoreController.ArchiveStoreRequest request) {
-        return ZoneResponse.from(zones.archive(actor(actor),organizationId,storeId,zoneId,request.version(),request.reason()));
+    public ZoneResponse archive(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID storeId,@PathVariable UUID zoneId,@Valid @RequestBody ArchiveZoneRequest request) {
+        return ZoneResponse.from(zones.archive(actor(actor),organizationId,storeId,zoneId,request.version(),request.reason(),request.impactFingerprint()));
     }
     private UUID actor(Authentication actor) { return UUID.fromString(actor.getName()); }
     public record CreateZoneRequest(@NotBlank @Size(max=100) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String name,
@@ -70,6 +76,17 @@ public class ZoneController {
     public record RenameZoneRequest(@NotBlank @Size(max=100) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String name,
                                      @NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long version,
                                      @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
+    public record ArchiveZoneRequest(@NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long version,
+                                     @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason,
+                                     @NotBlank @Pattern(regexp="[A-Za-z0-9_-]{43}") @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Opaque impact snapshot returned by the scoped preview endpoint.") String impactFingerprint) { }
+    public record ZoneArchiveImpactResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) int activeLaneCount,
+                                            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) int inactiveLaneCount,
+                                            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) int futureScheduledRevisionCount,
+                                            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long zoneVersion,
+                                            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Opaque scoped snapshot; send unchanged when confirming archival.") String impactFingerprint,
+                                            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="PostgreSQL wall-clock instant used to count future active revisions.") Instant asOf) {
+        static ZoneArchiveImpactResponse from(ZoneArchiveImpact impact) { return new ZoneArchiveImpactResponse(impact.activeLaneCount(),impact.inactiveLaneCount(),impact.futureScheduledRevisionCount(),impact.zoneVersion(),impact.impactFingerprint(),impact.asOf()); }
+    }
     public record ZoneResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,
                                 @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String name,
                                 @Schema(requiredMode=Schema.RequiredMode.REQUIRED) TemperatureClass temperatureClass,

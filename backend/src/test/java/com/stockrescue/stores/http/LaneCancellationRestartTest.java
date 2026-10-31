@@ -101,7 +101,8 @@ class LaneCancellationRestartTest extends InfrastructureTestBase {
         var path = base + "/" + lane;
         var current = owner.write("POST", path + "/revisions", revision(0, 0, "12.0000", null));
         assertThat(current.statusCode()).as(current.body()).isEqualTo(201);
-        var future = Instant.now().plus(1, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
+        var databaseNow = jdbc.sql("SELECT clock_timestamp()").query(java.sql.Timestamp.class).single().toInstant();
+        var future = databaseNow.plus(1, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
         var planned = owner.write("POST", path + "/revisions", revision(1, 1, "13.0000", future));
         assertThat(planned.statusCode()).as(planned.body()).isEqualTo(201);
 
@@ -130,7 +131,7 @@ class LaneCancellationRestartTest extends InfrastructureTestBase {
         assertThat(history.get(0).path("cancellation").path("reason").asString()).isEqualTo(REASON);
         assertThat(history.get(0).path("cancellation").path("cancelledByMembershipId").asString()).isNotBlank();
         assertThat(Instant.parse(history.get(0).path("cancellation").path("cancelledAt").asString()))
-                .isBefore(Instant.now());
+                .isBefore(jdbc.sql("SELECT clock_timestamp()").query(java.sql.Timestamp.class).single().toInstant());
         assertThat(history.get(0).path("validUntil").isNull()).isTrue();
         assertThat(history.get(1).path("cancellation").isNull()).isTrue();
     }

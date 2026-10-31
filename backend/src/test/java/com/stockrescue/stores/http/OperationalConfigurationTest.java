@@ -16,6 +16,8 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import com.stockrescue.platform.audit.AuditWriter;
 import com.stockrescue.support.InfrastructureTestBase;
 import com.stockrescue.stores.domain.CostParameters;
@@ -47,7 +49,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
     @Autowired private JdbcClient jdbc;
     @Autowired private ObjectMapper json;
     @Autowired private PasswordEncoder encoder;
-    @Autowired private LaneRepository laneRepository;
+    @MockitoSpyBean private LaneRepository laneRepository;
     @Autowired private PlatformTransactionManager transactionManager;
     @MockitoSpyBean private AuditWriter audit;
     @MockitoSpyBean private Clock clock;
@@ -72,10 +74,169 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         assertThat(renamed.statusCode()).isEqualTo(200);
         problem(manager.write("PATCH",zones(f.orgA,f.a1)+"/"+id,Map.of("name","Stale","version",0,"reason",REASON)),409,"CONFIGURATION_CONFLICT");
         problem(manager.write("PATCH",zones(f.orgA,f.a1)+"/"+id,Map.of("name","Forged","temperatureClass","FROZEN","version",1,"reason",REASON)),400,"INVALID_REQUEST");
-        assertThat(manager.write("POST",zones(f.orgA,f.a1)+"/"+id+"/archive",version(1)).statusCode()).isEqualTo(200);
+        var archiveImpact=zoneArchiveImpact(manager,f.orgA,f.a1,id);
+        assertThat(archiveImpact.path("activeLaneCount").asInt()).isZero();
+        assertThat(archiveImpact.path("futureScheduledRevisionCount").asInt()).isZero();
+        var archiveRequest=zoneArchiveRequest(1,archiveImpact);
+        assertThat(manager.write("POST",zones(f.orgA,f.a1)+"/"+id+"/archive",archiveRequest).statusCode()).isEqualTo(200);
+        problem(manager.write("POST",zones(f.orgA,f.a1)+"/"+id+"/archive",archiveRequest),409,"CONFIGURATION_INACTIVE");
         problem(manager.write("PATCH",zones(f.orgA,f.a1)+"/"+id,Map.of("name","Inactive","version",2,"reason",REASON)),409,"CONFIGURATION_INACTIVE");
         assertThat(tree(manager.get(zones(f.orgA,f.a1)+"?includeInactive=true&limit=1")).path("hasMore").asBoolean()).isTrue();
         assertThatThrownBy(()->jdbc.sql("UPDATE stockrescue.storage_zone SET temperature_class='FROZEN' WHERE id=:id").param("id",id).update()).hasRootCauseInstanceOf(java.sql.SQLException.class);
+    }
+
+    @Test
+    void archiveImpactShowsScopedCountsWithoutRevealingLaneOrPriceDetails() throws Exception {
+        var owner=f.ownerA.browser();var manager=f.manager.browser();
+        var active=UUID.fromString(createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2).path("id").asString());
+        var inactive=UUID.fromString(createLane(f.ownerA,f.orgA,f.a2,f.a1,f.z2,f.z1).path("id").asString());
+        var future=laneRepository.databaseNow().plus(2,ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+active+"/revisions",revision(0,0,"81.2500","EUR",null)).statusCode()).isEqualTo(201);
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+active+"/revisions",revision(1,1,"82.5000","EUR",future)).statusCode()).isEqualTo(201);
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+inactive+"/revisions",revision(0,0,"91.2500","EUR",null)).statusCode()).isEqualTo(201);
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+inactive+"/revisions",revision(1,1,"92.5000","EUR",future)).statusCode()).isEqualTo(201);
+        assertThat(owner.write("PATCH",lanes(f.orgA)+"/"+inactive,laneUpdate(2,f.z2,f.z1,false)).statusCode()).isEqualTo(200);
+
+        var managerImpact=zoneArchiveImpact(manager,f.orgA,f.a1,f.z1);
+        var adminImpact=zoneArchiveImpact(owner,f.orgA,f.a1,f.z1);
+        for(var impact:List.of(managerImpact,adminImpact)) {
+            assertThat(impact.path("activeLaneCount").asInt()).isEqualTo(1);
+            assertThat(impact.path("inactiveLaneCount").asInt()).isEqualTo(1);
+            assertThat(impact.path("futureScheduledRevisionCount").asInt()).isEqualTo(2);
+            assertThat(impact.path("zoneVersion").asLong()).isZero();
+            assertThat(impact.path("impactFingerprint").asString()).matches("[A-Za-z0-9_-]{43}");
+            assertThat(impact.toString()).doesNotContain(active.toString(),inactive.toString(),"81.2500","82.5000","91.2500","92.5000","revisionId","costAmount");
+        }
+        assertThat(managerImpact.path("impactFingerprint").asString()).isEqualTo(adminImpact.path("impactFingerprint").asString());
+        problem(f.reader.browser().get(zoneArchiveImpactPath(f.orgA,f.a1,f.z1)),403,"ACCESS_DENIED");
+        problem(manager.get(zoneArchiveImpactPath(f.orgB,f.b1,f.zb1)),404,"RESOURCE_NOT_FOUND");
+        problem(manager.get(zoneArchiveImpactPath(f.orgA,f.a2,f.z1)),404,"RESOURCE_NOT_FOUND");
+        problem(manager.get(zoneArchiveImpactPath(f.orgA,f.a1,f.zb1)),404,"RESOURCE_NOT_FOUND");
+    }
+
+    @Test
+    void changedZoneImpactRejectsOldConfirmationThenPreservesHistoryForLaterCancellation() throws Exception {
+        var lane=UUID.fromString(createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2).path("id").asString());var owner=f.ownerA.browser();
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+lane+"/revisions",revision(0,0,"12.0000","EUR",null)).statusCode()).isEqualTo(201);
+        var initialImpact=zoneArchiveImpact(owner,f.orgA,f.a1,f.z1);
+        assertThat(initialImpact.path("activeLaneCount").asInt()).isEqualTo(1);
+        assertThat(initialImpact.path("futureScheduledRevisionCount").asInt()).isZero();
+        var archivePath=zones(f.orgA,f.a1)+"/"+f.z1+"/archive";
+        var staleRequest=zoneArchiveRequest(0,initialImpact);
+        var future=laneRepository.databaseNow().plus(2,ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+lane+"/revisions",revision(1,1,"13.0000","EUR",future)).statusCode()).isEqualTo(201);
+
+        problem(owner.write("POST",archivePath,staleRequest),409,"ZONE_IMPACT_CHANGED");
+        assertThat(jdbc.sql("SELECT active FROM stockrescue.storage_zone WHERE org_id=:org AND store_id=:store AND id=:zone")
+                .param("org",f.orgA).param("store",f.a1).param("zone",f.z1).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:zone AND action='ZONE_ARCHIVED'")
+                .param("org",f.orgA).param("zone",f.z1).query(Long.class).single()).isZero();
+
+        var refreshed=zoneArchiveImpact(owner,f.orgA,f.a1,f.z1);
+        assertThat(refreshed.path("futureScheduledRevisionCount").asInt()).isEqualTo(1);
+        assertThat(refreshed.path("impactFingerprint").asString()).isNotEqualTo(initialImpact.path("impactFingerprint").asString());
+        var archived=owner.write("POST",archivePath,zoneArchiveRequest(0,refreshed));
+        assertThat(archived.statusCode()).as(archived.body()).isEqualTo(200);
+        var lanePath=lanes(f.orgA)+"/"+lane;
+        var unavailable=tree(owner.get(lanePath));
+        assertThat(unavailable.path("status").asString()).isEqualTo("INACTIVE");
+        assertThat(unavailable.path("missing").toString()).contains("INACTIVE_ZONE");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",lane).query(Long.class).single()).isEqualTo(2L);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision_cancellation WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",lane).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:zone AND action='ZONE_ARCHIVED'")
+                .param("org",f.orgA).param("zone",f.z1).query(Long.class).single()).isEqualTo(1L);
+
+        var cancelled=owner.write("POST",cancelPath(f.orgA,lane),cancellation(2,2));
+        assertThat(cancelled.statusCode()).as(cancelled.body()).isEqualTo(200);
+        assertThat(tree(cancelled).path("cancelledRevisions")).hasSize(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",lane).query(Long.class).single()).isEqualTo(2L);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision_cancellation WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",lane).query(Long.class).single()).isEqualTo(1L);
+        problem(owner.write("POST",archivePath,zoneArchiveRequest(1,refreshed)),409,"CONFIGURATION_INACTIVE");
+    }
+
+    @Test
+    void archiveUsesCurrentStoreGrantAfterImpactWasPreviewed() throws Exception {
+        var manager=f.manager.browser();var impact=zoneArchiveImpact(manager,f.orgA,f.a1,f.z1);
+        var membership=jdbc.sql("SELECT id FROM stockrescue.membership WHERE org_id=:org AND user_id=:user")
+                .param("org",f.orgA).param("user",f.manager.id).query(UUID.class).single();
+        var memberVersion=jdbc.sql("SELECT version FROM stockrescue.membership WHERE id=:id").param("id",membership).query(Long.class).single();
+        var grantVersion=jdbc.sql("SELECT version FROM stockrescue.store_grant WHERE org_id=:org AND membership_id=:member AND store_id=:store")
+                .param("org",f.orgA).param("member",membership).param("store",f.a1).query(Long.class).single();
+        var revoke=f.ownerA.browser().write("DELETE","/api/v1/organizations/"+f.orgA+"/members/"+membership+"/store-grants/"+f.a1,
+                Map.of("memberVersion",memberVersion,"grantVersion",grantVersion,"reason",REASON));
+        assertThat(revoke.statusCode()).as(revoke.body()).isEqualTo(200);
+        var archivePath=zones(f.orgA,f.a1)+"/"+f.z1+"/archive";
+        problem(manager.write("POST",archivePath,zoneArchiveRequest(0,impact)),404,"RESOURCE_NOT_FOUND");
+        problem(manager.get(zoneArchiveImpactPath(f.orgA,f.a1,f.z1)),404,"RESOURCE_NOT_FOUND");
+        assertThat(jdbc.sql("SELECT active FROM stockrescue.storage_zone WHERE id=:zone").param("zone",f.z1).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:zone AND action='ZONE_ARCHIVED'")
+                .param("org",f.orgA).param("zone",f.z1).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void changedZoneVersionRequiresARefreshedImpactConfirmation() throws Exception {
+        var owner=f.ownerA.browser();var initial=zoneArchiveImpact(owner,f.orgA,f.a1,f.z1);
+        var archivePath=zones(f.orgA,f.a1)+"/"+f.z1+"/archive";
+        assertThat(owner.write("PATCH",zones(f.orgA,f.a1)+"/"+f.z1,Map.of("name","Renamed before archival","version",0,"reason",REASON)).statusCode()).isEqualTo(200);
+        problem(owner.write("POST",archivePath,zoneArchiveRequest(0,initial)),409,"ZONE_IMPACT_CHANGED");
+        assertThat(jdbc.sql("SELECT active FROM stockrescue.storage_zone WHERE id=:zone").param("zone",f.z1).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:zone AND action='ZONE_ARCHIVED'")
+                .param("org",f.orgA).param("zone",f.z1).query(Long.class).single()).isZero();
+        var refreshed=zoneArchiveImpact(owner,f.orgA,f.a1,f.z1);
+        assertThat(refreshed.path("zoneVersion").asLong()).isEqualTo(1);
+        assertThat(owner.write("POST",archivePath,zoneArchiveRequest(1,refreshed)).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void failedZoneArchiveAuditLeavesZoneAndVersionUntouched() throws Exception {
+        var owner=f.ownerA.browser();
+        doThrow(new IllegalStateException("Test zone archive audit failure")).when(audit).securityChange(any(),eq(f.orgA),
+                eq("storage-zone"),eq(f.z1),eq("ZONE_ARCHIVED"),anyMap(),eq(REASON));
+        problem(owner.write("POST",zones(f.orgA,f.a1)+"/"+f.z1+"/archive",zoneArchiveRequest(owner,f.orgA,f.a1,f.z1,0)),500,"INTERNAL_ERROR");
+        assertThat(jdbc.sql("SELECT active FROM stockrescue.storage_zone WHERE id=:zone").param("zone",f.z1).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("SELECT version FROM stockrescue.storage_zone WHERE id=:zone").param("zone",f.z1).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:zone AND action='ZONE_ARCHIVED'")
+                .param("org",f.orgA).param("zone",f.z1).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void archiveRechecksImpactAfterAConcurrentLaneRevisionWinsTheLockOrder() throws Exception {
+        var lane=UUID.fromString(createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2).path("id").asString());
+        var setup=f.ownerA.browser();
+        assertThat(setup.write("POST",lanes(f.orgA)+"/"+lane+"/revisions",revision(0,0,"12.0000","EUR",null)).statusCode()).isEqualTo(201);
+        var preview=zoneArchiveImpact(setup,f.orgA,f.a1,f.z1);
+        var scheduleAt=laneRepository.databaseNow().plus(2,ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
+        var laneLocked=new CountDownLatch(1);var releaseLane=new CountDownLatch(1);var revisionLockEntered=new CountDownLatch(1);
+        doAnswer(invocation->{revisionLockEntered.countDown();return invocation.callRealMethod();})
+                .when(laneRepository).lock(f.orgA,lane);
+        var scheduler=new Browser(f.ownerA);var archiver=new Browser(f.ownerA);
+        try(var workers=Executors.newFixedThreadPool(3)) {
+            var holder=workers.submit(()->new TransactionTemplate(transactionManager).executeWithoutResult(status->{
+                jdbc.sql("SELECT id FROM stockrescue.transport_lane WHERE org_id=:org AND id=:lane FOR UPDATE")
+                        .param("org",f.orgA).param("lane",lane).query(UUID.class).single();
+                laneLocked.countDown();
+                try { if(!releaseLane.await(10,TimeUnit.SECONDS)) throw new IllegalStateException("Lane lock holder timed out"); }
+                catch(InterruptedException interrupted) { Thread.currentThread().interrupt();throw new IllegalStateException(interrupted); }
+            }));
+            assertThat(laneLocked.await(10,TimeUnit.SECONDS)).isTrue();
+            var scheduledWrite=workers.submit(()->scheduler.write("POST",lanes(f.orgA)+"/"+lane+"/revisions",revision(1,1,"13.0000","EUR",scheduleAt)));
+            assertThat(revisionLockEntered.await(10,TimeUnit.SECONDS)).isTrue();
+            var archive=workers.submit(()->archiver.write("POST",zones(f.orgA,f.a1)+"/"+f.z1+"/archive",zoneArchiveRequest(0,preview)));
+            awaitDatabaseLockWait("stockrescue.organization WHERE");
+            releaseLane.countDown();
+            holder.get(20,TimeUnit.SECONDS);
+            assertThat(scheduledWrite.get(20,TimeUnit.SECONDS).statusCode()).isEqualTo(201);
+            problem(archive.get(20,TimeUnit.SECONDS),409,"ZONE_IMPACT_CHANGED");
+        } finally { releaseLane.countDown(); }
+        assertThat(jdbc.sql("SELECT active FROM stockrescue.storage_zone WHERE org_id=:org AND store_id=:store AND id=:zone")
+                .param("org",f.orgA).param("store",f.a1).param("zone",f.z1).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:zone AND action='ZONE_ARCHIVED'")
+                .param("org",f.orgA).param("zone",f.z1).query(Long.class).single()).isZero();
+        assertThat(zoneArchiveImpact(setup,f.orgA,f.a1,f.z1).path("futureScheduledRevisionCount").asInt()).isEqualTo(1);
     }
 
     @Test
@@ -144,7 +305,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
     void scheduledRevisionsPreserveHistoryAndHaveNonOverlappingValidityIntervals() throws Exception {
         var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"12.3456","EUR",null)).statusCode()).isEqualTo(201);
-        var now=Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);doReturn(now).when(clock).instant();
+        var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
         var future=now.plusSeconds(3600);
         var planned=owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"14.0001","EUR",future));
         assertThat(planned.statusCode()).isEqualTo(201);
@@ -154,12 +315,168 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         assertThat(Instant.parse(history.get(1).path("validUntil").asString())).isEqualTo(future);
         assertThat(history.get(0).path("validUntil").isNull()).isTrue();
         problem(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(2,2,"15.0000","EUR",future)),409,"CONFIGURATION_CONFLICT");
-        problem(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(2,2,"15.0000","EUR",now.minusSeconds(1))),400,"INVALID_REQUEST");
+        problem(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(2,2,"15.0000","EUR",laneRepository.databaseNow().minusSeconds(1))),400,"INVALID_REQUEST");
         problem(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(2,2,"15.0000","EUR",future.plusNanos(1))),400,"INVALID_REQUEST");
-        doReturn(future.plusSeconds(1)).when(clock).instant();
+        doReturn(future.plusSeconds(1)).when(laneRepository).databaseNow();
         assertThat(tree(owner.get(lanes(f.orgA)+"/"+id)).path("currentCost").path("costAmount").asString()).isEqualTo("14.0001");
         assertThat(tree(owner.get(lanes(f.orgA)+"/"+id+"/revisions")).path("items")).isEqualTo(history);
         assertThatThrownBy(()->jdbc.sql("UPDATE stockrescue.lane_revision SET cost_amount=0 WHERE lane_id=:id").param("id",id).update()).hasRootCauseInstanceOf(java.sql.SQLException.class);
+    }
+
+    @Test
+    void databaseTimeDefinesApprovalCancellationAndEffectiveLookupBoundaries() throws Exception {
+        var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
+        var lanePath=lanes(f.orgA)+"/"+id;
+        // Control the database time sample while keeping all inserted instants ahead of PostgreSQL's live clock.
+        var boundary=laneRepository.databaseNow().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
+        var oneMillisecondAfter=boundary.plusMillis(1);
+        var twoMillisecondsAfter=boundary.plusMillis(2);
+
+        doReturn(boundary).when(laneRepository).databaseNow();
+        problem(owner.write("POST",lanePath+"/revisions",revision(0,0,"10.0000","EUR",boundary.minusMillis(1))),400,"INVALID_REQUEST");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isZero();
+
+        var exactApproval=owner.write("POST",lanePath+"/revisions",revision(0,0,"11.0000","EUR",boundary));
+        assertThat(exactApproval.statusCode()).as(exactApproval.body()).isEqualTo(201);
+        doReturn(boundary.minusMillis(1)).when(laneRepository).databaseNow();
+        var beforeEffective=tree(owner.get(lanePath));
+        assertThat(beforeEffective.path("asOf").asString()).isEqualTo(boundary.minusMillis(1).toString());
+        assertThat(beforeEffective.path("currentCost").isNull()).isTrue();
+        doReturn(boundary).when(laneRepository).databaseNow();
+        var atEffective=tree(owner.get(lanePath));
+        assertThat(atEffective.path("currentCost").path("costAmount").asString()).isEqualTo("11.0000");
+        assertThat(laneRepository.currentCosts(f.orgA,List.of(id),boundary.minusMillis(1))).isEmpty();
+        assertThat(laneRepository.currentCosts(f.orgA,List.of(id),boundary)).hasSize(1);
+
+        var plusOneApproval=owner.write("POST",lanePath+"/revisions",revision(1,1,"12.0000","EUR",oneMillisecondAfter));
+        assertThat(plusOneApproval.statusCode()).as(plusOneApproval.body()).isEqualTo(201);
+        assertThat(laneRepository.currentCosts(f.orgA,List.of(id),oneMillisecondAfter).getFirst().revision().costAmount()).isEqualTo("12.0000");
+        doReturn(boundary).when(laneRepository).databaseNow();
+        var cancelledBeforeBoundary=owner.write("POST",cancelPath(f.orgA,id),cancellation(2,2));
+        assertThat(cancelledBeforeBoundary.statusCode()).as(cancelledBeforeBoundary.body()).isEqualTo(200);
+        assertThat(tree(cancelledBeforeBoundary).path("cancelledRevisions")).hasSize(1);
+        assertThat(tree(cancelledBeforeBoundary).path("lane").path("asOf").asString()).isEqualTo(boundary.toString());
+        assertThat(laneRepository.hasFutureRevisions(f.orgA,id,boundary.minusMillis(1))).isTrue();
+        assertThat(laneRepository.hasFutureRevisions(f.orgA,id,boundary)).isFalse();
+        assertThat(laneRepository.hasFutureRevisions(f.orgA,id,oneMillisecondAfter)).isFalse();
+
+        doReturn(boundary).when(laneRepository).databaseNow();
+        var sameEffectiveTimeAfterCancellation=owner.write("POST",lanePath+"/revisions",revision(3,2,"13.0000","EUR",oneMillisecondAfter));
+        assertThat(sameEffectiveTimeAfterCancellation.statusCode()).as(sameEffectiveTimeAfterCancellation.body()).isEqualTo(201);
+        doReturn(oneMillisecondAfter).when(laneRepository).databaseNow();
+        problem(owner.write("POST",cancelPath(f.orgA,id),cancellation(4,3)),409,"NO_FUTURE_REVISIONS");
+        assertThat(tree(owner.get(lanePath)).path("version").asLong()).isEqualTo(4);
+
+        doReturn(oneMillisecondAfter).when(laneRepository).databaseNow();
+        var afterBoundaryApproval=owner.write("POST",lanePath+"/revisions",revision(4,3,"14.0000","EUR",twoMillisecondsAfter));
+        assertThat(afterBoundaryApproval.statusCode()).as(afterBoundaryApproval.body()).isEqualTo(201);
+        doReturn(twoMillisecondsAfter.plusMillis(1)).when(laneRepository).databaseNow();
+        problem(owner.write("POST",cancelPath(f.orgA,id),cancellation(5,4)),409,"NO_FUTURE_REVISIONS");
+        assertThat(tree(owner.get(lanePath)).path("version").asLong()).isEqualTo(5);
+
+        var history=tree(owner.get(lanePath+"/revisions")).path("items");
+        assertThat(history).extracting(item->item.path("revision").asLong()).containsExactly(4L,3L,2L,1L);
+        assertThat(Instant.parse(history.get(0).path("effectiveAt").asString())).isEqualTo(twoMillisecondsAfter);
+        assertThat(history.get(0).path("validUntil").isNull()).isTrue();
+        assertThat(Instant.parse(history.get(1).path("validUntil").asString())).isEqualTo(twoMillisecondsAfter);
+        assertThat(history.get(2).path("cancellation").isNull()).isFalse();
+        assertThat(history.get(2).path("validUntil").isNull()).isTrue();
+        assertThat(Instant.parse(history.get(3).path("validUntil").asString())).isEqualTo(oneMillisecondAfter);
+    }
+
+    @Test
+    void databaseClockOverridesApplicationClockOffsetsInBothDirections() throws Exception {
+        var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
+        var lanePath=lanes(f.orgA)+"/"+id;
+        var current=owner.write("POST",lanePath+"/revisions",revision(0,0,"20.0000","EUR",null));
+        assertThat(current.statusCode()).as(current.body()).isEqualTo(201);
+        var databaseSample=laneRepository.databaseNow();
+
+        doReturn(databaseSample.plus(365,ChronoUnit.DAYS)).when(clock).instant();
+        var future=databaseSample.plus(2,ChronoUnit.MINUTES).truncatedTo(ChronoUnit.MICROS);
+        var planned=owner.write("POST",lanePath+"/revisions",revision(1,1,"21.0000","EUR",future));
+        assertThat(planned.statusCode()).as(planned.body()).isEqualTo(201);
+        var before=laneRepository.databaseNow();
+        var whileClockAhead=tree(owner.get(lanePath));
+        var after=laneRepository.databaseNow();
+        assertThat(Instant.parse(whileClockAhead.path("asOf").asString())).isBetween(before,after);
+        assertThat(whileClockAhead.path("currentCost").path("costAmount").asString()).isEqualTo("20.0000");
+        var cancelled=owner.write("POST",cancelPath(f.orgA,id),cancellation(2,2));
+        assertThat(cancelled.statusCode()).as(cancelled.body()).isEqualTo(200);
+
+        doReturn(databaseSample.minus(365,ChronoUnit.DAYS)).when(clock).instant();
+        var expired=laneRepository.databaseNow().minusSeconds(30);
+        problem(owner.write("POST",lanePath+"/revisions",revision(3,2,"22.0000","EUR",expired)),400,"INVALID_REQUEST");
+        var afterCancellation=tree(owner.get(lanePath));
+        assertThat(afterCancellation.path("version").asLong()).isEqualTo(3);
+        assertThat(afterCancellation.path("latestRevision").asLong()).isEqualTo(2);
+        assertThat(afterCancellation.path("currentCost").path("costAmount").asString()).isEqualTo("20.0000");
+    }
+
+    @Test
+    void databaseTriggerRejectsRevisionExpiredAfterTheApplicationDecisionSample() throws Exception {
+        var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
+        var databaseNow=laneRepository.databaseNow();
+        doReturn(databaseNow.minusSeconds(30)).when(laneRepository).databaseNow();
+        var alreadyExpired=databaseNow.minusSeconds(10);
+        problem(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"30.0000","EUR",alreadyExpired)),409,"CONFIGURATION_CONFLICT");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT version FROM stockrescue.transport_lane WHERE org_id=:org AND id=:lane")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:lane AND action='LANE_COST_REVISED'")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void cancellationSamplesDatabaseTimeAfterWaitingForTheLaneLock() throws Exception {
+        var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
+        var effectiveAt=laneRepository.databaseNow().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
+        var planned=owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"31.0000","EUR",effectiveAt));
+        assertThat(planned.statusCode()).as(planned.body()).isEqualTo(201);
+        var member=membership(f.orgA,f.ownerA.id);
+
+        var laneLocked=new CountDownLatch(1);var releaseLane=new CountDownLatch(1);
+        var cancelLockEntered=new CountDownLatch(1);var enterCancelLock=new CountDownLatch(1);
+        var cancelThread=new AtomicReference<Thread>();var databaseTimeIsAfterLock=new AtomicBoolean(false);
+        doAnswer(invocation->{
+            if(Thread.currentThread()==cancelThread.get()) {
+                cancelLockEntered.countDown();
+                if(!enterCancelLock.await(10,TimeUnit.SECONDS)) throw new IllegalStateException("Cancellation lock was not released");
+            }
+            return invocation.callRealMethod();
+        }).when(laneRepository).lock(f.orgA,id);
+        doAnswer(invocation->databaseTimeIsAfterLock.get()?effectiveAt.plusMillis(1):effectiveAt.minusMillis(1))
+                .when(laneRepository).databaseNow();
+
+        try(var workers=Executors.newFixedThreadPool(2)) {
+            var holder=workers.submit(()->new TransactionTemplate(transactionManager).executeWithoutResult(status->{
+                laneRepository.lock(f.orgA,id);laneLocked.countDown();
+                try {
+                    if(!releaseLane.await(10,TimeUnit.SECONDS)) throw new IllegalStateException("Lane lock holder timed out");
+                } catch(InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();throw new IllegalStateException(interrupted);
+                }
+            }));
+            assertThat(laneLocked.await(10,TimeUnit.SECONDS)).isTrue();
+            var cancellation=workers.submit(()->{
+                cancelThread.set(Thread.currentThread());
+                return new TransactionTemplate(transactionManager).execute(status->
+                        laneRepository.cancelFutureRevisions(f.orgA,id,member,REASON,"late-lock-cancellation-test"));
+            });
+            assertThat(cancelLockEntered.await(10,TimeUnit.SECONDS)).isTrue();
+            databaseTimeIsAfterLock.set(true);
+            releaseLane.countDown();
+            enterCancelLock.countDown();
+            holder.get(20,TimeUnit.SECONDS);
+            var batch=cancellation.get(20,TimeUnit.SECONDS);
+            assertThat(batch.revisions()).isEmpty();
+            assertThat(batch.asOf()).isEqualTo(effectiveAt.plusMillis(1));
+        }
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision_cancellation WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isZero();
+        assertThat(laneRepository.detail(f.orgA,id).orElseThrow().version()).isEqualTo(1);
     }
 
     @Test
@@ -170,15 +487,16 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         var currentAt=Instant.parse(tree(current).path("currentCost").path("effectiveAt").asString());
         problem(owner.write("POST",cancelPath(f.orgA,id),cancellation(1,1)),409,"NO_FUTURE_REVISIONS");
         assertThat(tree(owner.get(lanes(f.orgA)+"/"+id)).path("version").asLong()).isEqualTo(1);
-        var now=Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);doReturn(now).when(clock).instant();
+        var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
         var tomorrow=now.plus(1,ChronoUnit.DAYS);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"14.0001","EUR",tomorrow)).statusCode()).isEqualTo(201);
         var later=tomorrow.plus(1,ChronoUnit.HOURS);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(2,2,"15.0001","EUR",later)).statusCode()).isEqualTo(201);
 
         var member=membership(f.orgA,f.ownerA.id);
-        var cancelled=new TransactionTemplate(transactionManager).execute(status ->
+        var cancellationBatch=new TransactionTemplate(transactionManager).execute(status ->
                 laneRepository.cancelFutureRevisions(f.orgA,id,member,REASON,"schedule-resolution-test"));
+        var cancelled=cancellationBatch.revisions();
         assertThat(cancelled).hasSize(2).extracting(item->item.revision()).containsExactly(2L,3L);
         assertThat(cancelled).extracting(item->item.cancelledByMembershipId()).containsOnly(member);
         assertThat(cancelled).extracting(item->item.reason()).containsOnly(REASON);
@@ -197,12 +515,12 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         assertThat(tree(changed).path("missing").toString()).contains("COST_ZONE_MISMATCH");
         assertThat(tree(changed).path("currentCost").isNull()).isTrue();
 
-        var replacementAt=Instant.now().plusSeconds(1).truncatedTo(ChronoUnit.MICROS);doReturn(replacementAt).when(clock).instant();
         var replacement=owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(5,3,"16.0000","EUR",null));
         assertThat(replacement.statusCode()).as(replacement.body()).isEqualTo(201);
         assertThat(tree(replacement).path("status").asString()).isEqualTo("CONFIGURED");
         assertThat(tree(replacement).path("latestRevision").asLong()).isEqualTo(4);
         assertThat(tree(replacement).path("currentCost").path("costAmount").asString()).isEqualTo("16.0000");
+        var replacementAt=Instant.parse(tree(replacement).path("currentCost").path("effectiveAt").asString());
 
         var history=laneRepository.history(f.orgA,id,0,10);
         assertThat(history).extracting(item->item.revision()).containsExactly(4L,3L,2L,1L);
@@ -215,12 +533,55 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         assertThat(history.get(1).cancellation().revisionId()).isEqualTo(history.get(1).id());
         assertThat(history.get(1).cancellation().revision()).isEqualTo(3);
 
-        doReturn(tomorrow).when(clock).instant();
         var atFirstCancelledDate=tree(owner.get(lanes(f.orgA)+"/"+id));
         assertThat(atFirstCancelledDate.path("currentCost").path("costAmount").asString()).isEqualTo("16.0000");
         assertThat(atFirstCancelledDate.path("latestRevision").asLong()).isEqualTo(4);
-        doReturn(later.plusSeconds(1)).when(clock).instant();
         assertThat(tree(owner.get(lanes(f.orgA)+"/"+id)).path("currentCost").path("costAmount").asString()).isEqualTo("16.0000");
+    }
+
+    @Test
+    void inactiveLaneCanCancelScheduledCostAfterZoneArchiveThenRecoverWithNewZones() throws Exception {
+        var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"12.0000","EUR",null)).statusCode()).isEqualTo(201);
+        var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
+        var scheduledAt=now.plus(1,ChronoUnit.DAYS);
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"13.0000","EUR",scheduledAt)).statusCode()).isEqualTo(201);
+
+        var deactivated=owner.write("PATCH",lanes(f.orgA)+"/"+id,laneUpdate(2,f.z1,f.z2,false));
+        assertThat(deactivated.statusCode()).as(deactivated.body()).isEqualTo(200);
+        assertThat(tree(deactivated).path("version").asLong()).isEqualTo(3);
+        assertThat(owner.write("POST",zones(f.orgA,f.a1)+"/"+f.z1+"/archive",zoneArchiveRequest(owner,f.orgA,f.a1,f.z1,0)).statusCode()).isEqualTo(200);
+
+        var cancelled=owner.write("POST",cancelPath(f.orgA,id),cancellation(3,2));
+        assertThat(cancelled.statusCode()).as(cancelled.body()).isEqualTo(200);
+        assertThat(tree(cancelled).path("cancelledRevisions")).hasSize(1);
+        assertThat(tree(cancelled).path("lane").path("version").asLong()).isEqualTo(4);
+        assertThat(tree(cancelled).path("lane").path("active").asBoolean()).isFalse();
+        assertThat(tree(cancelled).path("lane").path("status").asString()).isEqualTo("INACTIVE");
+        assertThat(tree(cancelled).path("lane").path("currentCost").isNull()).isTrue();
+
+        var newOrigin=f.zone(f.orgA,f.a1,"Recovered origin","AMBIENT");
+        var newDestination=f.zone(f.orgA,f.a2,"Recovered destination","AMBIENT");
+        var lanePath=lanes(f.orgA)+"/"+id;
+        var reactivated=owner.write("PATCH",lanePath,laneUpdate(4,newOrigin,newDestination,true));
+        assertThat(reactivated.statusCode()).as(reactivated.body()).isEqualTo(200);
+        assertThat(tree(reactivated).path("active").asBoolean()).isTrue();
+        assertThat(tree(reactivated).path("status").asString()).isEqualTo("UNCONFIGURED");
+        assertThat(tree(reactivated).path("missing").toString()).contains("COST_ZONE_MISMATCH");
+        assertThat(tree(reactivated).path("currentCost").isNull()).isTrue();
+
+        var replacement=owner.write("POST",lanePath+"/revisions",revision(5,2,"14.0000","EUR",null));
+        assertThat(replacement.statusCode()).as(replacement.body()).isEqualTo(201);
+        assertThat(tree(replacement).path("status").asString()).isEqualTo("CONFIGURED");
+        assertThat(tree(replacement).path("latestRevision").asLong()).isEqualTo(3);
+        assertThat(tree(replacement).path("currentCost").path("costAmount").asString()).isEqualTo("14.0000");
+        var history=tree(owner.get(lanePath+"/revisions")).path("items");
+        assertThat(history).hasSize(3);
+        assertThat(history.get(1).path("revision").asLong()).isEqualTo(2);
+        assertThat(history.get(1).path("cancellation").path("reason").asString()).isEqualTo(REASON);
+        assertThat(history.get(1).path("originZoneId").asString()).isEqualTo(f.z1.toString());
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:lane AND action='LANE_SCHEDULED_REVISIONS_CANCELLED'")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isEqualTo(1L);
     }
 
     @Test
@@ -228,7 +589,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
         var current=owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"12.0000","EUR",null));
         assertThat(current.statusCode()).as(current.body()).isEqualTo(201);
-        var now=Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);doReturn(now).when(clock).instant();
+        var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"13.0000","EUR",now.plus(1,ChronoUnit.DAYS))).statusCode()).isEqualTo(201);
         var version=tree(owner.get(lanes(f.orgA)+"/"+id)).path("version").asLong();
         doThrow(new IllegalStateException("Test audit failure")).when(audit).securityChange(any(),eq(f.orgA),eq("transport-lane"),eq(id),
@@ -236,9 +597,9 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
 
         assertThatThrownBy(()->new TransactionTemplate(transactionManager).executeWithoutResult(status->{
             var evidence=laneRepository.cancelFutureRevisions(f.orgA,id,membership(f.orgA,f.ownerA.id),REASON,"audit-rollback-test");
-            assertThat(evidence).hasSize(1);
+            assertThat(evidence.revisions()).hasSize(1);
             audit.securityChange(f.ownerA.id,f.orgA,"transport-lane",id,"LANE_SCHEDULED_REVISIONS_CANCELLED",
-                    Map.of("outcome","SUCCEEDED","cancelledRevisions",evidence),REASON);
+                    Map.of("outcome","SUCCEEDED","cancelledRevisions",evidence.revisions()),REASON);
         })).isInstanceOf(IllegalStateException.class).hasMessage("Test audit failure");
 
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision_cancellation WHERE org_id=:org AND lane_id=:lane")
@@ -252,7 +613,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
         var current=owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"12.0000","EUR",null));
         assertThat(current.statusCode()).as(current.body()).isEqualTo(201);
-        var now=Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);doReturn(now).when(clock).instant();
+        var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
         var tomorrow=now.plus(1,ChronoUnit.DAYS);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"13.0000","EUR",tomorrow)).statusCode()).isEqualTo(201);
         var member=membership(f.orgA,f.ownerA.id);
@@ -266,7 +627,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
                 laneRepository.revise(f.orgA,locked,member,CostParameters.parse("14.0000","EUR",45),tomorrow.plusSeconds(1));
             });return null;});
             assertThat(ready.await(10,TimeUnit.SECONDS)).isTrue();start.countDown();
-            assertThat(cancel.get(20,TimeUnit.SECONDS)).isNotEmpty();revise.get(20,TimeUnit.SECONDS);
+            assertThat(cancel.get(20,TimeUnit.SECONDS).revisions()).isNotEmpty();revise.get(20,TimeUnit.SECONDS);
         }
         var history=laneRepository.history(f.orgA,id,0,10);
         assertThat(history).extracting(item->item.revision()).containsExactly(3L,2L,1L);
@@ -282,7 +643,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         var current=owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"12.3456","EUR",null));
         assertThat(current.statusCode()).as(current.body()).isEqualTo(201);
         var currentAt=Instant.parse(tree(current).path("currentCost").path("effectiveAt").asString());
-        var now=Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);doReturn(now).when(clock).instant();
+        var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
         var tomorrow=now.plus(1,ChronoUnit.DAYS);var later=tomorrow.plus(1,ChronoUnit.HOURS);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"14.0001","EUR",tomorrow)).statusCode()).isEqualTo(201);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(2,2,"15.0001","EUR",later)).statusCode()).isEqualTo(201);
@@ -340,7 +701,6 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         assertThat(tree(changed).path("missing").toString()).contains("COST_ZONE_MISMATCH");
         assertThat(tree(changed).path("currentCost").isNull()).isTrue();
 
-        doCallRealMethod().when(clock).instant();
         var replacement=owner.write("POST",lanePath+"/revisions",revision(5,3,"16.0000","EUR",null));
         assertThat(replacement.statusCode()).as(replacement.body()).isEqualTo(201);
         assertThat(tree(replacement).path("status").asString()).isEqualTo("CONFIGURED");
@@ -348,9 +708,9 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         var replacementAt=Instant.parse(tree(replacement).path("currentCost").path("effectiveAt").asString());
         assertThat(tree(replacement).path("currentCost").path("costAmount").asString()).isEqualTo("16.0000");
 
-        doReturn(tomorrow).when(clock).instant();
+        doReturn(tomorrow).when(laneRepository).databaseNow();
         assertThat(tree(owner.get(lanePath)).path("currentCost").path("costAmount").asString()).isEqualTo("16.0000");
-        doReturn(later.plusSeconds(1)).when(clock).instant();
+        doReturn(later.plusSeconds(1)).when(laneRepository).databaseNow();
         assertThat(tree(owner.get(lanePath)).path("currentCost").path("costAmount").asString()).isEqualTo("16.0000");
         var reopened=new Browser(f.ownerA);
         var persisted=tree(reopened.get(historyPath)).path("items");
@@ -361,10 +721,10 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
     }
 
     @Test
-    void cancellationRequiresCurrentOrganizationAuthorityAndActiveLaneStores() throws Exception {
+    void cancellationRequiresCurrentOrganizationAuthorityAndAllowsArchivedLaneStores() throws Exception {
         var laneA=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var idA=UUID.fromString(laneA.path("id").asString());
         var laneB=createLane(f.ownerB,f.orgB,f.b1,f.b2,f.zb1,f.zb2);var idB=UUID.fromString(laneB.path("id").asString());
-        var owner=f.ownerA.browser();var now=Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);doReturn(now).when(clock).instant();
+        var owner=f.ownerA.browser();var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+idA+"/revisions",revision(0,0,"12.0000","EUR",null)).statusCode()).isEqualTo(201);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+idA+"/revisions",revision(1,1,"13.0000","EUR",now.plus(1,ChronoUnit.DAYS))).statusCode()).isEqualTo(201);
         var path=cancelPath(f.orgA,idA);var request=cancellation(2,2);
@@ -380,11 +740,21 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         assertThat(revoked.statusCode()).as(revoked.body()).isEqualTo(200);
         problem(revokedSession.write("POST",path,request),404,"RESOURCE_NOT_FOUND");
 
+        var deactivated=owner.write("PATCH",lanes(f.orgA)+"/"+idA,laneUpdate(2,f.z1,f.z2,false));
+        assertThat(deactivated.statusCode()).as(deactivated.body()).isEqualTo(200);
+        problem(owner.write("POST",path,request),409,"CONFIGURATION_CONFLICT");
         assertThat(owner.write("POST","/api/v1/organizations/"+f.orgA+"/stores/"+f.a1+"/archive",version(0)).statusCode()).isEqualTo(200);
-        problem(owner.write("POST",path,request),404,"RESOURCE_NOT_FOUND");
+        var cancelled=owner.write("POST",path,cancellation(3,2));
+        assertThat(cancelled.statusCode()).as(cancelled.body()).isEqualTo(200);
+        assertThat(tree(cancelled).path("lane").path("active").asBoolean()).isFalse();
+        assertThat(tree(cancelled).path("lane").path("status").asString()).isEqualTo("INACTIVE");
+        assertThat(tree(cancelled).path("lane").path("currentCost").isNull()).isTrue();
+        problem(owner.write("PATCH",lanes(f.orgA)+"/"+idA,laneUpdate(4,f.z1,f.z2,true)),404,"RESOURCE_NOT_FOUND");
+        problem(owner.write("POST",lanes(f.orgA)+"/"+idA+"/revisions",revision(4,2,"14.0000","EUR",null)),404,"RESOURCE_NOT_FOUND");
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision_cancellation WHERE org_id=:org AND lane_id=:lane")
-                .param("org",f.orgA).param("lane",idA).query(Long.class).single()).isZero();
-        assertThat(tree(owner.get(lanes(f.orgA)+"/"+idA)).path("version").asLong()).isEqualTo(2);
+                .param("org",f.orgA).param("lane",idA).query(Long.class).single()).isEqualTo(1L);
+        assertThat(tree(owner.get(lanes(f.orgA)+"/"+idA)).path("version").asLong()).isEqualTo(4);
+        assertThat(tree(owner.get(lanes(f.orgA)+"/"+idA)).path("active").asBoolean()).isFalse();
     }
 
     @Test
@@ -392,7 +762,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
         var current=owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"12.0000","EUR",null));
         assertThat(current.statusCode()).as(current.body()).isEqualTo(201);
-        var now=Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);doReturn(now).when(clock).instant();
+        var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"13.0000","EUR",now.plus(1,ChronoUnit.DAYS))).statusCode()).isEqualTo(201);
         doThrow(new IllegalStateException("Test audit failure")).when(audit).securityChange(any(),eq(f.orgA),eq("transport-lane"),eq(id),
                 eq("LANE_SCHEDULED_REVISIONS_CANCELLED"),anyMap(),eq(REASON));
@@ -408,7 +778,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
         var current=owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"12.0000","EUR",null));
         assertThat(current.statusCode()).as(current.body()).isEqualTo(201);
-        var now=Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);doReturn(now).when(clock).instant();
+        var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
         var tomorrow=now.plus(1,ChronoUnit.DAYS);
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"13.0000","EUR",tomorrow)).statusCode()).isEqualTo(201);
         var newOrigin=f.zone(f.orgA,f.a1,"Concurrent origin","AMBIENT");var newDestination=f.zone(f.orgA,f.a2,"Concurrent destination","AMBIENT");
@@ -435,6 +805,31 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
     }
 
     @Test
+    void cancellationAndStoreArchiveSerializeWithoutLosingCancellationEvidence() throws Exception {
+        var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"12.0000","EUR",null)).statusCode()).isEqualTo(201);
+        var now=laneRepository.databaseNow().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"13.0000","EUR",now.plus(1,ChronoUnit.DAYS))).statusCode()).isEqualTo(201);
+        var deactivated=owner.write("PATCH",lanes(f.orgA)+"/"+id,laneUpdate(2,f.z1,f.z2,false));
+        assertThat(deactivated.statusCode()).as(deactivated.body()).isEqualTo(200);
+
+        var archiver=new Browser(f.ownerA);
+        var outcomes=concurrent(()->owner.write("POST",cancelPath(f.orgA,id),cancellation(3,2)),
+                ()->archiver.write("POST","/api/v1/organizations/"+f.orgA+"/stores/"+f.a1+"/archive",version(0)));
+        assertThat(outcomes).extracting(HttpResponse::statusCode).containsExactly(200,200);
+        var persisted=tree(owner.get(lanes(f.orgA)+"/"+id));
+        assertThat(persisted.path("version").asLong()).isEqualTo(4);
+        assertThat(persisted.path("active").asBoolean()).isFalse();
+        assertThat(persisted.path("status").asString()).isEqualTo("INACTIVE");
+        assertThat(persisted.path("currentCost").isNull()).isTrue();
+        assertThat(jdbc.sql("SELECT active FROM stockrescue.store WHERE id=:store").param("store",f.a1).query(Boolean.class).single()).isFalse();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision_cancellation WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isEqualTo(1L);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:lane AND action='LANE_SCHEDULED_REVISIONS_CANCELLED'")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isEqualTo(1L);
+    }
+
+    @Test
     void simultaneousCostAndZoneChangesReturnOneConflictWithoutOverwritingEvidence() throws Exception {
         var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());
         var first=f.ownerA.browser();var second=new Browser(f.ownerA);
@@ -456,7 +851,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
     void changedOrInactiveZonesCannotReuseCostEvidenceAndInactiveStoresBlockNewRevisions() throws Exception {
         var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
         assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"8.0001","EUR",null)).statusCode()).isEqualTo(201);
-        assertThat(owner.write("POST",zones(f.orgA,f.a1)+"/"+f.z1+"/archive",version(0)).statusCode()).isEqualTo(200);
+        assertThat(owner.write("POST",zones(f.orgA,f.a1)+"/"+f.z1+"/archive",zoneArchiveRequest(owner,f.orgA,f.a1,f.z1,0)).statusCode()).isEqualTo(200);
         var inactive=tree(owner.get(lanes(f.orgA)+"/"+id));
         assertThat(inactive.path("status").asString()).isEqualTo("INACTIVE");assertThat(inactive.path("currentCost").isNull()).isTrue();
         problem(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(1,1,"9.0000","EUR",null)),409,"CONFIGURATION_INACTIVE");
@@ -520,12 +915,31 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
     private Map<String,Object> cancellation(long version,long latestRevision) { return Map.of("laneVersion",version,"expectedRevision",latestRevision,"reason",REASON); }
     private Map<String,Object> version(long version) { return Map.of("version",version,"reason",REASON); }
     private String zones(UUID org,UUID store) { return "/api/v1/organizations/"+org+"/stores/"+store+"/storage-zones"; }
+    private String zoneArchiveImpactPath(UUID org,UUID store,UUID zone) { return zones(org,store)+"/"+zone+"/archive-impact"; }
+    private JsonNode zoneArchiveImpact(Browser actor,UUID org,UUID store,UUID zone) throws Exception {
+        var response=actor.get(zoneArchiveImpactPath(org,store,zone));assertThat(response.statusCode()).as(response.body()).isEqualTo(200);return tree(response);
+    }
+    private Map<String,Object> zoneArchiveRequest(long version,JsonNode impact) {
+        return Map.of("version",version,"reason",REASON,"impactFingerprint",impact.path("impactFingerprint").asString());
+    }
+    private Map<String,Object> zoneArchiveRequest(Browser actor,UUID org,UUID store,UUID zone,long version) throws Exception {
+        return zoneArchiveRequest(version,zoneArchiveImpact(actor,org,store,zone));
+    }
     private String lanes(UUID org) { return "/api/v1/organizations/"+org+"/transport-lanes"; }
     private String cancelPath(UUID org,UUID lane) { return lanes(org)+"/"+lane+"/scheduled-revisions/cancel"; }
     private JsonNode tree(HttpResponse<String> response) { return json.readTree(response.body()); }
     private void problem(HttpResponse<String> response,int status,String code) { assertThat(response.statusCode()).as(response.body()).isEqualTo(status);assertThat(tree(response).path("code").asString()).isEqualTo(code); }
     private List<HttpResponse<String>> concurrent(java.util.concurrent.Callable<HttpResponse<String>> one,java.util.concurrent.Callable<HttpResponse<String>> two) throws Exception {
         var start=new CountDownLatch(1);try(var workers=Executors.newFixedThreadPool(2)) { var a=workers.submit(()->{start.await();return one.call();});var b=workers.submit(()->{start.await();return two.call();});start.countDown();return List.of(a.get(20,TimeUnit.SECONDS),b.get(20,TimeUnit.SECONDS)); }
+    }
+    private void awaitDatabaseLockWait(String queryPart) throws Exception {
+        var deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10);
+        while(System.nanoTime()<deadline) {
+            if(jdbc.sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE :pattern)")
+                    .param("pattern","%"+queryPart+"%").query(Boolean.class).single()) return;
+            Thread.sleep(10);
+        }
+        fail("Timed out waiting for PostgreSQL lock wait on query containing: "+queryPart);
     }
     private class Fixture {
         final User ownerA=user(),ownerB=user(),manager=user(),reader=user();

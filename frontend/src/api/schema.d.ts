@@ -412,8 +412,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Deactivate a zone without deleting history or checking future inventory transfers */
+        /** Permanently deactivate a zone after confirming its current operational impact */
         post: operations["archiveStorageZone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview scoped active-lane and future-schedule counts before irreversible zone archival */
+        get: operations["previewStorageZoneArchiveImpact"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -500,7 +517,10 @@ export interface paths {
         /** Immutable price evidence; validity intervals end at the next revision's effective time */
         get: operations["laneCostHistory"];
         put?: never;
-        /** Approve an immutable decimal cost/duration version; omitted effectiveAt means server approval time */
+        /**
+         * Approve an immutable decimal cost/duration version; omitted effectiveAt means server approval time
+         * @description PostgreSQL wall-clock time is authoritative. The database samples it after locking the lane; an omitted effectiveAt uses that sample, and an earlier explicit value is rejected.
+         */
         post: operations["appendLaneCostRevision"];
         delete?: never;
         options?: never;
@@ -517,7 +537,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Explicitly cancel every future cost revision for a lane and preserve its history */
+        /**
+         * Explicitly cancel every future cost revision for a lane and preserve its history
+         * @description Org Admins may cancel future revisions when a lane is inactive or an endpoint store is archived. After locking the lane and candidate revisions, PostgreSQL samples wall-clock time; only revisions with effectiveAt strictly later than that instant can be cancelled. Cancellation does not reactivate the lane or store.
+         */
         post: operations["cancelScheduledLaneRevisions"];
         delete?: never;
         options?: never;
@@ -534,7 +557,7 @@ export interface components {
         };
         ApiProblem: {
             /** @enum {string} */
-            code: "ACCESS_DENIED" | "ACCESS_CONFLICT" | "ACCESS_RATE_LIMITED" | "AUTH_RATE_LIMITED" | "AUTH_REQUIRED" | "CSRF_INVALID" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_INACTIVE" | "INCOMPATIBLE_ZONES" | "INTERNAL_ERROR" | "INVALID_CORRELATION_ID" | "INVALID_CREDENTIALS" | "INVALID_REQUEST" | "INVITATION_UNAVAILABLE" | "NO_FUTURE_REVISIONS" | "ONBOARDING_CONFLICT" | "ORGANIZATION_REQUIRED" | "REQUEST_TOO_LARGE" | "RESOURCE_NOT_FOUND" | "SERVICE_UNAVAILABLE" | "SCHEDULED_REVISIONS_PENDING" | "SESSION_EXPIRED" | "STORE_CONFLICT" | "STORE_INACTIVE";
+            code: "ACCESS_DENIED" | "ACCESS_CONFLICT" | "ACCESS_RATE_LIMITED" | "AUTH_RATE_LIMITED" | "AUTH_REQUIRED" | "CSRF_INVALID" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_INACTIVE" | "INCOMPATIBLE_ZONES" | "INTERNAL_ERROR" | "INVALID_CORRELATION_ID" | "INVALID_CREDENTIALS" | "INVALID_REQUEST" | "INVITATION_UNAVAILABLE" | "NO_FUTURE_REVISIONS" | "ONBOARDING_CONFLICT" | "ORGANIZATION_REQUIRED" | "REQUEST_TOO_LARGE" | "RESOURCE_NOT_FOUND" | "SERVICE_UNAVAILABLE" | "SCHEDULED_REVISIONS_PENDING" | "SESSION_EXPIRED" | "STORE_CONFLICT" | "STORE_INACTIVE" | "ZONE_IMPACT_CHANGED";
             correlationId: string;
             detail: string;
             /** Format: int32 */
@@ -555,6 +578,13 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        ArchiveZoneRequest: {
+            /** @description Opaque impact snapshot returned by the scoped preview endpoint. */
+            impactFingerprint: string;
+            reason: string;
+            /** Format: int64 */
+            version: number;
+        };
         CancelScheduledRevisionsRequest: {
             /** Format: int64 */
             expectedRevision: number;
@@ -563,7 +593,10 @@ export interface components {
             reason: string;
         };
         CancelledRevisionResponse: {
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Database wall-clock instant when cancellation was checked and recorded.
+             */
             cancelledAt: string;
             /** Format: uuid */
             cancelledByMembershipId: string;
@@ -580,8 +613,11 @@ export interface components {
             currencyCode: string;
             /** Format: int32 */
             durationMinutes: number;
-            /** Format: date-time */
-            effectiveAt?: string;
+            /**
+             * Format: date-time
+             * @description Omit to use PostgreSQL wall-clock time sampled after the lane is locked.
+             */
+            effectiveAt?: string | null;
             /** Format: int64 */
             expectedRevision: number;
             /** Format: int64 */
@@ -687,7 +723,10 @@ export interface components {
             storeGrants: components["schemas"]["PlannedGrantRequest"][];
         };
         LaneLookupResponse: {
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Database wall-clock instant used to resolve current cost.
+             */
             asOf: string;
             lane: components["schemas"]["LaneResponse"] | null;
             missing: ("NO_LANE" | "INACTIVE_LANE" | "INACTIVE_STORE" | "MISSING_ZONES" | "INACTIVE_ZONE" | "INCOMPATIBLE_ZONES" | "NO_EFFECTIVE_COST" | "COST_ZONE_MISMATCH")[];
@@ -695,14 +734,20 @@ export interface components {
             status: "CONFIGURED" | "UNCONFIGURED" | "INACTIVE";
         };
         LanePageResponse: {
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Database wall-clock instant used to resolve current costs.
+             */
             asOf: string;
             hasMore: boolean;
             items: components["schemas"]["LaneResponse"][];
         };
         LaneResponse: {
             active: boolean;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Database wall-clock instant used to resolve current cost.
+             */
             asOf: string;
             currentCost: components["schemas"]["RevisionResponse"] | null;
             /** Format: uuid */
@@ -810,13 +855,19 @@ export interface components {
             destinationZoneId: string | null;
             /** Format: int32 */
             durationMinutes: number;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Database wall-clock instant when this revision becomes effective.
+             */
             effectiveAt: string;
             /** Format: uuid */
             id: string;
             /** Format: uuid */
             originZoneId: string | null;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Database wall-clock instant sampled for approval after the lane lock.
+             */
             recordedAt: string;
             /** Format: uuid */
             recordedByMembershipId: string;
@@ -824,7 +875,10 @@ export interface components {
             revision: number;
             /** @enum {string|null} */
             temperatureClass: "AMBIENT" | "CHILLED" | "FROZEN" | null;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Exclusive end of this revision's active validity interval.
+             */
             validUntil: string | null;
         };
         RoleRequest: {
@@ -915,6 +969,23 @@ export interface components {
             reason: string;
             /** Format: int64 */
             version: number;
+        };
+        ZoneArchiveImpactResponse: {
+            /** Format: int32 */
+            activeLaneCount: number;
+            /**
+             * Format: date-time
+             * @description PostgreSQL wall-clock instant used to count future active revisions.
+             */
+            asOf: string;
+            /** Format: int32 */
+            futureScheduledRevisionCount: number;
+            /** @description Opaque scoped snapshot; send unchanged when confirming archival. */
+            impactFingerprint: string;
+            /** Format: int32 */
+            inactiveLaneCount: number;
+            /** Format: int64 */
+            zoneVersion: number;
         };
         ZonePageResponse: {
             canManage: boolean;
@@ -3630,7 +3701,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Duplicate, stale version or inactive zone */
+            /** @description Duplicate, stale version, changed archive impact or inactive zone */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3723,7 +3794,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Duplicate, stale version or inactive zone */
+            /** @description Duplicate, stale version, changed archive impact or inactive zone */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3817,7 +3888,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Duplicate, stale version or inactive zone */
+            /** @description Duplicate, stale version, changed archive impact or inactive zone */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3862,7 +3933,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ArchiveStoreRequest"];
+                "application/json": components["schemas"]["ArchiveZoneRequest"];
             };
         };
         responses: {
@@ -3911,7 +3982,94 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Duplicate, stale version or inactive zone */
+            /** @description Duplicate, stale version, changed archive impact or inactive zone */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    previewStorageZoneArchiveImpact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                zoneId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ZoneArchiveImpactResponse"];
+                };
+            };
+            /** @description Invalid fields */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Scoped resource unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Duplicate, stale version, changed archive impact or inactive zone */
             409: {
                 headers: {
                     [name: string]: unknown;

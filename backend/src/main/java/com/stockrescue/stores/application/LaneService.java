@@ -1,8 +1,6 @@
 package com.stockrescue.stores.application;
 
-import java.time.Clock;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -24,24 +22,24 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class LaneService {
-    private final AccessPolicy access; private final LaneRepository lanes; private final ZoneRepository zones; private final AuditWriter audit; private final Clock clock;
-    public LaneService(AccessPolicy access,LaneRepository lanes,ZoneRepository zones,AuditWriter audit,Clock clock) { this.access=access;this.lanes=lanes;this.zones=zones;this.audit=audit;this.clock=clock; }
+    private final AccessPolicy access; private final LaneRepository lanes; private final ZoneRepository zones; private final AuditWriter audit;
+    public LaneService(AccessPolicy access,LaneRepository lanes,ZoneRepository zones,AuditWriter audit) { this.access=access;this.lanes=lanes;this.zones=zones;this.audit=audit; }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public List<String> currencies(UUID actor,UUID org) { access.requireAdmin(actor,org,false);return CostParameters.supportedCurrencies(); }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public LanePage list(UUID actor,UUID org,int offset,int limit) {
         access.requireAdmin(actor,org,false);ZoneService.page(offset,limit);
-        var asOf=now();var rows=lanes.list(org,offset,limit+1);var visible=rows.stream().limit(limit).toList();
+        var asOf=lanes.databaseNow();var rows=lanes.list(org,offset,limit+1);var visible=rows.stream().limit(limit).toList();
         var costs=lanes.currentCosts(org,visible.stream().map(Lane::id).toList(),asOf);
         return new LanePage(visible.stream().map(lane->view(lane,costs.stream().filter(cost->cost.laneId().equals(lane.id())).map(LaneRepository.CostRow::revision).findFirst().orElse(null),asOf)).toList(),rows.size()>limit,asOf);
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
-    public LaneView detail(UUID actor,UUID org,UUID id) { access.requireAdmin(actor,org,false);return view(org,existing(org,id),now()); }
+    public LaneView detail(UUID actor,UUID org,UUID id) { access.requireAdmin(actor,org,false);return view(org,existing(org,id),lanes.databaseNow()); }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public RouteLookup lookup(UUID actor,UUID org,UUID origin,UUID destination) {
         access.requireAdmin(actor,org,false);pair(origin,destination);
         for(var store:List.of(origin,destination).stream().sorted().toList()) access.requireStoreIncludingArchived(actor,org,store,StoreAction.READ_STORE,false);
-        var asOf=now();return new RouteLookup(lanes.route(org,origin,destination).map(lane->view(org,lane,asOf)).orElse(null),asOf);
+        var asOf=lanes.databaseNow();return new RouteLookup(lanes.route(org,origin,destination).map(lane->view(org,lane,asOf)).orElse(null),asOf);
     }
     @Transactional
     public LaneView create(UUID actor,UUID org,UUID origin,UUID destination,UUID originZone,UUID destinationZone,String reason) {
@@ -50,20 +48,21 @@ public class LaneService {
         var id=lanes.create(org,origin,destination,originZone,destinationZone).orElseThrow(ZoneService::conflict);
         var lane=existing(org,id);
         audit.securityChange(actor,org,"transport-lane",id,"LANE_CREATED",Map.of("outcome","SUCCEEDED","after",lane),reason);
-        return view(org,lane,now());
+        return view(org,lane,lanes.databaseNow());
     }
     @Transactional
     public LaneView update(UUID actor,UUID org,UUID id,UUID originZone,UUID destinationZone,boolean active,long version,String reason) {
         access.requireAdmin(actor,org,true);ZoneService.reason(reason);
         var before=existing(org,id);lockStores(actor,org,before.originStoreId(),before.destinationStoreId(),!active);lanes.lock(org,id);
         before=existing(org,id);if(before.version()!=version) throw ZoneService.conflict();
+        var asOf=lanes.databaseNow();
         if(active&&(!Objects.equals(originZone,before.originZoneId())||!Objects.equals(destinationZone,before.destinationZoneId()))
-                &&lanes.hasFutureRevisions(org,id)) throw new ConfigurationFailure(ConfigurationFailure.Kind.SCHEDULED_REVISIONS_PENDING);
+                &&lanes.hasFutureRevisions(org,id,asOf)) throw new ConfigurationFailure(ConfigurationFailure.Kind.SCHEDULED_REVISIONS_PENDING);
         if(active) compatible(org,before.originStoreId(),before.destinationStoreId(),originZone,destinationZone);
         else if(!Objects.equals(originZone,before.originZoneId())||!Objects.equals(destinationZone,before.destinationZoneId())) throw ZoneService.conflict();
         lanes.update(org,id,originZone,destinationZone,active);var after=existing(org,id);
         audit.securityChange(actor,org,"transport-lane",id,"LANE_UPDATED",Map.of("outcome","SUCCEEDED","before",before,"after",after),reason);
-        return view(org,after,now());
+        return view(org,after,asOf);
     }
     @Transactional
     public LaneView revise(UUID actor,UUID org,UUID id,long version,long expectedRevision,String amount,String currency,int minutes,Instant effectiveAt,String reason) {
@@ -72,27 +71,28 @@ public class LaneService {
         if(!before.active()) throw inactive();
         if(before.version()!=version||before.latestRevision()!=expectedRevision) throw ZoneService.conflict();
         compatible(org,before.originStoreId(),before.destinationStoreId(),before.originZoneId(),before.destinationZoneId());
-        var parameters=CostParameters.parse(amount,currency,minutes);var now=now();var effective=effectiveAt==null?now:effectiveAt;
-        if(effective.getNano()%1000!=0||effective.isBefore(now)) ZoneService.invalid();
-        if(before.latestEffectiveAt()!=null&&!effective.isAfter(before.latestEffectiveAt())) throw ZoneService.conflict();
-        lanes.revise(org,before,administrator.membershipId(),parameters,effective);
+        var parameters=CostParameters.parse(amount,currency,minutes);var now=lanes.databaseNow();
+        if(effectiveAt!=null&&(effectiveAt.getNano()%1000!=0||effectiveAt.isBefore(now))) ZoneService.invalid();
+        var effectiveForOrder=effectiveAt==null?now:effectiveAt;
+        if(before.latestEffectiveAt()!=null&&!effectiveForOrder.isAfter(before.latestEffectiveAt())) throw ZoneService.conflict();
+        var approvedAt=lanes.revise(org,before,administrator.membershipId(),parameters,effectiveAt);
         var after=existing(org,id);var revision=lanes.history(org,id,0,1).getFirst();
         audit.securityChange(actor,org,"transport-lane",id,"LANE_COST_REVISED",Map.of("outcome","SUCCEEDED","previousRevision",expectedRevision,"after",revision),reason);
-        return view(org,after,now);
+        return view(org,after,approvedAt);
     }
     @Transactional
     public CancellationResult cancelFutureRevisions(UUID actor,UUID org,UUID id,long version,long expectedRevision,String reason) {
         var administrator=access.requireAdmin(actor,org,true);ZoneService.reason(reason);
-        var before=existing(org,id);lockStores(actor,org,before.originStoreId(),before.destinationStoreId(),false);lanes.lock(org,id);before=existing(org,id);
-        if(!before.active()) throw inactive();
+        var before=existing(org,id);lockStores(actor,org,before.originStoreId(),before.destinationStoreId(),true);lanes.lock(org,id);before=existing(org,id);
         if(before.version()!=version||before.latestRevision()!=expectedRevision) throw ZoneService.conflict();
-        var cancelled=lanes.cancelFutureRevisions(org,id,administrator.membershipId(),reason,MDC.get("correlationId"));
+        var batch=lanes.cancelFutureRevisions(org,id,administrator.membershipId(),reason,MDC.get("correlationId"));
+        var cancelled=batch.revisions();
         if(cancelled.isEmpty()) throw new ConfigurationFailure(ConfigurationFailure.Kind.NO_FUTURE_REVISIONS);
         var after=existing(org,id);
         var cancelledEvidence=cancelled.stream().map(item->Map.of("revisionId",item.revisionId(),"revision",item.revision())).toList();
         audit.securityChange(actor,org,"transport-lane",id,"LANE_SCHEDULED_REVISIONS_CANCELLED",
                 Map.of("outcome","SUCCEEDED","beforeVersion",before.version(),"afterVersion",after.version(),"cancelledRevisions",cancelledEvidence),reason);
-        return new CancellationResult(view(org,after,now()),cancelled);
+        return new CancellationResult(view(org,after,batch.asOf()),cancelled);
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public RevisionPage history(UUID actor,UUID org,UUID id,int offset,int limit) {
@@ -128,7 +128,6 @@ public class LaneService {
         var status=missing.stream().anyMatch(value->value==Missing.INACTIVE_LANE||value==Missing.INACTIVE_STORE||value==Missing.INACTIVE_ZONE)?Status.INACTIVE:missing.isEmpty()?Status.CONFIGURED:Status.UNCONFIGURED;
         return new LaneView(lane,status,List.copyOf(missing),missing.isEmpty()?cost:null,asOf);
     }
-    private Instant now() { return clock.instant().truncatedTo(ChronoUnit.MICROS); }
     private void pair(UUID origin,UUID destination) { if(origin==null||destination==null||origin.equals(destination)) ZoneService.invalid(); }
     private ConfigurationFailure inactive() { return new ConfigurationFailure(ConfigurationFailure.Kind.INACTIVE); }
     public record RouteLookup(LaneView lane,Instant asOf) { }

@@ -38,6 +38,7 @@ public class StoreErrorHandler {
             case INCOMPATIBLE_ZONES -> response(HttpStatus.CONFLICT,ProblemCode.INCOMPATIBLE_ZONES,"Both zones must declare the same temperature class.");
             case SCHEDULED_REVISIONS_PENDING -> response(HttpStatus.CONFLICT,ProblemCode.SCHEDULED_REVISIONS_PENDING,"Cancel all future scheduled costs before changing this lane's storage zones.");
             case NO_FUTURE_REVISIONS -> response(HttpStatus.CONFLICT,ProblemCode.NO_FUTURE_REVISIONS,"No future cost revisions remain to cancel. Reload the lane and reconcile its current history.");
+            case ZONE_IMPACT_CHANGED -> response(HttpStatus.CONFLICT,ProblemCode.ZONE_IMPACT_CHANGED,"The zone or its lane impact changed. Review the latest impact before confirming archival.");
         };
     }
     private ResponseEntity<ApiProblem> response(HttpStatus status, ProblemCode code, String detail) {

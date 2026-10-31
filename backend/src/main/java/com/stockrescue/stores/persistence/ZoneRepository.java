@@ -23,6 +23,15 @@ public class ZoneRepository {
         return jdbc.sql("SELECT * FROM stockrescue.storage_zone WHERE org_id=:org AND store_id=:store AND id=:id" + (lock ? " FOR UPDATE" : ""))
                 .param("org", org).param("store", store).param("id", zone).query((row,index) -> zone(row)).optional();
     }
+    public List<ImpactLane> impactLanes(UUID org,UUID store,UUID zone) {
+        return jdbc.sql("""
+                SELECT id,version,active FROM stockrescue.transport_lane
+                WHERE org_id=:org AND ((origin_store_id=:store AND origin_zone_id=:zone)
+                    OR (destination_store_id=:store AND destination_zone_id=:zone))
+                ORDER BY id
+                """).param("org",org).param("store",store).param("zone",zone)
+                .query((row,index)->new ImpactLane(row.getObject("id",UUID.class),row.getLong("version"),row.getBoolean("active"))).list();
+    }
     public Optional<Zone> create(UUID org, UUID store, String name, TemperatureClass temperature) {
         return jdbc.sql("""
                 INSERT INTO stockrescue.storage_zone(id,org_id,store_id,name,temperature_class) VALUES (:id,:org,:store,:name,:temperature)
@@ -44,4 +53,5 @@ public class ZoneRepository {
         return new Zone(row.getObject("id",UUID.class),row.getString("name"),TemperatureClass.valueOf(row.getString("temperature_class")),row.getBoolean("active"),row.getLong("version"),
                 row.getTimestamp("created_at").toInstant(),row.getTimestamp("updated_at").toInstant());
     }
+    public record ImpactLane(UUID id,long version,boolean active) { }
 }
