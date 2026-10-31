@@ -1,18 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
-import { ArrowUpRight, Check, Leaf, RefreshCw } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { StateMessage } from '@/components/state-message'
-import { checkBackendReadiness } from '@/lib/health'
+import { ArrowUpRight, Building2, Leaf, Route, UsersRound } from 'lucide-react'
 
 export function App() {
-  const connection = useQuery({
-    queryKey: ['backend-readiness'],
-    queryFn: checkBackendReadiness,
-    staleTime: 10_000,
-    refetchInterval: 30_000,
-    retry: false,
-  })
-
   return (
     <div className="min-h-svh bg-background text-foreground">
       <a href="#workspace" className="sr-only z-10 rounded-md bg-primary p-3 text-primary-foreground focus:not-sr-only focus:absolute focus:left-4 focus:top-4">
@@ -47,33 +35,27 @@ export function App() {
             </div>
           </section>
 
-          <aside aria-labelledby="connection-title" className="min-w-0 self-start rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8 lg:mt-2">
-            <div className="mb-8 flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Workspace connection</p>
-                <h2 id="connection-title" className="mt-2 text-2xl font-semibold tracking-tight">A live check.</h2>
-              </div>
-              <ArrowUpRight aria-hidden="true" className="size-5 text-muted-foreground" />
+          <aside aria-labelledby="value-title" className="min-w-0 self-start rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8 lg:mt-2">
+            <div className="mb-8">
+              <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Connected operations</p>
+              <h2 id="value-title" className="mt-2 text-2xl font-semibold tracking-tight">Make the operating picture clear.</h2>
+              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Bring the foundations of stock planning together in one shared workspace.</p>
             </div>
-            <div aria-live="polite" className="min-h-36">
-              {connection.isPending ? (
-                <StateMessage state="loading" title="Checking connection" description="Contacting the backend to verify availability." />
-              ) : connection.isError ? (
-                <StateMessage state="unavailable" title="Backend unavailable" description="We could not verify the connection. Check the local services and try again." />
-              ) : (
-                <div role="status">
-                  <span className="mb-4 flex size-10 items-center justify-center rounded-full bg-accent text-primary"><Check aria-hidden="true" className="size-5" /></span>
-                  <h3 className="text-lg font-semibold">Backend available</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">The backend reports that it is ready. Inventory workflows are still being built.</p>
-                </div>
-              )}
-            </div>
-            <Button variant="outline" className="mt-6 w-full" disabled={connection.isFetching}
-              onClick={() => { void connection.refetch() }}>
-              <RefreshCw aria-hidden="true" className="size-4" />
-              {connection.isFetching ? 'Checking…' : 'Check again'}
-            </Button>
-            <p className="mt-4 text-center text-xs leading-relaxed text-muted-foreground">Service availability is checked every 30 seconds.</p>
+            <ul className="space-y-6">
+              <li className="flex gap-4">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-accent text-primary"><Building2 aria-hidden="true" className="size-5" /></span>
+                <div><h3 className="font-semibold">A clear store network</h3><p className="mt-1 text-sm leading-relaxed text-muted-foreground">Organize stores and storage zones within your organization.</p></div>
+              </li>
+              <li className="flex gap-4">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-accent text-primary"><UsersRound aria-hidden="true" className="size-5" /></span>
+                <div><h3 className="font-semibold">The right access for each team</h3><p className="mt-1 text-sm leading-relaxed text-muted-foreground">Manage organization and store-level responsibilities.</p></div>
+              </li>
+              <li className="flex gap-4">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-accent text-primary"><Route aria-hidden="true" className="size-5" /></span>
+                <div><h3 className="font-semibold">Traceable transport costs</h3><p className="mt-1 text-sm leading-relaxed text-muted-foreground">Review scheduled changes alongside each lane's cost history.</p></div>
+              </li>
+            </ul>
+            <a href="/account" className="mt-8 inline-flex items-center gap-2 text-sm font-semibold text-primary hover:underline">Explore your workspace<ArrowUpRight aria-hidden="true" className="size-4" /></a>
           </aside>
         </div>
         <footer className="mt-16 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-6 text-xs text-muted-foreground">
