@@ -104,7 +104,8 @@ public class SecurityConfiguration {
                                     "/api/v1/organizations/*/transport-lanes", "/api/v1/organizations/*/transport-lanes/*", "/api/v1/organizations/*/transport-lanes/*/revisions").authenticated()
                             .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/stores/*/storage-zones", "/api/v1/organizations/*/stores/*/storage-zones/*/archive",
                                     "/api/v1/organizations/*/transport-lanes", "/api/v1/organizations/*/transport-lanes/*/revisions",
-                                    "/api/v1/organizations/*/transport-lanes/*/scheduled-revisions/cancel").authenticated()
+                                    "/api/v1/organizations/*/transport-lanes/*/scheduled-revisions/cancel",
+                                    "/api/v1/organizations/*/transport-lanes/*/scheduled-revisions/cancellation-resolution").authenticated()
                             .requestMatchers(HttpMethod.PATCH, "/api/v1/organizations/*/stores/*/storage-zones/*", "/api/v1/organizations/*/transport-lanes/*").authenticated();
                     if (environment.acceptsProfiles(Profiles.of("contract"))) {
                         authorize.requestMatchers(HttpMethod.GET, "/v3/api-docs", "/v3/api-docs.yaml").permitAll();

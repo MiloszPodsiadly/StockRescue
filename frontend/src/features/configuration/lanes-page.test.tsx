@@ -8,7 +8,7 @@ import { LanePage } from './lanes-page'
 
 const api = vi.hoisted(() => ({
   getLane: vi.fn(), laneHistory: vi.fn(), supportedCurrencies: vi.fn(),
-  cancelScheduledLaneRevisions: vi.fn(), createLane: vi.fn(), updateLane: vi.fn(), reviseLane: vi.fn(),
+  cancelScheduledLaneRevisions: vi.fn(), resolveScheduledLaneCancellation: vi.fn(), createLane: vi.fn(), updateLane: vi.fn(), reviseLane: vi.fn(),
   listLanes: vi.fn(),
 }))
 const tenant = vi.hoisted(() => ({ signal: undefined as AbortSignal | undefined }))
@@ -56,6 +56,20 @@ function history(revisions: Revision | Revision[] | null) {
   return { items, offset: 0, limit: 25, hasMore: false }
 }
 
+function cancellationResolution(status: 'CANCELLED' | 'EXPIRED_WITHOUT_CANCELLATION' | 'STILL_FUTURE', laneVersion = 3) {
+  const cancelled = status === 'CANCELLED'
+  const expired = status === 'EXPIRED_WITHOUT_CANCELLATION'
+  return {
+    lane: lane(laneVersion),
+    decision: cancelled ? 'CANCELLED_CONFIRMED' : expired ? 'NOT_CANCELLED_AND_NO_LONGER_CANCELLABLE' : 'STILL_FUTURE_OR_CHANGED',
+    reviewedRevisions: [{
+      revisionId: scheduledRevision.id, revision: scheduledRevision.revision, effectiveAt: scheduledRevision.effectiveAt, status,
+      cancellation: cancelled ? { id: 'cancellation-3', revisionId: scheduledRevision.id, revision: 3, cancelledByMembershipId: 'member-a', reason: 'Carrier agreement changed before the planned start', cancelledAt: '2026-10-31T12:05:00Z' } : null,
+    }],
+    hasFutureRevisions: status === 'STILL_FUTURE', laneChanged: laneVersion !== 3,
+  }
+}
+
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
   const view = render(<QueryClientProvider client={client}><LanePage /></QueryClientProvider>)
@@ -73,6 +87,7 @@ beforeEach(() => {
     lane: lane(4),
     cancelledRevisions: [{ id: 'cancellation-3', revisionId: scheduledRevision.id, revision: 3, version: 4, cancelledAt: '2026-10-31T12:05:00Z', role: 'ORG_ADMIN', cancelledByMembershipId: 'member-a', reason: 'Carrier agreement changed before the planned start' }],
   })
+  api.resolveScheduledLaneCancellation.mockResolvedValue(cancellationResolution('STILL_FUTURE'))
 })
 
 it('requires review instead of rebasing a zone edit over a concurrent lane version change', async () => {
@@ -441,6 +456,7 @@ it('reconciles a lost cancellation response from saved evidence without retrying
     savedCancellation = true
     throw new TypeError('Network disconnected after server commit')
   })
+  api.resolveScheduledLaneCancellation.mockImplementation(async () => cancellationResolution(savedCancellation ? 'CANCELLED' : 'STILL_FUTURE', savedCancellation ? 4 : 3))
   const { user } = renderPage()
   await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
   await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
@@ -453,31 +469,28 @@ it('reconciles a lost cancellation response from saved evidence without retrying
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })
 
-it('keeps writes blocked when an uncertain cancellation has no saved evidence or future schedule', async () => {
+it('unblocks lane work when the synchronized read proves a reviewed schedule expired without cancellation', async () => {
   let cancellationAttempted = false
   api.laneHistory.mockImplementation(async () => history(cancellationAttempted ? [] : scheduledRevision))
   api.cancelScheduledLaneRevisions.mockImplementation(async () => {
     cancellationAttempted = true
     throw new TypeError('Network disconnected before the cancellation result was received')
   })
+  api.resolveScheduledLaneCancellation.mockResolvedValue(cancellationResolution('EXPIRED_WITHOUT_CANCELLATION'))
   const { user } = renderPage()
   await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
   await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
   await user.click(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
   await user.click(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' }))
 
-  expect(await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })).toBeInTheDocument()
-  expect(screen.getByText(/We could not confirm the request/)).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Save lane configuration' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Approve current cost for test' })).not.toBeInTheDocument()
+  expect(await screen.findByRole('status')).toHaveTextContent('became effective without a cancellation record')
+  expect(screen.queryByRole('heading', { name: 'Lane state needs reconciliation' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Approve current cost for test' })).toBeEnabled()
   expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
-
-  await user.click(screen.getByRole('button', { name: 'Reload lane and history before continuing' }))
-
-  expect(await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Save lane configuration' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Approve current cost for test' })).not.toBeInTheDocument()
-  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
+  expect(api.resolveScheduledLaneCancellation).toHaveBeenCalledTimes(1)
+  expect(api.resolveScheduledLaneCancellation).toHaveBeenCalledWith('org', 'lane', {
+    laneVersion: 3, reviewedRevisionIds: [scheduledRevision.id],
+  }, expect.any(AbortSignal))
 })
 
 it('reopens a fresh schedule review when a lost cancellation response leaves schedules active', async () => {
@@ -500,13 +513,6 @@ it('reopens a fresh schedule review when a lost cancellation response leaves sch
 it('keeps lane writes blocked through repeated reconciliation failures until saved cancellation evidence is confirmed', async () => {
   let savedCancellation = false
   let readFailuresRemaining = 3
-  api.getLane.mockImplementation(async () => {
-    if (savedCancellation && readFailuresRemaining > 0) {
-      readFailuresRemaining -= 1
-      throw new TypeError('Lane read unavailable during reconciliation')
-    }
-    return lane(savedCancellation ? 4 : 3)
-  })
   api.laneHistory.mockImplementation(async () => history(savedCancellation
     ? { ...scheduledRevision, cancellation: {
       id: 'cancellation-3', revision: 3, revisionId: scheduledRevision.id, cancelledAt: '2026-10-31T12:05:00Z', cancelledByMembershipId: 'member-a', reason: 'Carrier agreement changed before the planned start',
@@ -515,6 +521,13 @@ it('keeps lane writes blocked through repeated reconciliation failures until sav
   api.cancelScheduledLaneRevisions.mockImplementation(async () => {
     savedCancellation = true
     throw new TypeError('Network disconnected after server commit')
+  })
+  api.resolveScheduledLaneCancellation.mockImplementation(async () => {
+    if (readFailuresRemaining > 0) {
+      readFailuresRemaining -= 1
+      throw new TypeError('Synchronized cancellation resolution unavailable')
+    }
+    return cancellationResolution('CANCELLED', 4)
   })
   const { user } = renderPage()
   await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
@@ -538,7 +551,7 @@ it('keeps lane writes blocked through repeated reconciliation failures until sav
 
   expect(await screen.findByRole('status')).toHaveTextContent('Saved history confirms 1 reviewed scheduled cost cancelled.')
   expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
-  expect(api.getLane).toHaveBeenCalledTimes(6)
+  expect(api.resolveScheduledLaneCancellation).toHaveBeenCalledTimes(4)
   expect(screen.getByRole('button', { name: 'Approve current cost for test' })).toBeEnabled()
 })
 
@@ -686,6 +699,7 @@ it('blocks further lane actions when refreshed authorization is revoked during c
   api.cancelScheduledLaneRevisions.mockImplementation(async () => { revoked = true; throw denied() })
   api.getLane.mockImplementation(async () => { if (revoked) throw denied(); return lane(3) })
   api.laneHistory.mockImplementation(async () => { if (revoked) throw denied(); return history(scheduledRevision) })
+  api.resolveScheduledLaneCancellation.mockImplementation(async () => { if (revoked) throw denied(); return cancellationResolution('STILL_FUTURE') })
   const { user } = renderPage()
   await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
   await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')

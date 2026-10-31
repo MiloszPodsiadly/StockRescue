@@ -1,14 +1,15 @@
 import { useLayoutEffect, useReducer, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from '@/api/client'
-import { cancelScheduledLaneRevisions, createLane, getLane, laneHistory, reviseLane, supportedCurrencies, updateLane } from '@/api/configuration'
-import type { Lane, LaneCreation, LaneUpdate, Revision } from '@/api/configuration'
+import { cancelScheduledLaneRevisions, createLane, getLane, laneHistory, resolveScheduledLaneCancellation, reviseLane, supportedCurrencies, updateLane } from '@/api/configuration'
+import type { Lane, LaneCreation, LaneUpdate, Revision, ScheduledRevisionCancellationResolutionResponse } from '@/api/configuration'
 import { useTenantKey, useTenantRequests } from '../organizations/tenant-requests'
-import { confirmCancellations, findCancelledRevisionIds, loadScheduledRevisions } from './scheduled-cost-history'
+import { confirmCancellations, loadScheduledRevisions } from './scheduled-cost-history'
 import type { ScheduleReview } from './scheduled-cost-history'
 
+const CANCELLATION_RESOLUTION_BATCH_SIZE = 384
 type Phase = 'IDLE' | 'LOADING_REVIEW' | 'REVIEWING' | 'SAVING' | 'CANCELLING' | 'RELOADING' | 'RECONCILING' | 'NEEDS_RECONCILIATION'
-type PendingCancellation = { draft: LaneUpdate | null, cancellationIds: Array<{ id: string, revisionId: string }>, reviewedRevisionIds: string[], kind: ScheduleReview['kind'] }
+type PendingCancellation = { draft: LaneUpdate | null, cancellationIds: Array<{ id: string, revisionId: string }>, reviewedRevisionIds: string[], reviewedLane: Lane | null, kind: ScheduleReview['kind'] }
 type State = {
   phase: Phase
   notice: string
@@ -67,7 +68,7 @@ function reducer(state: State, action: Action): State {
     case 'notice': return { ...state, notice: action.value }
     case 'error': return { ...state, error: action.value }
     case 'needs-reconciliation': return { ...state, phase: 'NEEDS_RECONCILIATION', unresolved: action.pending }
-    case 'reconciled': return { ...state, review: null, reason: '', confirmed: false, unresolved: null, error: null, notice: action.notice, preparedDraft: action.preparedDraft ?? null }
+    case 'reconciled': return { ...state, phase: 'IDLE', review: null, reason: '', confirmed: false, unresolved: null, error: null, notice: action.notice, preparedDraft: action.preparedDraft ?? null }
     case 'settled':
       if (state.unresolved !== null) return { ...state, phase: 'NEEDS_RECONCILIATION' }
       return state.phase === 'REVIEWING' || state.phase === 'NEEDS_RECONCILIATION'
@@ -156,7 +157,7 @@ export function useLaneControl(organizationId: string, laneId: string) {
         try {
           snapshot = await reloadLaneAndHistory(signal)
         } catch (error) {
-          if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: update, cancellationIds: [], reviewedRevisionIds: [], kind: 'zone-change' } })
+          if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: update, cancellationIds: [], reviewedRevisionIds: [], reviewedLane: visibleLane, kind: 'zone-change' } })
           throw error
         }
         if (snapshot.lane.version !== visibleLane.version
@@ -185,14 +186,14 @@ export function useLaneControl(organizationId: string, laneId: string) {
             dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: update, kind: 'zone-change' })
             return
           } catch (readError) {
-            if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: update, cancellationIds: [], reviewedRevisionIds: [], kind: 'zone-change' } })
+            if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: update, cancellationIds: [], reviewedRevisionIds: [], reviewedLane: latest, kind: 'zone-change' } })
             throw readError
           }
         }
         try {
           await reloadLaneAndHistory(signal)
         } catch {
-          if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: update, cancellationIds: [], reviewedRevisionIds: [], kind: 'zone-change' } })
+          if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: update, cancellationIds: [], reviewedRevisionIds: [], reviewedLane: latest, kind: 'zone-change' } })
         }
         throw error
       }
@@ -209,7 +210,7 @@ export function useLaneControl(organizationId: string, laneId: string) {
         try {
           await reloadLaneAndHistory(signal)
         } catch {
-          if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: null, cancellationIds: [], reviewedRevisionIds: [], kind: 'zone-change' } })
+          if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: null, cancellationIds: [], reviewedRevisionIds: [], reviewedLane: lane.data ?? null, kind: 'zone-change' } })
         }
         throw error
       }
@@ -228,25 +229,27 @@ export function useLaneControl(organizationId: string, laneId: string) {
           reason: state.reason.trim(),
         }, signal)
       } catch (error) {
+        const pending: PendingCancellation = { draft: review.draft, cancellationIds: [], reviewedRevisionIds: review.revisions.map(item => item.id), reviewedLane: review.lane, kind: review.kind }
+        if (isAmbiguousCommandFailure(error) || (error instanceof ApiError && error.code === 'NO_FUTURE_REVISIONS')) {
+          dispatch({ type: 'needs-reconciliation', pending })
+          try {
+            await reconcileReviewedCancellation(pending, signal)
+            return
+          } catch (resolutionError) {
+            if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending })
+            throw resolutionError
+          }
+        }
         try {
           const snapshot = await reloadLaneAndHistory(signal)
-          const cancelled = await findCancelledRevisionIds(organizationId, laneId, review.revisions.map(item => item.id), signal)
-          if (cancelled.size === review.revisions.length) {
-            await finishCancellation(review, snapshot, cancelled.size)
-            return
-          }
-          if (error instanceof ApiError && error.code === 'NO_FUTURE_REVISIONS' && !snapshot.scheduled.length) {
-            dispatch({ type: 'reconciled', notice: 'The reviewed schedules are no longer future plans. Lane and history were reloaded; no new cancellation request was sent.', preparedDraft: review.draft })
-            return
-          }
-          if (!snapshot.scheduled.length && isAmbiguousCommandFailure(error)) {
-            dispatch({ type: 'needs-reconciliation', pending: { draft: review.draft, cancellationIds: [], reviewedRevisionIds: review.revisions.map(item => item.id), kind: review.kind } })
-            dispatch({ type: 'error', value: new Error('Saved cancellation evidence could not be confirmed. Lane changes remain blocked until cancellation evidence appears in history.') })
-            return
-          }
-          dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: review.draft, kind: review.kind })
+          const laneUnchanged = snapshot.lane.version === review.lane.version
+            && snapshot.lane.originZoneId === review.lane.originZoneId
+            && snapshot.lane.destinationZoneId === review.lane.destinationZoneId
+            && snapshot.lane.active === review.lane.active
+          dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: laneUnchanged ? review.draft : null, kind: laneUnchanged ? review.kind : 'independent' })
+          if (review.draft && !laneUnchanged) dispatch({ type: 'notice', value: 'The lane configuration changed while cancellation was being reviewed. The earlier zone draft was discarded.' })
         } catch {
-          if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: review.draft, cancellationIds: [], reviewedRevisionIds: review.revisions.map(item => item.id), kind: review.kind } })
+          if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending })
         }
         throw error
       }
@@ -255,25 +258,109 @@ export function useLaneControl(organizationId: string, laneId: string) {
         const snapshot = await reloadLaneAndHistory(signal, result.cancelledRevisions.map(item => ({ id: item.id, revisionId: item.revisionId })))
         await finishCancellation(review, snapshot, result.cancelledRevisions.length)
       } catch (error) {
-        if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: review.draft, cancellationIds: result.cancelledRevisions.map(item => ({ id: item.id, revisionId: item.revisionId })), reviewedRevisionIds: review.revisions.map(item => item.id), kind: review.kind } })
+        if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: review.draft, cancellationIds: result.cancelledRevisions.map(item => ({ id: item.id, revisionId: item.revisionId })), reviewedRevisionIds: review.revisions.map(item => item.id), reviewedLane: review.lane, kind: review.kind } })
         throw error
       }
     })
   }
 
   async function finishCancellation(review: ScheduleReview, snapshot: Awaited<ReturnType<typeof reloadLaneAndHistory>>, cancelledCount: number) {
+    const expectedVersion = review.lane.version + (cancelledCount > 0 ? 1 : 0)
+    const keepDraft = review.draft !== null
+      && laneConfigurationMatches(review.lane, snapshot.lane, expectedVersion)
+    const draft = keepDraft ? review.draft : null
+    const kind = draft ? review.kind : 'independent'
+    const staleDraft = review.draft !== null && !keepDraft
     if (snapshot.scheduled.length) {
-      dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: review.draft, kind: review.kind })
-      dispatch({ type: 'notice', value: review.kind === 'independent'
+      dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft, kind })
+      dispatch({ type: 'notice', value: staleDraft
+        ? 'Cancellation is confirmed. The lane changed while it was being refreshed, so the earlier zone draft was discarded; review the current schedules.'
+        : kind === 'independent'
         ? 'Saved history confirms the reviewed costs are cancelled. Newer future costs appeared; review them before continuing.'
         : 'The confirmed cancellation is saved. A newer scheduled cost appeared; review it before changing zones.' })
     } else {
-      const notice = review.kind === 'independent'
+      const notice = kind === 'independent'
         ? `Saved history confirms ${cancelledCount} reviewed scheduled cost${cancelledCount === 1 ? '' : 's'} cancelled. Lane and history are current; you can approve a fresh current cost now.`
         : `Cancelled ${cancelledCount} scheduled revision${cancelledCount === 1 ? '' : 's'}. Lane and history were reloaded; review the selected zones and save again.`
-      dispatch({ type: 'reconciled', notice, preparedDraft: review.draft })
+      dispatch({ type: 'reconciled', notice: staleDraft ? `${notice} The earlier zone draft was discarded because the lane changed.` : notice, preparedDraft: draft })
     }
     await client.invalidateQueries({ queryKey: [...scope, 'lanes'] })
+  }
+
+  async function resolveReviewedRevisions(pending: PendingCancellation, signal: AbortSignal) {
+    const reviewedRevisions: ScheduledRevisionCancellationResolutionResponse['reviewedRevisions'] = []
+    let last: ScheduledRevisionCancellationResolutionResponse | null = null
+    for (let offset = 0; offset < pending.reviewedRevisionIds.length; offset += CANCELLATION_RESOLUTION_BATCH_SIZE) {
+      const ids = pending.reviewedRevisionIds.slice(offset, offset + CANCELLATION_RESOLUTION_BATCH_SIZE)
+      last = await resolveScheduledLaneCancellation(organizationId, laneId, {
+        laneVersion: pending.reviewedLane?.version ?? 0,
+        reviewedRevisionIds: ids,
+      }, signal)
+      reviewedRevisions.push(...last.reviewedRevisions)
+      signal.throwIfAborted()
+    }
+    if (last === null) throw new Error('The reviewed scheduled costs could not be resolved.')
+    return { ...last, reviewedRevisions }
+  }
+
+  function safeZoneDraft(pending: PendingCancellation, resolution: ScheduledRevisionCancellationResolutionResponse, currentLane: Lane) {
+    if (!pending.draft || !pending.reviewedLane) return null
+    const cancellationRecorded = resolution.reviewedRevisions.some(item => item.status === 'CANCELLED')
+    const expectedVersion = pending.reviewedLane.version + (cancellationRecorded ? 1 : 0)
+    return laneConfigurationMatches(pending.reviewedLane, resolution.lane, expectedVersion)
+      && laneConfigurationMatches(pending.reviewedLane, currentLane, expectedVersion) ? pending.draft : null
+  }
+
+  function laneConfigurationMatches(reviewedLane: Lane, currentLane: Lane, expectedVersion: number) {
+    return currentLane.version === expectedVersion
+      && currentLane.originZoneId === reviewedLane.originZoneId
+      && currentLane.destinationZoneId === reviewedLane.destinationZoneId
+      && currentLane.active === reviewedLane.active
+  }
+
+  async function reconcileReviewedCancellation(pending: PendingCancellation, signal: AbortSignal) {
+    let resolution = await resolveReviewedRevisions(pending, signal)
+    let snapshot = await reloadLaneAndHistory(signal, pending.cancellationIds)
+    if (snapshot.scheduled.length) {
+      showFreshScheduleReview(pending, resolution, snapshot)
+      return
+    }
+    if (resolution.decision === 'STILL_FUTURE_OR_CHANGED' || resolution.hasFutureRevisions) {
+      resolution = await resolveReviewedRevisions(pending, signal)
+      snapshot = await reloadLaneAndHistory(signal, pending.cancellationIds)
+      if (snapshot.scheduled.length) {
+        showFreshScheduleReview(pending, resolution, snapshot)
+        return
+      }
+      if (resolution.decision === 'STILL_FUTURE_OR_CHANGED' || resolution.hasFutureRevisions) {
+        throw new Error('The lane still has an unresolved future schedule. Its state remains blocked until a fresh review is available.')
+      }
+    }
+
+    const draft = safeZoneDraft(pending, resolution, snapshot.lane)
+    const staleDraft = pending.draft !== null && draft === null
+    const cancelledCount = resolution.reviewedRevisions.filter(item => item.status === 'CANCELLED').length
+    if (resolution.decision === 'CANCELLED_CONFIRMED' && cancelledCount === pending.reviewedRevisionIds.length) {
+      await finishCancellation({ lane: pending.reviewedLane ?? snapshot.lane, revisions: [], draft, kind: draft ? pending.kind : 'independent' }, snapshot, cancelledCount)
+      if (staleDraft) dispatch({ type: 'notice', value: 'Cancellation records are confirmed and lane history is current. The lane changed during recovery, so the earlier zone draft was discarded.' })
+      return
+    }
+
+    const expiredCount = resolution.reviewedRevisions.filter(item => item.status === 'EXPIRED_WITHOUT_CANCELLATION').length
+    const notice = cancelledCount && expiredCount
+      ? `${cancelledCount} reviewed schedule${cancelledCount === 1 ? '' : 's'} have cancellation records; ${expiredCount} became effective without cancellation. Lane and history were reloaded.`
+      : expiredCount
+        ? `${expiredCount} reviewed scheduled cost${expiredCount === 1 ? '' : 's'} became effective without a cancellation record. Lane and history were reloaded.`
+        : 'The reviewed schedule state is terminal. Lane and history were reloaded.'
+    dispatch({ type: 'reconciled', notice: staleDraft ? `${notice} The earlier zone draft was discarded because the lane changed.` : notice, preparedDraft: draft })
+    await client.invalidateQueries({ queryKey: [...scope, 'lanes'] })
+  }
+
+  function showFreshScheduleReview(pending: PendingCancellation, resolution: ScheduledRevisionCancellationResolutionResponse, snapshot: Awaited<ReturnType<typeof reloadLaneAndHistory>>) {
+    const draft = safeZoneDraft(pending, resolution, snapshot.lane)
+    dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft, kind: draft ? pending.kind : 'independent' })
+    if (pending.draft && !draft) dispatch({ type: 'notice', value: 'The lane changed while cancellation was being recovered. The earlier zone draft was discarded; review the current scheduled costs.' })
+    else dispatch({ type: 'notice', value: 'Future scheduled costs remain. Review the refreshed list before making another change.' })
   }
 
   async function reload() {
@@ -290,26 +377,18 @@ export function useLaneControl(organizationId: string, laneId: string) {
     const pending = state.unresolved
     if (!pending || state.phase !== 'NEEDS_RECONCILIATION') return
     await runCommand('RECONCILING', async signal => {
-      const snapshot = await reloadLaneAndHistory(signal, pending.cancellationIds)
       if (pending.reviewedRevisionIds.length) {
-        const cancelled = await findCancelledRevisionIds(organizationId, laneId, pending.reviewedRevisionIds, signal)
-        if (cancelled.size === pending.reviewedRevisionIds.length) {
-          await finishCancellation({ lane: snapshot.lane, revisions: [], draft: pending.draft, kind: pending.kind }, snapshot, cancelled.size)
-        } else if (snapshot.scheduled.length) dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: pending.draft, kind: pending.kind })
-        else dispatch({ type: 'error', value: new Error('Saved cancellation evidence could not be confirmed. Lane changes remain blocked until cancellation evidence appears in history.') })
-      } else if (pending.draft && snapshot.lane.version !== pending.draft.version) {
+        await reconcileReviewedCancellation(pending, signal)
+        return
+      }
+      const snapshot = await reloadLaneAndHistory(signal, pending.cancellationIds)
+      if (pending.draft && pending.reviewedLane && snapshot.lane.version !== pending.reviewedLane.version) {
         if (snapshot.scheduled.length) {
           dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: null, kind: 'independent' })
         } else {
-          dispatch({
-            type: 'reconciled',
-            notice: 'The lane configuration changed while its state was being recovered. Review the reloaded configuration before editing again.',
-          })
+          dispatch({ type: 'reconciled', notice: 'The lane configuration changed while its state was being recovered. Review the reloaded configuration before editing again.' })
         }
-        dispatch({
-          type: 'notice',
-          value: 'The lane configuration changed while its state was being recovered. The earlier zone draft was discarded; review the current configuration before editing again.',
-        })
+        dispatch({ type: 'notice', value: 'The lane configuration changed while its state was being recovered. The earlier zone draft was discarded; review the current configuration before editing again.' })
       } else if (pending.draft && snapshot.scheduled.length) {
         dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: pending.draft, kind: pending.kind })
       } else if (pending.draft) {

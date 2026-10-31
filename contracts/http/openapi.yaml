@@ -3354,6 +3354,93 @@ paths:
         its history
       tags:
       - lane-controller
+  /api/v1/organizations/{organizationId}/transport-lanes/{laneId}/scheduled-revisions/cancellation-resolution:
+    post:
+      description: "Uses the same organization, store and lane lock order as cancellation.\
+        \ PostgreSQL wall-clock time is sampled after the lane lock, and reviewed\
+        \ revision evidence is read at READ COMMITTED after any lock wait."
+      operationId: resolveScheduledLaneCancellation
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: laneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduledRevisionCancellationResolutionRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduledRevisionCancellationResolutionResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Resolve an uncertain scheduled-cost cancellation after synchronizing
+        with lane writes
+      tags:
+      - lane-controller
 components:
   schemas:
     AcceptInvitationRequest:
@@ -4170,6 +4257,35 @@ components:
       - name
       - reason
       - version
+    ReviewedCancellationResolutionResponse:
+      type: object
+      properties:
+        cancellation:
+          anyOf:
+          - $ref: "#/components/schemas/CancelledRevisionResponse"
+          - type: "null"
+        effectiveAt:
+          type: string
+          format: date-time
+          description: Database wall-clock effective instant compared with lane.asOf.
+        revision:
+          type: integer
+          format: int64
+        revisionId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - CANCELLED
+          - EXPIRED_WITHOUT_CANCELLATION
+          - STILL_FUTURE
+      required:
+      - cancellation
+      - effectiveAt
+      - revision
+      - revisionId
+      - status
     RevisionPageResponse:
       type: object
       properties:
@@ -4273,6 +4389,51 @@ components:
       - reason
       - role
       - version
+    ScheduledRevisionCancellationResolutionRequest:
+      type: object
+      properties:
+        laneVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        reviewedRevisionIds:
+          type: array
+          description: Unique revision IDs from the cancellation review; at most 384
+            IDs per synchronized read.
+          items:
+            type: string
+            format: uuid
+          maxItems: 384
+          minItems: 1
+      required:
+      - laneVersion
+      - reviewedRevisionIds
+    ScheduledRevisionCancellationResolutionResponse:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum:
+          - CANCELLED_CONFIRMED
+          - NOT_CANCELLED_AND_NO_LONGER_CANCELLABLE
+          - MIXED_TERMINAL
+          - STILL_FUTURE_OR_CHANGED
+        hasFutureRevisions:
+          type: boolean
+        lane:
+          $ref: "#/components/schemas/LaneResponse"
+        laneChanged:
+          type: boolean
+        reviewedRevisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewedCancellationResolutionResponse"
+      required:
+      - decision
+      - hasFutureRevisions
+      - lane
+      - laneChanged
+      - reviewedRevisions
     ScheduledRevisionCancellationResponse:
       type: object
       properties:

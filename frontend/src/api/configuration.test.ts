@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { archiveZone, cancelScheduledLaneRevisions } from './configuration'
+import { archiveZone, cancelScheduledLaneRevisions, resolveScheduledLaneCancellation } from './configuration'
 import { clearCsrf } from './client'
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -40,6 +40,32 @@ it('does not retry a rejected cancellation command after a lane conflict', async
     laneVersion: 3, expectedRevision: 2, reason: 'Reviewed cost schedule change',
   }, new AbortController().signal)).rejects.toMatchObject({ code: 'SCHEDULED_REVISIONS_PENDING', status: 409 })
   expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
+it('refreshes CSRF before retrying the synchronized cancellation read', async () => {
+  const responseBody = {
+    lane: { id: 'lane-a', version: 3 }, decision: 'NOT_CANCELLED_AND_NO_LONGER_CANCELLABLE',
+    reviewedRevisions: [], hasFutureRevisions: false, laneChanged: false,
+  }
+  const fetcher = vi.fn()
+    .mockResolvedValueOnce(json({ token: 'old-session-token', headerName: 'X-CSRF-TOKEN' }))
+    .mockResolvedValueOnce(json(problem('CSRF_INVALID', 403), 403))
+    .mockResolvedValueOnce(json({ token: 'new-session-token', headerName: 'X-CSRF-TOKEN' }))
+    .mockResolvedValueOnce(json(responseBody))
+  vi.stubGlobal('fetch', fetcher)
+
+  const body = { laneVersion: 3, reviewedRevisionIds: ['revision-a'] }
+  const response = await resolveScheduledLaneCancellation('org-a', 'lane-a', body, new AbortController().signal)
+
+  expect(response).toEqual(responseBody)
+  expect(fetcher).toHaveBeenCalledTimes(4)
+  const firstRead = fetcher.mock.calls[1]?.[0] as Request
+  const retryRead = fetcher.mock.calls[3]?.[0] as Request
+  expect(firstRead.url).toContain('/scheduled-revisions/cancellation-resolution')
+  expect(retryRead.url).toBe(firstRead.url)
+  expect(firstRead.headers.get('X-CSRF-TOKEN')).toBe('old-session-token')
+  expect(retryRead.headers.get('X-CSRF-TOKEN')).toBe('new-session-token')
+  expect(await retryRead.json()).toEqual(body)
 })
 
 it('submits the zone version and fingerprint from the same reviewed impact snapshot', async () => {

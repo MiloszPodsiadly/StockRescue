@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.UUID;
 import com.stockrescue.platform.http.ApiProblem;
 import com.stockrescue.stores.application.LaneService;
+import com.stockrescue.stores.application.OperationalConfiguration;
 import com.stockrescue.stores.application.OperationalConfiguration.*;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -90,6 +91,16 @@ public class LaneController {
         return new ScheduledRevisionCancellationResponse(LaneResponse.from(result.lane()),
                 result.cancelledRevisions().stream().map(CancelledRevisionResponse::from).toList());
     }
+    @PostMapping(value="/{laneId}/scheduled-revisions/cancellation-resolution",consumes=MediaType.APPLICATION_JSON_VALUE)
+    @Operation(operationId="resolveScheduledLaneCancellation",summary="Resolve an uncertain scheduled-cost cancellation after synchronizing with lane writes",
+            description="Uses the same organization, store and lane lock order as cancellation. PostgreSQL wall-clock time is sampled after the lane lock, and reviewed revision evidence is read at READ COMMITTED after any lock wait.")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=ScheduledRevisionCancellationResolutionResponse.class)))
+    public ScheduledRevisionCancellationResolutionResponse resolveScheduledCancellation(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID laneId,
+            @Valid @RequestBody ScheduledRevisionCancellationResolutionRequest request) {
+        var result=lanes.resolveScheduledCancellation(actor(actor),organizationId,laneId,request.laneVersion(),request.reviewedRevisionIds());
+        return new ScheduledRevisionCancellationResolutionResponse(LaneResponse.from(result.lane()),result.decision(),
+                result.reviewedRevisions().stream().map(ReviewedCancellationResolutionResponse::from).toList(),result.hasFutureRevisions(),result.laneChanged());
+    }
     @GetMapping("/{laneId}/revisions")
     @Operation(operationId="laneCostHistory",summary="Immutable price evidence; validity intervals end at the next revision's effective time")
     @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=RevisionPageResponse.class)))
@@ -117,6 +128,9 @@ public class LaneController {
     public record CancelScheduledRevisionsRequest(@NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long laneVersion,
                                                     @NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedRevision,
                                                     @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
+    public record ScheduledRevisionCancellationResolutionRequest(@NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long laneVersion,
+            @NotNull @Size(min=1,max=OperationalConfiguration.MAX_CANCELLATION_RESOLUTION_IDS) @Schema(requiredMode=Schema.RequiredMode.REQUIRED,
+                    description="Unique revision IDs from the cancellation review; at most 384 IDs per synchronized read.") List<@NotNull UUID> reviewedRevisionIds) { }
     public record CurrencyOptions(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<String> codes) { }
     public record RevisionResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) long revision,
                                      @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String costAmount,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) String currencyCode,
@@ -141,6 +155,20 @@ public class LaneController {
     }
     public record ScheduledRevisionCancellationResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) LaneResponse lane,
                                                           @Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<CancelledRevisionResponse> cancelledRevisions) { }
+    public record ReviewedCancellationResolutionResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID revisionId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long revision,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Database wall-clock effective instant compared with lane.asOf.") Instant effectiveAt,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) CancellationResolutionStatus status,
+            @Schema(nullable=true,requiredMode=Schema.RequiredMode.REQUIRED) CancelledRevisionResponse cancellation) {
+        static ReviewedCancellationResolutionResponse from(ReviewedCancellationResolution resolution) {
+            return new ReviewedCancellationResolutionResponse(resolution.revisionId(),resolution.revision(),resolution.effectiveAt(),resolution.status(),CancelledRevisionResponse.from(resolution.cancellation()));
+        }
+    }
+    public record ScheduledRevisionCancellationResolutionResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) LaneResponse lane,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) CancellationResolutionDecision decision,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<ReviewedCancellationResolutionResponse> reviewedRevisions,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) boolean hasFutureRevisions,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) boolean laneChanged) { }
     public record LaneResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID originStoreId,
                                  @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String originStoreName,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID destinationStoreId,
                                  @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String destinationStoreName,

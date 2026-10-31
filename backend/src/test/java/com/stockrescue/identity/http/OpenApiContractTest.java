@@ -66,6 +66,18 @@ class OpenApiContractTest extends InfrastructureTestBase {
         var operation=document.path("paths").path(cancellationPath).path("post");
         assertThat(operation.path("operationId").asString()).isEqualTo("cancelScheduledLaneRevisions");
         assertThat(operation.path("responses").has("200")).isTrue();
+        var resolutionPath="/api/v1/organizations/{organizationId}/transport-lanes/{laneId}/scheduled-revisions/cancellation-resolution";
+        var resolutionOperation=document.path("paths").path(resolutionPath).path("post");
+        assertThat(resolutionOperation.path("operationId").asString()).isEqualTo("resolveScheduledLaneCancellation");
+        assertThat(resolutionOperation.path("responses").has("200")).isTrue();
+        var resolutionRequest=schemas.path("ScheduledRevisionCancellationResolutionRequest").path("properties");
+        assertThat(resolutionRequest.path("reviewedRevisionIds").path("maxItems").asInt()).isEqualTo(384);
+        var resolutionProperties=schemas.path("ScheduledRevisionCancellationResolutionResponse").path("properties");
+        for(var field:java.util.List.of("lane","decision","reviewedRevisions","hasFutureRevisions","laneChanged"))
+            assertThat(resolutionProperties.has(field)).isTrue();
+        var reviewedResolution=schemas.path("ReviewedCancellationResolutionResponse").path("properties");
+        for(var field:java.util.List.of("revisionId","revision","effectiveAt","status","cancellation"))
+            assertThat(reviewedResolution.has(field)).isTrue();
 
         var archiveImpactPath="/api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive-impact";
         var archiveImpact=document.path("paths").path(archiveImpactPath).path("get");

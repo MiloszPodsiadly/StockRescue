@@ -94,6 +94,32 @@ public class LaneService {
                 Map.of("outcome","SUCCEEDED","beforeVersion",before.version(),"afterVersion",after.version(),"cancelledRevisions",cancelledEvidence),reason);
         return new CancellationResult(view(org,after,batch.asOf()),cancelled);
     }
+    @Transactional(isolation=Isolation.READ_COMMITTED)
+    public CancellationResolution resolveScheduledCancellation(UUID actor,UUID org,UUID id,long expectedLaneVersion,List<UUID> reviewedRevisionIds) {
+        if(reviewedRevisionIds==null||reviewedRevisionIds.isEmpty()
+                ||reviewedRevisionIds.size()>OperationalConfiguration.MAX_CANCELLATION_RESOLUTION_IDS
+                ||reviewedRevisionIds.stream().anyMatch(Objects::isNull)
+                ||reviewedRevisionIds.stream().distinct().count()!=reviewedRevisionIds.size()) ZoneService.invalid();
+        access.requireAdmin(actor,org,true);
+        var before=existing(org,id);
+        lockStores(actor,org,before.originStoreId(),before.destinationStoreId(),true);
+        lanes.lock(org,id);
+        var current=existing(org,id);
+        // Sample database wall time only after the lane lock; READ_COMMITTED gives
+        // the following evidence query a fresh snapshot after any lock wait.
+        var asOf=lanes.databaseNow();
+        var reviewed=lanes.resolveReviewedRevisions(org,id,reviewedRevisionIds,asOf);
+        if(reviewed.size()!=reviewedRevisionIds.size()) throw new OrganizationUnavailableException();
+        var hasFuture=lanes.hasFutureRevisions(org,id,asOf);
+        var decision=hasFuture||reviewed.stream().anyMatch(item->item.status()==CancellationResolutionStatus.STILL_FUTURE)
+                ?CancellationResolutionDecision.STILL_FUTURE_OR_CHANGED
+                :reviewed.stream().allMatch(item->item.status()==CancellationResolutionStatus.CANCELLED)
+                    ?CancellationResolutionDecision.CANCELLED_CONFIRMED
+                    :reviewed.stream().allMatch(item->item.status()==CancellationResolutionStatus.EXPIRED_WITHOUT_CANCELLATION)
+                        ?CancellationResolutionDecision.NOT_CANCELLED_AND_NO_LONGER_CANCELLABLE
+                        :CancellationResolutionDecision.MIXED_TERMINAL;
+        return new CancellationResolution(view(org,current,asOf),decision,reviewed,hasFuture,current.version()!=expectedLaneVersion);
+    }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public RevisionPage history(UUID actor,UUID org,UUID id,int offset,int limit) {
         access.requireAdmin(actor,org,false);existing(org,id);ZoneService.page(offset,limit);

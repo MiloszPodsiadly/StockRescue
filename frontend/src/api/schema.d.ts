@@ -548,6 +548,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/transport-lanes/{laneId}/scheduled-revisions/cancellation-resolution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve an uncertain scheduled-cost cancellation after synchronizing with lane writes
+         * @description Uses the same organization, store and lane lock order as cancellation. PostgreSQL wall-clock time is sampled after the lane lock, and reviewed revision evidence is read at READ COMMITTED after any lock wait.
+         */
+        post: operations["resolveScheduledLaneCancellation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -843,6 +863,20 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        ReviewedCancellationResolutionResponse: {
+            cancellation: components["schemas"]["CancelledRevisionResponse"] | null;
+            /**
+             * Format: date-time
+             * @description Database wall-clock effective instant compared with lane.asOf.
+             */
+            effectiveAt: string;
+            /** Format: int64 */
+            revision: number;
+            /** Format: uuid */
+            revisionId: string;
+            /** @enum {string} */
+            status: "CANCELLED" | "EXPIRED_WITHOUT_CANCELLATION" | "STILL_FUTURE";
+        };
         RevisionPageResponse: {
             hasMore: boolean;
             items: components["schemas"]["RevisionResponse"][];
@@ -887,6 +921,20 @@ export interface components {
             role: "ORG_ADMIN" | "MEMBER";
             /** Format: int64 */
             version: number;
+        };
+        ScheduledRevisionCancellationResolutionRequest: {
+            /** Format: int64 */
+            laneVersion: number;
+            /** @description Unique revision IDs from the cancellation review; at most 384 IDs per synchronized read. */
+            reviewedRevisionIds: string[];
+        };
+        ScheduledRevisionCancellationResolutionResponse: {
+            /** @enum {string} */
+            decision: "CANCELLED_CONFIRMED" | "NOT_CANCELLED_AND_NO_LONGER_CANCELLABLE" | "MIXED_TERMINAL" | "STILL_FUTURE_OR_CHANGED";
+            hasFutureRevisions: boolean;
+            lane: components["schemas"]["LaneResponse"];
+            laneChanged: boolean;
+            reviewedRevisions: components["schemas"]["ReviewedCancellationResolutionResponse"][];
         };
         ScheduledRevisionCancellationResponse: {
             cancelledRevisions: components["schemas"]["CancelledRevisionResponse"][];
@@ -4838,6 +4886,99 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScheduledRevisionCancellationResponse"];
+                };
+            };
+            /** @description Invalid fields, currency or decimal precision */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Org Admin or CSRF required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Scoped resource unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    resolveScheduledLaneCancellation: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                laneId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduledRevisionCancellationResolutionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledRevisionCancellationResolutionResponse"];
                 };
             };
             /** @description Invalid fields, currency or decimal precision */

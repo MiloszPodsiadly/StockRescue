@@ -6,6 +6,7 @@ import java.util.UUID;
 
 public final class OperationalConfiguration {
     private OperationalConfiguration() { }
+    public static final int MAX_CANCELLATION_RESOLUTION_IDS=384;
     public enum TemperatureClass { AMBIENT, CHILLED, FROZEN }
     public enum Status { CONFIGURED, UNCONFIGURED, INACTIVE }
     public enum Missing { NO_LANE, INACTIVE_LANE, INACTIVE_STORE, MISSING_ZONES, INACTIVE_ZONE, INCOMPATIBLE_ZONES, NO_EFFECTIVE_COST, COST_ZONE_MISMATCH }
@@ -29,5 +30,16 @@ public final class OperationalConfiguration {
     public record RevisionPage(List<Revision> items, boolean hasMore) { }
     public record CancellationResult(LaneView lane, List<Cancellation> cancelledRevisions) {
         public CancellationResult { cancelledRevisions=List.copyOf(cancelledRevisions); }
+    }
+    public enum CancellationResolutionDecision {
+        CANCELLED_CONFIRMED, NOT_CANCELLED_AND_NO_LONGER_CANCELLABLE, MIXED_TERMINAL, STILL_FUTURE_OR_CHANGED
+    }
+    public enum CancellationResolutionStatus { CANCELLED, EXPIRED_WITHOUT_CANCELLATION, STILL_FUTURE }
+    public record ReviewedCancellationResolution(UUID revisionId, long revision, Instant effectiveAt,
+                                                  CancellationResolutionStatus status, Cancellation cancellation) { }
+    public record CancellationResolution(LaneView lane, CancellationResolutionDecision decision,
+                                         List<ReviewedCancellationResolution> reviewedRevisions,
+                                         boolean hasFutureRevisions, boolean laneChanged) {
+        public CancellationResolution { reviewedRevisions=List.copyOf(reviewedRevisions); }
     }
 }

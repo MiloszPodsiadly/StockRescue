@@ -163,6 +163,27 @@ public class LaneRepository {
         }
         return new CancellationBatch(asOf,List.copyOf(cancelled));
     }
+    public List<ReviewedCancellationResolution> resolveReviewedRevisions(UUID org,UUID lane,List<UUID> revisionIds,Instant asOf) {
+        return jdbc.sql("""
+                SELECT r.id,r.revision_no,r.effective_at,
+                  c.id AS cancellation_id,c.cancelled_by_membership_id AS cancellation_actor_membership_id,
+                  c.reason AS cancellation_reason,c.cancelled_at AS cancellation_at,c.correlation_id AS cancellation_correlation_id
+                FROM stockrescue.lane_revision r
+                LEFT JOIN stockrescue.lane_revision_cancellation c
+                  ON c.org_id=r.org_id AND c.lane_id=r.lane_id AND c.revision_id=r.id
+                WHERE r.org_id=:org AND r.lane_id=:lane AND r.id IN (:revisionIds)
+                ORDER BY r.revision_no
+                """).param("org",org).param("lane",lane).param("revisionIds",revisionIds)
+                .query((row,index)->{
+                    var effectiveAt=row.getTimestamp("effective_at").toInstant();
+                    var cancellation=cancellation(row);
+                    var status=cancellation!=null?CancellationResolutionStatus.CANCELLED
+                            :effectiveAt.isAfter(asOf)?CancellationResolutionStatus.STILL_FUTURE
+                            :CancellationResolutionStatus.EXPIRED_WITHOUT_CANCELLATION;
+                    return new ReviewedCancellationResolution(row.getObject("id",UUID.class),row.getLong("revision_no"),
+                            effectiveAt,status,cancellation);
+                }).list();
+    }
     private boolean hasSqlState(Throwable failure,String expected) {
         for(var cause=failure;cause!=null;cause=cause.getCause()) {
             if(cause instanceof java.sql.SQLException sql && expected.equals(sql.getSQLState())) return true;

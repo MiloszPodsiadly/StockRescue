@@ -572,6 +572,77 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
     }
 
     @Test
+    void synchronizedResolutionProvesAReviewedCostExpiredWithoutWritingCancellationEvidence() throws Exception {
+        var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
+        var effectiveAt=laneRepository.databaseNow().plusSeconds(1).truncatedTo(ChronoUnit.MICROS);
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"31.0000","EUR",effectiveAt)).statusCode()).isEqualTo(201);
+        var scheduled=tree(owner.get(lanes(f.orgA)+"/"+id+"/revisions?offset=0&limit=25")).path("items").get(0);
+        var revisionId=UUID.fromString(scheduled.path("id").asString());
+        var resolutionRequest=Map.of("laneVersion",1,"reviewedRevisionIds",List.of(revisionId));
+        problem(f.manager.browser().write("POST",cancellationResolutionPath(f.orgA,id),resolutionRequest),403,"ACCESS_DENIED");
+        var foreignLane=createLane(f.ownerB,f.orgB,f.b1,f.b2,f.zb1,f.zb2);
+        problem(owner.write("POST",cancellationResolutionPath(f.orgA,UUID.fromString(foreignLane.path("id").asString())),resolutionRequest),404,"RESOURCE_NOT_FOUND");
+        var deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+        while(!laneRepository.databaseNow().isAfter(effectiveAt)&&System.nanoTime()<deadline) Thread.sleep(10);
+        assertThat(laneRepository.databaseNow()).isAfter(effectiveAt);
+
+        var resolved=owner.write("POST",cancellationResolutionPath(f.orgA,id),resolutionRequest);
+        assertThat(resolved.statusCode()).as(resolved.body()).isEqualTo(200);
+        var result=tree(resolved);
+        assertThat(result.path("decision").asString()).isEqualTo("NOT_CANCELLED_AND_NO_LONGER_CANCELLABLE");
+        assertThat(result.path("hasFutureRevisions").asBoolean()).isFalse();
+        assertThat(result.path("reviewedRevisions").get(0).path("status").asString()).isEqualTo("EXPIRED_WITHOUT_CANCELLATION");
+        assertThat(result.path("reviewedRevisions").get(0).path("cancellation").isNull()).isTrue();
+        assertThat(Instant.parse(result.path("lane").path("asOf").asString())).isAfterOrEqualTo(effectiveAt);
+        assertThat(result.path("lane").path("currentCost").path("costAmount").asString()).isEqualTo("31.0000");
+        assertThat(result.path("lane").path("version").asLong()).isEqualTo(1);
+        problem(owner.write("POST",cancelPath(f.orgA,id),cancellation(1,1)),409,"NO_FUTURE_REVISIONS");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision_cancellation WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:lane AND action='LANE_SCHEDULED_REVISIONS_CANCELLED'")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void synchronizedResolutionWaitsForCancellationCommitAndReadsItsSavedEvidence() throws Exception {
+        var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
+        var effectiveAt=laneRepository.databaseNow().plus(1,ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
+        assertThat(owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"31.0000","EUR",effectiveAt)).statusCode()).isEqualTo(201);
+        var scheduled=tree(owner.get(lanes(f.orgA)+"/"+id+"/revisions?offset=0&limit=25")).path("items").get(0);
+        var revisionId=UUID.fromString(scheduled.path("id").asString());
+        var cancellationAuditWritten=new CountDownLatch(1);var releaseCommit=new CountDownLatch(1);
+        doAnswer(invocation->{
+            invocation.callRealMethod();cancellationAuditWritten.countDown();
+            if(!releaseCommit.await(10,TimeUnit.SECONDS)) throw new IllegalStateException("Cancellation transaction was not released");
+            return null;
+        }).when(audit).securityChange(any(UUID.class),eq(f.orgA),eq("transport-lane"),eq(id),
+                eq("LANE_SCHEDULED_REVISIONS_CANCELLED"),anyMap(),eq(REASON));
+
+        try(var workers=Executors.newFixedThreadPool(2)) {
+            var cancellation=workers.submit(()->owner.write("POST",cancelPath(f.orgA,id),cancellation(1,1)));
+            assertThat(cancellationAuditWritten.await(10,TimeUnit.SECONDS)).isTrue();
+            var resolution=workers.submit(()->owner.write("POST",cancellationResolutionPath(f.orgA,id),Map.of("laneVersion",1,"reviewedRevisionIds",List.of(revisionId))));
+            try {
+                awaitDatabaseLockWait("stockrescue.organization WHERE");
+                releaseCommit.countDown();
+                var cancellationResponse=cancellation.get(20,TimeUnit.SECONDS);
+                var resolutionResponse=resolution.get(20,TimeUnit.SECONDS);
+                assertThat(cancellationResponse.statusCode()).as(cancellationResponse.body()).isEqualTo(200);
+                assertThat(resolutionResponse.statusCode()).as(resolutionResponse.body()).isEqualTo(200);
+                var result=tree(resolutionResponse);
+                assertThat(result.path("decision").asString()).isEqualTo("CANCELLED_CONFIRMED");
+                assertThat(result.path("reviewedRevisions").get(0).path("status").asString()).isEqualTo("CANCELLED");
+                assertThat(result.path("reviewedRevisions").get(0).path("cancellation").path("revisionId").asString()).isEqualTo(revisionId.toString());
+                assertThat(result.path("lane").path("version").asLong()).isEqualTo(2);
+            } finally { releaseCommit.countDown(); }
+        }
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lane_revision_cancellation WHERE org_id=:org AND lane_id=:lane")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:lane AND action='LANE_SCHEDULED_REVISIONS_CANCELLED'")
+                .param("org",f.orgA).param("lane",id).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test
     void cancellingFutureCostsPreservesEvidenceAndAllowsImmediateReplacementAfterZoneChange() throws Exception {
         var lane=createLane(f.ownerA,f.orgA,f.a1,f.a2,f.z1,f.z2);var id=UUID.fromString(lane.path("id").asString());var owner=f.ownerA.browser();
         var current=owner.write("POST",lanes(f.orgA)+"/"+id+"/revisions",revision(0,0,"12.3456","EUR",null));
@@ -1011,6 +1082,7 @@ class OperationalConfigurationTest extends InfrastructureTestBase {
         if(effective!=null) body.put("effectiveAt",effective.toString());return body;
     }
     private Map<String,Object> cancellation(long version,long latestRevision) { return Map.of("laneVersion",version,"expectedRevision",latestRevision,"reason",REASON); }
+    private String cancellationResolutionPath(UUID org,UUID lane) { return lanes(org)+"/"+lane+"/scheduled-revisions/cancellation-resolution"; }
     private Map<String,Object> version(long version) { return Map.of("version",version,"reason",REASON); }
     private String zones(UUID org,UUID store) { return "/api/v1/organizations/"+org+"/stores/"+store+"/storage-zones"; }
     private String zoneArchiveImpactPath(UUID org,UUID store,UUID zone) { return zones(org,store)+"/"+zone+"/archive-impact"; }

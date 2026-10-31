@@ -24,22 +24,6 @@ export async function loadScheduledRevisions(organizationId: string, laneId: str
   }
 }
 
-export async function findCancelledRevisionIds(organizationId: string, laneId: string, revisionIds: string[], signal: AbortSignal) {
-  const remaining = new Set(revisionIds)
-  const cancelled = new Set<string>()
-  let offset = 0
-  while (remaining.size) {
-    const page = await laneHistory(organizationId, laneId, offset, signal, 100)
-    signal.throwIfAborted()
-    for (const revision of page.items) {
-      if (revision.cancellation && remaining.delete(revision.id)) cancelled.add(revision.id)
-    }
-    if (!remaining.size || !page.hasMore || !page.items.length || offset >= 10000) return cancelled
-    offset += page.items.length
-  }
-  return cancelled
-}
-
 export async function confirmCancellations(organizationId: string, laneId: string, cancellations: Array<{ id: string, revisionId: string }>, signal: AbortSignal) {
   const expected = new Map(cancellations.map(item => [item.revisionId, item.id]))
   const found = new Map<string, string>()
