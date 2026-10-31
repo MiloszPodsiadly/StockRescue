@@ -48,7 +48,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
         var flyway = applicationFlyway;
         flyway.validate();
         assertThat(flyway.migrate().migrationsExecuted).isZero();
-        assertThat(flyway.info().applied()).hasSize(8);
+        assertThat(flyway.info().applied()).hasSize(9);
         try (var connection = appConnection(); var statement = connection.createStatement()) {
             var current = statement.executeQuery("SELECT current_schema(), current_user");
             assertThat(current.next()).isTrue();
@@ -69,7 +69,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertPublicSchemaContainsOnlyFlywayHistory(connection);
             var tables = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'stockrescue'");
             assertThat(tables.next()).isTrue();
-            assertThat(tables.getInt(1)).isEqualTo(18);
+            assertThat(tables.getInt(1)).isEqualTo(19);
             var role = statement.executeQuery("SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = current_user");
             assertThat(role.next()).isTrue();
             assertThat(role.getBoolean(1) || role.getBoolean(2) || role.getBoolean(3)).isFalse();
@@ -173,7 +173,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
                     var flyway = upgraded.getBean(Flyway.class);
                     assertThat(flyway.getConfiguration().getDefaultSchema()).isEqualTo("public");
                     flyway.validate();
-                    assertThat(flyway.info().applied()).hasSize(8);
+                    assertThat(flyway.info().applied()).hasSize(9);
                     assertThat(flyway.migrate().migrationsExecuted).isZero();
                     try (var connection = upgraded.getBean(DataSource.class).getConnection()) {
                         assertThat(connection.getSchema()).isEqualTo("stockrescue");

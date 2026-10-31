@@ -18,8 +18,14 @@ public final class OperationalConfiguration {
                        boolean active, long version, long latestRevision, Instant latestEffectiveAt, Instant createdAt, Instant updatedAt) { }
     public record Revision(UUID id, long revision, String costAmount, String currencyCode, int durationMinutes,
                            Instant effectiveAt, Instant validUntil, Instant recordedAt, UUID recordedByMembershipId,
-                           UUID originZoneId, UUID destinationZoneId, TemperatureClass temperatureClass) { }
+                           UUID originZoneId, UUID destinationZoneId, TemperatureClass temperatureClass,
+                           Cancellation cancellation) { }
+    public record Cancellation(UUID id, UUID revisionId, long revision, UUID cancelledByMembershipId,
+                               String reason, Instant cancelledAt, String correlationId) { }
     public record LaneView(Lane lane, Status status, List<Missing> missing, Revision currentCost, Instant asOf) { }
     public record LanePage(List<LaneView> items, boolean hasMore, Instant asOf) { }
     public record RevisionPage(List<Revision> items, boolean hasMore) { }
+    public record CancellationResult(LaneView lane, List<Cancellation> cancelledRevisions) {
+        public CancellationResult { cancelledRevisions=List.copyOf(cancelledRevisions); }
+    }
 }

@@ -185,12 +185,26 @@ class IdentityAndStorePersistenceTest extends InfrastructureTestBase {
         assertThat(text("SELECT cost_amount::text FROM stockrescue.lane_revision WHERE id=? AND org_id=?", revision, f.orgA)).isEqualTo("12.3456");
         reject("23514", revisionSql(), UUID.randomUUID(), f.orgA, f.laneA, BigDecimal.ONE, "PLN", 20, f.memberA);
         reject("23514", "INSERT INTO stockrescue.lane_revision(id,org_id,lane_id,revision_no,cost_amount,currency_code,duration_minutes,effective_at,recorded_by_membership_id) VALUES (?,?,?,2,10,'PLN',20,now()-interval '1 day',?)", UUID.randomUUID(), f.orgA, f.laneA, f.memberA);
-        sql("INSERT INTO stockrescue.lane_revision(id,org_id,lane_id,revision_no,cost_amount,currency_code,duration_minutes,effective_at,recorded_by_membership_id) VALUES (?,?,?,2,15,'PLN',25,now()+interval '1 day',?)", UUID.randomUUID(), f.orgA, f.laneA, f.memberA);
+        var scheduledRevision=UUID.randomUUID();
+        sql("INSERT INTO stockrescue.lane_revision(id,org_id,lane_id,revision_no,cost_amount,currency_code,duration_minutes,effective_at,recorded_by_membership_id) VALUES (?,?,?,2,15,'PLN',25,now()+interval '1 day',?)", scheduledRevision, f.orgA, f.laneA, f.memberA);
+        String cancel="INSERT INTO stockrescue.lane_revision_cancellation(id,org_id,lane_id,revision_id,cancelled_by_membership_id,reason,correlation_id) VALUES (?,?,?,?,?,?,'scheduled-cost-test')";
+        var cancellation=UUID.randomUUID();
+        reject("23503", cancel, cancellation, f.orgB, f.laneA, scheduledRevision, f.memberB, "reviewed schedule change");
+        reject("23503", cancel, cancellation, f.orgA, f.laneA, scheduledRevision, f.memberB, "reviewed schedule change");
+        reject("23514", cancel, cancellation, f.orgA, f.laneA, revision, f.memberA, "reviewed schedule change");
+        sql(cancel, cancellation, f.orgA, f.laneA, scheduledRevision, f.memberA, "reviewed schedule change");
+        assertThat(text("SELECT correlation_id FROM stockrescue.lane_revision_cancellation WHERE id=?", cancellation)).isEqualTo("scheduled-cost-test");
+        reject("23505", cancel, UUID.randomUUID(), f.orgA, f.laneA, scheduledRevision, f.memberA, "duplicate cancellation");
+        reject("55000", "UPDATE stockrescue.lane_revision_cancellation SET reason='rewritten' WHERE id=?", cancellation);
+        reject("55000", "DELETE FROM stockrescue.lane_revision_cancellation WHERE id=?", cancellation);
+        reject("55000", "TRUNCATE stockrescue.lane_revision_cancellation");
+        sql("INSERT INTO stockrescue.lane_revision(id,org_id,lane_id,revision_no,cost_amount,currency_code,duration_minutes,effective_at,recorded_by_membership_id) VALUES (?,?,?,3,16,'PLN',30,now()+interval '1 day',?)", UUID.randomUUID(), f.orgA, f.laneA, f.memberA);
         reject("55000", "UPDATE stockrescue.lane_revision SET cost_amount=0 WHERE id=?", revision);
         reject("55000", "DELETE FROM stockrescue.lane_revision WHERE id=?", revision);
-        reject("55000", "TRUNCATE stockrescue.lane_revision");
+        reject("0A000", "TRUNCATE stockrescue.lane_revision");
         reject("23001", "DELETE FROM stockrescue.transport_lane WHERE id=?", f.laneA);
-        assertThat(count("SELECT count(*) FROM stockrescue.lane_revision WHERE org_id=? AND lane_id=?", f.orgA, f.laneA)).isEqualTo(2);
+        assertThat(count("SELECT count(*) FROM stockrescue.lane_revision WHERE org_id=? AND lane_id=?", f.orgA, f.laneA)).isEqualTo(3);
+        assertThat(count("SELECT count(*) FROM stockrescue.lane_revision_cancellation WHERE org_id=? AND lane_id=?", f.orgA, f.laneA)).isEqualTo(1);
     }
 
     @Test

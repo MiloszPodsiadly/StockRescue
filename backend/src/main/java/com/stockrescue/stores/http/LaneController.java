@@ -29,7 +29,7 @@ import org.springframework.web.bind.annotation.*;
         @ApiResponse(responseCode="401",description="Authentication required",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
         @ApiResponse(responseCode="403",description="Org Admin or CSRF required",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
         @ApiResponse(responseCode="404",description="Scoped resource unavailable",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
-        @ApiResponse(responseCode="409",description="Stale version, invalid revision order or incompatible/inactive configuration",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
+        @ApiResponse(responseCode="409",description="Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
         @ApiResponse(responseCode="500",description="Request failed",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class))),
         @ApiResponse(responseCode="503",description="Service unavailable",content=@Content(mediaType="application/problem+json",schema=@Schema(implementation=ApiProblem.class)))
 })
@@ -79,6 +79,15 @@ public class LaneController {
     public LaneResponse revise(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID laneId,@Valid @RequestBody CostRevisionRequest request) {
         return LaneResponse.from(lanes.revise(actor(actor),organizationId,laneId,request.laneVersion(),request.expectedRevision(),request.costAmount(),request.currencyCode(),request.durationMinutes(),request.effectiveAt(),request.reason()));
     }
+    @PostMapping(value="/{laneId}/scheduled-revisions/cancel",consumes=MediaType.APPLICATION_JSON_VALUE)
+    @Operation(operationId="cancelScheduledLaneRevisions",summary="Explicitly cancel every future cost revision for a lane and preserve its history")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=ScheduledRevisionCancellationResponse.class)))
+    public ScheduledRevisionCancellationResponse cancelScheduledRevisions(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID laneId,
+            @Valid @RequestBody CancelScheduledRevisionsRequest request) {
+        var result=lanes.cancelFutureRevisions(actor(actor),organizationId,laneId,request.laneVersion(),request.expectedRevision(),request.reason());
+        return new ScheduledRevisionCancellationResponse(LaneResponse.from(result.lane()),
+                result.cancelledRevisions().stream().map(CancelledRevisionResponse::from).toList());
+    }
     @GetMapping("/{laneId}/revisions")
     @Operation(operationId="laneCostHistory",summary="Immutable price evidence; validity intervals end at the next revision's effective time")
     @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=RevisionPageResponse.class)))
@@ -102,6 +111,9 @@ public class LaneController {
                                        @NotBlank @Pattern(regexp="[A-Z]{3}") @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String currencyCode,
                                        @NotNull @Min(1) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Integer durationMinutes,
                                        Instant effectiveAt,@NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
+    public record CancelScheduledRevisionsRequest(@NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long laneVersion,
+                                                    @NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedRevision,
+                                                    @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
     public record CurrencyOptions(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<String> codes) { }
     public record RevisionResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) long revision,
                                      @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String costAmount,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) String currencyCode,
@@ -110,9 +122,20 @@ public class LaneController {
                                      @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant recordedAt,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID recordedByMembershipId,
                                      @Schema(types={"string","null"},format="uuid",requiredMode=Schema.RequiredMode.REQUIRED) UUID originZoneId,
                                      @Schema(types={"string","null"},format="uuid",requiredMode=Schema.RequiredMode.REQUIRED) UUID destinationZoneId,
-                                     @Schema(nullable=true,requiredMode=Schema.RequiredMode.REQUIRED) TemperatureClass temperatureClass) {
-        static RevisionResponse from(Revision revision) { return revision==null?null:new RevisionResponse(revision.id(),revision.revision(),revision.costAmount(),revision.currencyCode(),revision.durationMinutes(),revision.effectiveAt(),revision.validUntil(),revision.recordedAt(),revision.recordedByMembershipId(),revision.originZoneId(),revision.destinationZoneId(),revision.temperatureClass()); }
+                                     @Schema(nullable=true,requiredMode=Schema.RequiredMode.REQUIRED) TemperatureClass temperatureClass,
+                                     @Schema(nullable=true,requiredMode=Schema.RequiredMode.REQUIRED) CancelledRevisionResponse cancellation) {
+        static RevisionResponse from(Revision revision) { return revision==null?null:new RevisionResponse(revision.id(),revision.revision(),revision.costAmount(),revision.currencyCode(),revision.durationMinutes(),revision.effectiveAt(),revision.validUntil(),revision.recordedAt(),revision.recordedByMembershipId(),revision.originZoneId(),revision.destinationZoneId(),revision.temperatureClass(),CancelledRevisionResponse.from(revision.cancellation())); }
     }
+    public record CancelledRevisionResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,
+                                              @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID revisionId,
+                                              @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long revision,
+                                              @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID cancelledByMembershipId,
+                                              @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason,
+                                              @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant cancelledAt) {
+        static CancelledRevisionResponse from(Cancellation cancellation) { return cancellation==null?null:new CancelledRevisionResponse(cancellation.id(),cancellation.revisionId(),cancellation.revision(),cancellation.cancelledByMembershipId(),cancellation.reason(),cancellation.cancelledAt()); }
+    }
+    public record ScheduledRevisionCancellationResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) LaneResponse lane,
+                                                          @Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<CancelledRevisionResponse> cancelledRevisions) { }
     public record LaneResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID originStoreId,
                                  @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String originStoreName,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID destinationStoreId,
                                  @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String destinationStoreName,

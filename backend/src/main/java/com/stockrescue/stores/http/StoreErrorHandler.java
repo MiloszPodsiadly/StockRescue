@@ -36,6 +36,8 @@ public class StoreErrorHandler {
             case CONFLICT -> response(HttpStatus.CONFLICT,ProblemCode.CONFIGURATION_CONFLICT,"Configuration changed or already exists. Reload and review versions and revision times.");
             case INACTIVE -> response(HttpStatus.CONFLICT,ProblemCode.CONFIGURATION_INACTIVE,"This configuration is inactive. New operations are unavailable.");
             case INCOMPATIBLE_ZONES -> response(HttpStatus.CONFLICT,ProblemCode.INCOMPATIBLE_ZONES,"Both zones must declare the same temperature class.");
+            case SCHEDULED_REVISIONS_PENDING -> response(HttpStatus.CONFLICT,ProblemCode.SCHEDULED_REVISIONS_PENDING,"Cancel all future scheduled costs before changing this lane's storage zones.");
+            case NO_FUTURE_REVISIONS -> response(HttpStatus.CONFLICT,ProblemCode.NO_FUTURE_REVISIONS,"No future cost revisions remain to cancel. Reload the lane and reconcile its current history.");
         };
     }
     private ResponseEntity<ApiProblem> response(HttpStatus status, ProblemCode code, String detail) {

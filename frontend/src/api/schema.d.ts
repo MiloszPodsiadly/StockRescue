@@ -508,6 +508,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/transport-lanes/{laneId}/scheduled-revisions/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Explicitly cancel every future cost revision for a lane and preserve its history */
+        post: operations["cancelScheduledLaneRevisions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -517,7 +534,7 @@ export interface components {
         };
         ApiProblem: {
             /** @enum {string} */
-            code: "ACCESS_DENIED" | "ACCESS_CONFLICT" | "ACCESS_RATE_LIMITED" | "AUTH_RATE_LIMITED" | "AUTH_REQUIRED" | "CSRF_INVALID" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_INACTIVE" | "INCOMPATIBLE_ZONES" | "INTERNAL_ERROR" | "INVALID_CORRELATION_ID" | "INVALID_CREDENTIALS" | "INVALID_REQUEST" | "INVITATION_UNAVAILABLE" | "ONBOARDING_CONFLICT" | "ORGANIZATION_REQUIRED" | "REQUEST_TOO_LARGE" | "RESOURCE_NOT_FOUND" | "SERVICE_UNAVAILABLE" | "SESSION_EXPIRED" | "STORE_CONFLICT" | "STORE_INACTIVE";
+            code: "ACCESS_DENIED" | "ACCESS_CONFLICT" | "ACCESS_RATE_LIMITED" | "AUTH_RATE_LIMITED" | "AUTH_REQUIRED" | "CSRF_INVALID" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_INACTIVE" | "INCOMPATIBLE_ZONES" | "INTERNAL_ERROR" | "INVALID_CORRELATION_ID" | "INVALID_CREDENTIALS" | "INVALID_REQUEST" | "INVITATION_UNAVAILABLE" | "NO_FUTURE_REVISIONS" | "ONBOARDING_CONFLICT" | "ORGANIZATION_REQUIRED" | "REQUEST_TOO_LARGE" | "RESOURCE_NOT_FOUND" | "SERVICE_UNAVAILABLE" | "SCHEDULED_REVISIONS_PENDING" | "SESSION_EXPIRED" | "STORE_CONFLICT" | "STORE_INACTIVE";
             correlationId: string;
             detail: string;
             /** Format: int32 */
@@ -537,6 +554,26 @@ export interface components {
             reason: string;
             /** Format: int64 */
             version: number;
+        };
+        CancelScheduledRevisionsRequest: {
+            /** Format: int64 */
+            expectedRevision: number;
+            /** Format: int64 */
+            laneVersion: number;
+            reason: string;
+        };
+        CancelledRevisionResponse: {
+            /** Format: date-time */
+            cancelledAt: string;
+            /** Format: uuid */
+            cancelledByMembershipId: string;
+            /** Format: uuid */
+            id: string;
+            reason: string;
+            /** Format: int64 */
+            revision: number;
+            /** Format: uuid */
+            revisionId: string;
         };
         CostRevisionRequest: {
             costAmount: string;
@@ -766,6 +803,7 @@ export interface components {
             items: components["schemas"]["RevisionResponse"][];
         };
         RevisionResponse: {
+            cancellation: components["schemas"]["CancelledRevisionResponse"] | null;
             costAmount: string;
             currencyCode: string;
             /** Format: uuid */
@@ -795,6 +833,10 @@ export interface components {
             role: "ORG_ADMIN" | "MEMBER";
             /** Format: int64 */
             version: number;
+        };
+        ScheduledRevisionCancellationResponse: {
+            cancelledRevisions: components["schemas"]["CancelledRevisionResponse"][];
+            lane: components["schemas"]["LaneResponse"];
         };
         SelectionRequest: {
             /** Format: uuid */
@@ -3957,7 +3999,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Stale version, invalid revision order or incompatible/inactive configuration */
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4049,7 +4091,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Stale version, invalid revision order or incompatible/inactive configuration */
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4134,7 +4176,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Stale version, invalid revision order or incompatible/inactive configuration */
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4222,7 +4264,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Stale version, invalid revision order or incompatible/inactive configuration */
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4308,7 +4350,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Stale version, invalid revision order or incompatible/inactive configuration */
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4401,7 +4443,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Stale version, invalid revision order or incompatible/inactive configuration */
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4490,7 +4532,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Stale version, invalid revision order or incompatible/inactive configuration */
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4583,7 +4625,100 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Stale version, invalid revision order or incompatible/inactive configuration */
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    cancelScheduledLaneRevisions: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                laneId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelScheduledRevisionsRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledRevisionCancellationResponse"];
+                };
+            };
+            /** @description Invalid fields, currency or decimal precision */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Org Admin or CSRF required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Scoped resource unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale version, invalid revision order, pending scheduled costs or incompatible/inactive configuration */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -17,6 +17,7 @@ import com.stockrescue.stores.domain.ConfigurationFailure;
 import com.stockrescue.stores.domain.CostParameters;
 import com.stockrescue.stores.persistence.LaneRepository;
 import com.stockrescue.stores.persistence.ZoneRepository;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -56,6 +57,8 @@ public class LaneService {
         access.requireAdmin(actor,org,true);ZoneService.reason(reason);
         var before=existing(org,id);lockStores(actor,org,before.originStoreId(),before.destinationStoreId(),!active);lanes.lock(org,id);
         before=existing(org,id);if(before.version()!=version) throw ZoneService.conflict();
+        if(active&&(!Objects.equals(originZone,before.originZoneId())||!Objects.equals(destinationZone,before.destinationZoneId()))
+                &&lanes.hasFutureRevisions(org,id)) throw new ConfigurationFailure(ConfigurationFailure.Kind.SCHEDULED_REVISIONS_PENDING);
         if(active) compatible(org,before.originStoreId(),before.destinationStoreId(),originZone,destinationZone);
         else if(!Objects.equals(originZone,before.originZoneId())||!Objects.equals(destinationZone,before.destinationZoneId())) throw ZoneService.conflict();
         lanes.update(org,id,originZone,destinationZone,active);var after=existing(org,id);
@@ -76,6 +79,20 @@ public class LaneService {
         var after=existing(org,id);var revision=lanes.history(org,id,0,1).getFirst();
         audit.securityChange(actor,org,"transport-lane",id,"LANE_COST_REVISED",Map.of("outcome","SUCCEEDED","previousRevision",expectedRevision,"after",revision),reason);
         return view(org,after,now);
+    }
+    @Transactional
+    public CancellationResult cancelFutureRevisions(UUID actor,UUID org,UUID id,long version,long expectedRevision,String reason) {
+        var administrator=access.requireAdmin(actor,org,true);ZoneService.reason(reason);
+        var before=existing(org,id);lockStores(actor,org,before.originStoreId(),before.destinationStoreId(),false);lanes.lock(org,id);before=existing(org,id);
+        if(!before.active()) throw inactive();
+        if(before.version()!=version||before.latestRevision()!=expectedRevision) throw ZoneService.conflict();
+        var cancelled=lanes.cancelFutureRevisions(org,id,administrator.membershipId(),reason,MDC.get("correlationId"));
+        if(cancelled.isEmpty()) throw new ConfigurationFailure(ConfigurationFailure.Kind.NO_FUTURE_REVISIONS);
+        var after=existing(org,id);
+        var cancelledEvidence=cancelled.stream().map(item->Map.of("revisionId",item.revisionId(),"revision",item.revision())).toList();
+        audit.securityChange(actor,org,"transport-lane",id,"LANE_SCHEDULED_REVISIONS_CANCELLED",
+                Map.of("outcome","SUCCEEDED","beforeVersion",before.version(),"afterVersion",after.version(),"cancelledRevisions",cancelledEvidence),reason);
+        return new CancellationResult(view(org,after,now()),cancelled);
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public RevisionPage history(UUID actor,UUID org,UUID id,int offset,int limit) {

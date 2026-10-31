@@ -2613,8 +2613,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ApiProblem"
-          description: "Stale version, invalid revision order or incompatible/inactive\
-            \ configuration"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
         "500":
           content:
             application/problem+json:
@@ -2689,8 +2689,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ApiProblem"
-          description: "Stale version, invalid revision order or incompatible/inactive\
-            \ configuration"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
         "500":
           content:
             application/problem+json:
@@ -2755,8 +2755,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ApiProblem"
-          description: "Stale version, invalid revision order or incompatible/inactive\
-            \ configuration"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
         "500":
           content:
             application/problem+json:
@@ -2833,8 +2833,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ApiProblem"
-          description: "Stale version, invalid revision order or incompatible/inactive\
-            \ configuration"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
         "500":
           content:
             application/problem+json:
@@ -2905,8 +2905,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ApiProblem"
-          description: "Stale version, invalid revision order or incompatible/inactive\
-            \ configuration"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
         "500":
           content:
             application/problem+json:
@@ -2987,8 +2987,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ApiProblem"
-          description: "Stale version, invalid revision order or incompatible/inactive\
-            \ configuration"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
         "500":
           content:
             application/problem+json:
@@ -3077,8 +3077,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ApiProblem"
-          description: "Stale version, invalid revision order or incompatible/inactive\
-            \ configuration"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
         "500":
           content:
             application/problem+json:
@@ -3160,8 +3160,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ApiProblem"
-          description: "Stale version, invalid revision order or incompatible/inactive\
-            \ configuration"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
         "500":
           content:
             application/problem+json:
@@ -3178,6 +3178,90 @@ paths:
       - session: []
       summary: Approve an immutable decimal cost/duration version; omitted effectiveAt
         means server approval time
+      tags:
+      - lane-controller
+  /api/v1/organizations/{organizationId}/transport-lanes/{laneId}/scheduled-revisions/cancel:
+    post:
+      operationId: cancelScheduledLaneRevisions
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: laneId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelScheduledRevisionsRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduledRevisionCancellationResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid fields, currency or decimal precision"
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Org Admin or CSRF required
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale version, invalid revision order, pending scheduled costs\
+            \ or incompatible/inactive configuration"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Explicitly cancel every future cost revision for a lane and preserve
+        its history
       tags:
       - lane-controller
 components:
@@ -3211,11 +3295,13 @@ components:
           - INVALID_CREDENTIALS
           - INVALID_REQUEST
           - INVITATION_UNAVAILABLE
+          - NO_FUTURE_REVISIONS
           - ONBOARDING_CONFLICT
           - ORGANIZATION_REQUIRED
           - REQUEST_TOO_LARGE
           - RESOURCE_NOT_FOUND
           - SERVICE_UNAVAILABLE
+          - SCHEDULED_REVISIONS_PENDING
           - SESSION_EXPIRED
           - STORE_CONFLICT
           - STORE_INACTIVE
@@ -3270,6 +3356,52 @@ components:
       required:
       - reason
       - version
+    CancelScheduledRevisionsRequest:
+      type: object
+      properties:
+        expectedRevision:
+          type: integer
+          format: int64
+          minimum: 0
+        laneVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+      required:
+      - expectedRevision
+      - laneVersion
+      - reason
+    CancelledRevisionResponse:
+      type: object
+      properties:
+        cancelledAt:
+          type: string
+          format: date-time
+        cancelledByMembershipId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        revision:
+          type: integer
+          format: int64
+        revisionId:
+          type: string
+          format: uuid
+      required:
+      - cancelledAt
+      - cancelledByMembershipId
+      - id
+      - reason
+      - revision
+      - revisionId
     CostRevisionRequest:
       type: object
       properties:
@@ -3933,6 +4065,10 @@ components:
     RevisionResponse:
       type: object
       properties:
+        cancellation:
+          anyOf:
+          - $ref: "#/components/schemas/CancelledRevisionResponse"
+          - type: "null"
         costAmount:
           type: string
         currencyCode:
@@ -3980,6 +4116,7 @@ components:
           - "null"
           format: date-time
       required:
+      - cancellation
       - costAmount
       - currencyCode
       - destinationZoneId
@@ -4012,6 +4149,18 @@ components:
       - reason
       - role
       - version
+    ScheduledRevisionCancellationResponse:
+      type: object
+      properties:
+        cancelledRevisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/CancelledRevisionResponse"
+        lane:
+          $ref: "#/components/schemas/LaneResponse"
+      required:
+      - cancelledRevisions
+      - lane
     SelectionRequest:
       type: object
       properties:
