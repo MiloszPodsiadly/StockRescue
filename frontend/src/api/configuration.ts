@@ -8,6 +8,9 @@ export type Revision = components['schemas']['RevisionResponse']
 export type LaneCreation = components['schemas']['CreateLaneRequest']
 export type LaneUpdate = components['schemas']['UpdateLaneRequest']
 export type CostRevision = components['schemas']['CostRevisionRequest']
+export type ScheduledRevisionCancellation = components['schemas']['CancelledRevisionResponse']
+export type ScheduledRevisionCancellationRequest = components['schemas']['CancelScheduledRevisionsRequest']
+export type ScheduledRevisionCancellationResponse = components['schemas']['ScheduledRevisionCancellationResponse']
 type Problem = components['schemas']['ApiProblem']
 function data<T>(result: { data?: T, error?: Problem, response: Response }) { if (result.data === undefined) throw new ApiError(result.response, result.error); return result.data }
 export async function listZones(organizationId: string, storeId: string, includeInactive: boolean, offset: number, signal: AbortSignal) {
@@ -49,6 +52,20 @@ export async function reviseLane(organizationId: string, laneId: string, body: C
   const result = await api.POST('/api/v1/organizations/{organizationId}/transport-lanes/{laneId}/revisions', { params: { path: { organizationId, laneId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
   signal.throwIfAborted(); return data(result)
 }
-export async function laneHistory(organizationId: string, laneId: string, offset: number, signal: AbortSignal) {
-  return data(await api.GET('/api/v1/organizations/{organizationId}/transport-lanes/{laneId}/revisions', { params: { path: { organizationId, laneId }, query: { offset, limit: 25 } }, signal: requestSignal(signal) }))
+export async function cancelScheduledLaneRevisions(organizationId: string, laneId: string, body: ScheduledRevisionCancellationRequest, signal: AbortSignal) {
+  async function send(refreshCsrf: boolean) {
+    const result = await api.POST('/api/v1/organizations/{organizationId}/transport-lanes/{laneId}/scheduled-revisions/cancel', {
+      params: { path: { organizationId, laneId }, ...await csrf(signal, refreshCsrf) }, body, signal: requestSignal(signal),
+    })
+    signal.throwIfAborted()
+    return data(result)
+  }
+  try { return await send(false) }
+  catch (error) {
+    if (error instanceof ApiError && error.code === 'CSRF_INVALID') return send(true)
+    throw error
+  }
+}
+export async function laneHistory(organizationId: string, laneId: string, offset: number, signal: AbortSignal, limit = 25) {
+  return data(await api.GET('/api/v1/organizations/{organizationId}/transport-lanes/{laneId}/revisions', { params: { path: { organizationId, laneId }, query: { offset, limit } }, signal: requestSignal(signal) }))
 }

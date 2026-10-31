@@ -61,6 +61,8 @@ function problemMessage(error: ApiError): string {
     case 'CONFIGURATION_CONFLICT': return 'A newer configuration was saved or this route already exists. Reload the saved values and review before trying again.'
     case 'CONFIGURATION_INACTIVE': return 'A store, zone or lane is inactive. Choose active configuration before continuing.'
     case 'INCOMPATIBLE_ZONES': return 'Both zones must use the same temperature class. Select compatible active zones.'
+    case 'SCHEDULED_REVISIONS_PENDING': return 'Future scheduled costs are still active. Review and explicitly cancel them before changing the lane zones.'
+    case 'NO_FUTURE_REVISIONS': return 'No future scheduled costs remain to cancel. Reload the lane and its history before continuing.'
     case 'ACCESS_RATE_LIMITED': return 'Too many invitation attempts. Try again later.'
     case 'INVITATION_UNAVAILABLE': return 'This invitation is unavailable for this account. It may have expired, been revoked, or already been claimed.'
     case 'RESOURCE_NOT_FOUND': return 'This organization is unavailable or your access has changed.'

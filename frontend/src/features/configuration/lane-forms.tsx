@@ -10,13 +10,13 @@ import { panelClass } from './settings-fields'
 import { Field, inputClass } from '@/components/form-field'
 import { useTenantKey } from '../organizations/tenant-requests'
 
-export function LaneSetupForm({ organizationId, lane, saving, onSubmit }: { organizationId: string, lane?: Lane, saving: boolean, onSubmit: (body: LaneCreation | LaneUpdate) => void }) {
+export function LaneSetupForm({ organizationId, lane, draft, saving, onSubmit }: { organizationId: string, lane?: Lane, draft?: LaneUpdate, saving: boolean, onSubmit: (body: LaneCreation | LaneUpdate) => void }) {
   const [origin, setOrigin] = useState(lane?.originStoreId ?? '')
   const [destination, setDestination] = useState(lane?.destinationStoreId ?? '')
-  const [originZone, setOriginZone] = useState(lane?.originZoneId ?? '')
-  const [destinationZone, setDestinationZone] = useState(lane?.destinationZoneId ?? '')
-  const [active, setActive] = useState(lane?.active ?? true)
-  const [reason, setReason] = useState('')
+  const [originZone, setOriginZone] = useState(draft?.originZoneId ?? lane?.originZoneId ?? '')
+  const [destinationZone, setDestinationZone] = useState(draft?.destinationZoneId ?? lane?.destinationZoneId ?? '')
+  const [active, setActive] = useState(draft?.active ?? lane?.active ?? true)
+  const [reason, setReason] = useState(draft?.reason ?? '')
   return <form className={panelClass} onSubmit={event => {
     event.preventDefault()
     if (saving) return
