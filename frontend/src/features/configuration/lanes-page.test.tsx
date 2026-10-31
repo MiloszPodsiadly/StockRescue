@@ -335,6 +335,100 @@ it('does not apply a prepared zone draft when reload closes an unfinished review
   expect(api.updateLane).not.toHaveBeenCalled()
 })
 
+it('releases a reconciled zone draft with no future costs for a separate save', async () => {
+  let laneReads = 0
+  api.getLane.mockImplementation(async () => {
+    laneReads += 1
+    if (laneReads === 2) throw new TypeError('Lane preflight read unavailable')
+    return lane(laneReads >= 5 ? 4 : 3)
+  })
+  api.laneHistory.mockResolvedValue(history([]))
+  api.updateLane.mockResolvedValue(lane(4))
+  const { user } = renderPage()
+
+  await user.click(await screen.findByRole('button', { name: 'Save lane configuration' }))
+  expect(await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Reload lane and history before continuing' })).toBeEnabled()
+  expect(api.updateLane).not.toHaveBeenCalled()
+  expect(api.cancelScheduledLaneRevisions).not.toHaveBeenCalled()
+  expect(api.reviseLane).not.toHaveBeenCalled()
+
+  await user.click(screen.getByRole('button', { name: 'Reload lane and history before continuing' }))
+
+  await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lane state needs reconciliation' })).not.toBeInTheDocument())
+  expect(screen.getByTestId('prepared-zone-draft')).toHaveTextContent('north-chilled')
+  expect(screen.getByRole('button', { name: 'Save lane configuration' })).toBeEnabled()
+  expect(screen.queryByRole('region', { name: 'Review future costs before changing lane zones' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /Cancel all/ })).not.toBeInTheDocument()
+  expect(api.updateLane).not.toHaveBeenCalled()
+  expect(api.cancelScheduledLaneRevisions).not.toHaveBeenCalled()
+  expect(api.reviseLane).not.toHaveBeenCalled()
+
+  await user.click(screen.getByRole('button', { name: 'Save lane configuration' }))
+
+  await waitFor(() => expect(api.updateLane).toHaveBeenCalledTimes(1))
+  expect(api.updateLane).toHaveBeenCalledWith('org', 'lane', expect.objectContaining({
+    active: true, originZoneId: 'north-chilled', destinationZoneId: 'south-chilled', version: 3,
+  }), expect.any(AbortSignal))
+  expect(await screen.findByRole('status')).toHaveTextContent('Lane configuration saved. The lane and cost history were reloaded.')
+  expect(api.cancelScheduledLaneRevisions).not.toHaveBeenCalled()
+  expect(api.reviseLane).not.toHaveBeenCalled()
+})
+
+it('requires a fresh schedule review when zone-draft reconciliation finds future costs', async () => {
+  api.getLane.mockResolvedValueOnce(lane(3)).mockRejectedValueOnce(new TypeError('Lane preflight read unavailable')).mockResolvedValue(lane(3))
+  const { user } = renderPage()
+
+  await user.click(await screen.findByRole('button', { name: 'Save lane configuration' }))
+  await user.click(await screen.findByRole('button', { name: 'Reload lane and history before continuing' }))
+
+  expect(await screen.findByRole('heading', { name: 'Review future costs before changing lane zones' })).toBeInTheDocument()
+  expect(screen.getByLabelText('Reason for cancelling scheduled costs')).toHaveValue('')
+  expect(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.')).not.toBeChecked()
+  expect(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' })).toBeDisabled()
+  expect(api.updateLane).not.toHaveBeenCalled()
+  expect(api.cancelScheduledLaneRevisions).not.toHaveBeenCalled()
+})
+
+it('keeps a zone draft blocked through repeated reconciliation read failures', async () => {
+  api.getLane.mockResolvedValueOnce(lane(3))
+    .mockRejectedValueOnce(new TypeError('Lane preflight read unavailable'))
+    .mockRejectedValueOnce(new TypeError('First reconciliation read unavailable'))
+    .mockResolvedValue(lane(3))
+  api.laneHistory.mockResolvedValue(history([]))
+  const { user } = renderPage()
+
+  await user.click(await screen.findByRole('button', { name: 'Save lane configuration' }))
+  await user.click(await screen.findByRole('button', { name: 'Reload lane and history before continuing' }))
+
+  expect(await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Reload lane and history before continuing' })).toBeEnabled()
+  expect(screen.queryByRole('button', { name: 'Save lane configuration' })).not.toBeInTheDocument()
+  expect(api.updateLane).not.toHaveBeenCalled()
+
+  await user.click(screen.getByRole('button', { name: 'Reload lane and history before continuing' }))
+
+  await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lane state needs reconciliation' })).not.toBeInTheDocument())
+  expect(screen.getByTestId('prepared-zone-draft')).toHaveTextContent('north-chilled')
+  expect(api.updateLane).not.toHaveBeenCalled()
+})
+
+it('discards a prepared zone draft when reconciliation finds a newer lane version', async () => {
+  const changedLane = { ...lane(4), originZoneId: 'north-chilled' }
+  api.getLane.mockResolvedValueOnce(lane(3)).mockRejectedValueOnce(new TypeError('Lane preflight read unavailable')).mockResolvedValue(changedLane)
+  api.laneHistory.mockResolvedValue(history([]))
+  const { user } = renderPage()
+
+  await user.click(await screen.findByRole('button', { name: 'Save lane configuration' }))
+  await user.click(await screen.findByRole('button', { name: 'Reload lane and history before continuing' }))
+
+  await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lane state needs reconciliation' })).not.toBeInTheDocument())
+  expect(screen.getByRole('status')).toHaveTextContent('The lane configuration changed while its state was being recovered. The earlier zone draft was discarded; review the current configuration before editing again.')
+  expect(screen.getByTestId('prepared-zone-draft')).toHaveTextContent('no prepared draft')
+  expect(api.updateLane).not.toHaveBeenCalled()
+  expect(api.cancelScheduledLaneRevisions).not.toHaveBeenCalled()
+})
+
 it('reconciles a lost cancellation response from saved evidence without retrying the command', async () => {
   let savedCancellation = false
   api.getLane.mockImplementation(async () => lane(savedCancellation ? 4 : 3))
@@ -357,6 +451,50 @@ it('reconciles a lost cancellation response from saved evidence without retrying
   expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
   expect(api.laneHistory.mock.calls.length).toBeGreaterThan(3)
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it('keeps writes blocked when an uncertain cancellation has no saved evidence or future schedule', async () => {
+  let cancellationAttempted = false
+  api.laneHistory.mockImplementation(async () => history(cancellationAttempted ? [] : scheduledRevision))
+  api.cancelScheduledLaneRevisions.mockImplementation(async () => {
+    cancellationAttempted = true
+    throw new TypeError('Network disconnected before the cancellation result was received')
+  })
+  const { user } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
+  await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
+  await user.click(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
+  await user.click(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' }))
+
+  expect(await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })).toBeInTheDocument()
+  expect(screen.getByText(/We could not confirm the request/)).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Save lane configuration' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Approve current cost for test' })).not.toBeInTheDocument()
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
+
+  await user.click(screen.getByRole('button', { name: 'Reload lane and history before continuing' }))
+
+  expect(await screen.findByRole('heading', { name: 'Lane state needs reconciliation' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Save lane configuration' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Approve current cost for test' })).not.toBeInTheDocument()
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
+})
+
+it('reopens a fresh schedule review when a lost cancellation response leaves schedules active', async () => {
+  api.cancelScheduledLaneRevisions.mockRejectedValueOnce(new TypeError('Network disconnected before the cancellation result was received'))
+  const { user } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
+  await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
+  await user.click(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
+  await user.click(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' }))
+
+  const refreshedReview = await screen.findByRole('region', { name: 'Review and cancel scheduled costs' })
+  expect(refreshedReview).toHaveTextContent('Revision 3')
+  expect(screen.getByLabelText('Reason for cancelling scheduled costs')).toHaveValue('')
+  expect(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.')).not.toBeChecked()
+  expect(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' })).toBeDisabled()
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
+  expect(api.updateLane).not.toHaveBeenCalled()
 })
 
 it('keeps lane writes blocked through repeated reconciliation failures until saved cancellation evidence is confirmed', async () => {

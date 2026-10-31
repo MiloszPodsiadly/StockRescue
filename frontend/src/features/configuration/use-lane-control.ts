@@ -38,6 +38,10 @@ const initialState: State = {
   reason: '', confirmed: false, unresolved: null,
 }
 
+function isAmbiguousCommandFailure(error: unknown) {
+  return !(error instanceof ApiError) || error.status === 408 || error.status === 425 || error.status >= 500
+}
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'begin': return { ...state, phase: action.phase, error: null }
@@ -235,6 +239,11 @@ export function useLaneControl(organizationId: string, laneId: string) {
             dispatch({ type: 'reconciled', notice: 'The reviewed schedules are no longer future plans. Lane and history were reloaded; no new cancellation request was sent.', preparedDraft: review.draft })
             return
           }
+          if (!snapshot.scheduled.length && isAmbiguousCommandFailure(error)) {
+            dispatch({ type: 'needs-reconciliation', pending: { draft: review.draft, cancellationIds: [], reviewedRevisionIds: review.revisions.map(item => item.id), kind: review.kind } })
+            dispatch({ type: 'error', value: new Error('Saved cancellation evidence could not be confirmed. Lane changes remain blocked until cancellation evidence appears in history.') })
+            return
+          }
           dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: review.draft, kind: review.kind })
         } catch {
           if (!signal.aborted) dispatch({ type: 'needs-reconciliation', pending: { draft: review.draft, cancellationIds: [], reviewedRevisionIds: review.revisions.map(item => item.id), kind: review.kind } })
@@ -287,9 +296,29 @@ export function useLaneControl(organizationId: string, laneId: string) {
         if (cancelled.size === pending.reviewedRevisionIds.length) {
           await finishCancellation({ lane: snapshot.lane, revisions: [], draft: pending.draft, kind: pending.kind }, snapshot, cancelled.size)
         } else if (snapshot.scheduled.length) dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: pending.draft, kind: pending.kind })
-        else dispatch({ type: 'reconciled', notice: 'Lane and history were reloaded. No future schedules remain, but the reviewed cancellation evidence could not be confirmed.' })
-      } else if (pending.draft) dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: pending.draft, kind: pending.kind })
-      else dispatch({ type: 'reconciled', notice: 'The lane and history now show the latest saved state.' })
+        else dispatch({ type: 'error', value: new Error('Saved cancellation evidence could not be confirmed. Lane changes remain blocked until cancellation evidence appears in history.') })
+      } else if (pending.draft && snapshot.lane.version !== pending.draft.version) {
+        if (snapshot.scheduled.length) {
+          dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: null, kind: 'independent' })
+        } else {
+          dispatch({
+            type: 'reconciled',
+            notice: 'The lane configuration changed while its state was being recovered. Review the reloaded configuration before editing again.',
+          })
+        }
+        dispatch({
+          type: 'notice',
+          value: 'The lane configuration changed while its state was being recovered. The earlier zone draft was discarded; review the current configuration before editing again.',
+        })
+      } else if (pending.draft && snapshot.scheduled.length) {
+        dispatch({ type: 'review', lane: snapshot.lane, revisions: snapshot.scheduled, draft: pending.draft, kind: pending.kind })
+      } else if (pending.draft) {
+        dispatch({
+          type: 'reconciled',
+          notice: 'Lane and history were reloaded. No future scheduled costs remain; review and save the selected zones separately.',
+          preparedDraft: pending.draft,
+        })
+      } else dispatch({ type: 'reconciled', notice: 'The lane and history now show the latest saved state.' })
     })
   }
 
