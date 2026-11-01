@@ -2,6 +2,7 @@ FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f0210
 RUN npm install --global pnpm@12.16.1
 WORKDIR /app
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml frontend/.npmrc ./
+COPY frontend/tooling/openapi/package.json ./tooling/openapi/package.json
 RUN --mount=type=cache,target=/app/.tools/pnpm-store pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm build

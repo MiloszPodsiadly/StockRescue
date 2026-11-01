@@ -15,11 +15,8 @@ import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.http.ProblemDetail;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
-import tools.jackson.databind.ObjectMapper;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -28,10 +25,10 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
     public static final String HEADER_NAME = "X-Correlation-ID";
     private static final Logger LOG = LoggerFactory.getLogger(CorrelationIdFilter.class);
     private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
-    private final ObjectMapper objectMapper;
+    private final ApiProblems problems;
 
-    public CorrelationIdFilter(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+    public CorrelationIdFilter(ApiProblems problems) {
+        this.problems = problems;
     }
 
     @Override
@@ -47,11 +44,8 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
         try (var ignored = MDC.putCloseable("correlationId", correlationId)) {
             if (invalid) {
                 LOG.warn("Rejected request with invalid or duplicate X-Correlation-ID");
-                response.setStatus(HttpStatus.BAD_REQUEST.value());
-                response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
-                var problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
+                problems.write(response, HttpStatus.BAD_REQUEST, ProblemCode.INVALID_CORRELATION_ID,
                         "X-Correlation-ID must contain 1 to 64 letters, digits, dots, underscores or hyphens, starting with a letter or digit.");
-                objectMapper.writeValue(response.getOutputStream(), problem);
                 return;
             }
             chain.doFilter(request, response);

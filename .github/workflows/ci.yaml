@@ -66,6 +66,7 @@ jobs:
           node-version-file: frontend/.node-version
       - run: npm install --global pnpm@12.16.1
       - run: pnpm --dir frontend install --frozen-lockfile
+      - run: pnpm --dir frontend run api:check
       - run: pnpm --dir frontend run typecheck
       - run: pnpm --dir frontend run lint
       - run: pnpm --dir frontend run test

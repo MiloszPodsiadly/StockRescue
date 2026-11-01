@@ -8,7 +8,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Backend checks failed' }
     & pnpm --dir frontend install --frozen-lockfile
     if ($LASTEXITCODE -ne 0) { throw 'Frontend lockfile check failed' }
-    foreach ($check in @('typecheck', 'lint', 'test', 'build')) {
+    foreach ($check in @('api:check', 'typecheck', 'lint', 'test', 'build')) {
         & pnpm --dir frontend run $check
         if ($LASTEXITCODE -ne 0) { throw "Frontend $check failed" }
     }

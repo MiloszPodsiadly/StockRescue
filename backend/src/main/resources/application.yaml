@@ -12,6 +12,8 @@ spring:
       connection-timeout: 2000
       validation-timeout: 1000
       maximum-pool-size: 5
+      data-source-properties:
+        logServerErrorDetail: false
   flyway:
     default-schema: public
     validate-on-migrate: true
@@ -26,11 +28,22 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  session:
+    jdbc:
+      initialize-schema: never
+      table-name: stockrescue.spring_session
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
 
 server:
   address: ${SERVER_ADDRESS:127.0.0.1}
   port: ${SERVER_PORT:8080}
   shutdown: graceful
+  forward-headers-strategy: none
+  servlet:
+    session:
+      timeout: 30m
   error:
     include-message: never
     include-stacktrace: never
@@ -58,6 +71,9 @@ management:
           include: kafka,intelligence
 
 stockrescue:
+  security:
+    secure-cookie: true
+    maximum-session-age-seconds: 43200
   intelligence:
     base-url: ${INTELLIGENCE_BASE_URL}
 
@@ -65,3 +81,10 @@ logging:
   structured:
     format:
       console: logstash
+
+springdoc:
+  api-docs:
+    enabled: false
+  paths-to-match: /api/v1/**
+  writer-with-order-by-keys: true
+  default-produces-media-type: application/json

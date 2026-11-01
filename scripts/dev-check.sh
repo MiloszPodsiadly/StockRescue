@@ -5,7 +5,7 @@ cd "$project_root"
 
 bash backend/gradlew -p backend --no-daemon test bootJar
 pnpm --dir frontend install --frozen-lockfile
-for check in typecheck lint test build; do
+for check in api:check typecheck lint test build; do
   pnpm --dir frontend run "$check"
 done
 uv sync --project intelligence --locked

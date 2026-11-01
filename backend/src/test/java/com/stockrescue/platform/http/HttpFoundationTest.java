@@ -15,6 +15,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.core.annotation.Order;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.JsonNode;
@@ -24,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @ExtendWith(OutputCaptureExtension.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Import(HttpFoundationTest.FailureEndpoint.class)
+@Import({HttpFoundationTest.FailureEndpoint.class, HttpFoundationTest.ErrorEndpointSecurity.class})
 class HttpFoundationTest extends InfrastructureTestBase {
 
     @LocalServerPort
@@ -47,7 +52,7 @@ class HttpFoundationTest extends InfrastructureTestBase {
                     .hasValueSatisfying(value -> assertThat(value).matches("[a-f0-9-]{36}"));
         }
         for (String path : new String[]{"/api/env", "/api/configprops", "/api/beans", "/api"}) {
-            assertThat(get(path).statusCode()).isEqualTo(404);
+            assertThat(get(path).statusCode()).isEqualTo(401);
         }
     }
 
@@ -136,6 +141,15 @@ class HttpFoundationTest extends InfrastructureTestBase {
         @GetMapping("/api/test-failure")
         void fail() {
             throw new IllegalStateException(TEST_SECRET);
+        }
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class ErrorEndpointSecurity {
+        @Bean @Order(0)
+        SecurityFilterChain errorEndpoints(HttpSecurity http) throws Exception {
+            return http.securityMatcher("/api/test-failure", "/api/does-not-exist")
+                    .authorizeHttpRequests(requests -> requests.anyRequest().permitAll()).build();
         }
     }
 }
