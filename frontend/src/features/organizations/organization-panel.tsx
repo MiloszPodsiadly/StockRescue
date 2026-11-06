@@ -34,9 +34,10 @@ function OrganizationDetails({ organizationId }: { organizationId: string }) {
         <div><dt className="text-sm text-muted-foreground">Your organization role</dt><dd className="mt-2 font-medium">{organization.role === 'ORG_ADMIN' ? 'Org Admin' : 'Member'}</dd></div>
         <div><dt className="text-sm text-muted-foreground">Store access</dt><dd className="mt-2 font-medium">{allStoreActions.includes('READ_STORE') ? 'All stores in this organization' : `${storeGrants.length} assigned ${storeGrants.length === 1 ? 'store' : 'stores'}`}</dd></div>
       </dl>
-      <p className="mt-7 border-t border-border pt-6 leading-relaxed text-muted-foreground">Organization access and store assignments are independent. Store Managers can edit their assigned stores; Inventory Operators and Read-only Analysts currently have read access.</p>
+      <p className="mt-7 border-t border-border pt-6 leading-relaxed text-muted-foreground">Organization access and store assignments are independent. Store Managers configure assigned stores and locations. Inventory Operators record source observations; Read-only Analysts inspect evidence.</p>
       <Button variant="outline" className="mt-5" onClick={() => { void permissions.refetch() }}>Check access again</Button>
       <AppLink href={`/organizations/${organizationId}/stores`} className="mt-5 inline-flex rounded-xl bg-primary px-5 py-3 font-medium text-primary-foreground">Open stores</AppLink>
+      {organizationActions.includes('READ_CATALOG') && <AppLink href={`/organizations/${organizationId}/catalog`} className="mt-5 inline-flex rounded-xl bg-primary px-5 py-3 font-medium text-primary-foreground">Open catalog</AppLink>}
       {organizationActions.includes('MANAGE_TRANSPORT_LANES') && <AppLink href={`/organizations/${organizationId}/transport-lanes`} className="mt-5 inline-flex rounded-xl bg-primary px-5 py-3 font-medium text-primary-foreground">Transport lanes</AppLink>}
       {organizationActions.includes('MANAGE_ACCESS') && <AppLink href={`/organizations/${organizationId}/members`} className="mt-5 inline-flex rounded-xl bg-primary px-5 py-3 font-medium text-primary-foreground">Manage members</AppLink>}
     </section>
