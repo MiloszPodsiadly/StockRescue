@@ -74,6 +74,7 @@ public class ZoneService {
         if(before.version()!=version) throw new ConfigurationFailure(ConfigurationFailure.Kind.ZONE_IMPACT_CHANGED);
         var actual=impact(org,store,before,lanes.databaseNow());
         if(!actual.impactFingerprint().equals(expectedImpactFingerprint)) throw new ConfigurationFailure(ConfigurationFailure.Kind.ZONE_IMPACT_CHANGED);
+        if(actual.activeLocationCount()>0) throw new ConfigurationFailure(ConfigurationFailure.Kind.ZONE_HAS_ACTIVE_LOCATIONS);
         var after=zones.archive(org,store,id,version).orElseThrow(ZoneService::conflict);
         audit.securityChange(actor,org,"storage-zone",id,"ZONE_ARCHIVED",Map.of("outcome","SUCCEEDED","before",before,"after",after),reason);
         return after;
@@ -83,15 +84,18 @@ public class ZoneService {
         var future=lanes.futureRevisionsForZone(org,store,zone.id(),asOf);
         var active=(int)affected.stream().filter(ZoneRepository.ImpactLane::active).count();
         var inactive=affected.size()-active;
-        var fingerprint=fingerprint(org,store,zone.id(),zone.version(),affected,future);
-        return new ZoneArchiveImpact(active,inactive,future.size(),zone.version(),fingerprint,asOf);
+        var locations=zones.activeLocations(org,store,zone.id());
+        var fingerprint=fingerprint(org,store,zone.id(),zone.version(),affected,future,locations);
+        return new ZoneArchiveImpact(active,inactive,future.size(),locations.size(),zone.version(),fingerprint,asOf);
     }
     private String fingerprint(UUID org,UUID store,UUID zone,long zoneVersion,
-            java.util.List<ZoneRepository.ImpactLane> affected,java.util.List<LaneRepository.ZoneImpactRevision> future) {
+            java.util.List<ZoneRepository.ImpactLane> affected,java.util.List<LaneRepository.ZoneImpactRevision> future,
+            java.util.List<ZoneRepository.ImpactLocation> locations) {
         var snapshot=new StringBuilder().append("zone:").append(org).append(':').append(store).append(':').append(zone).append(':').append(zoneVersion);
         affected.forEach(lane->snapshot.append("\nlane:").append(lane.id()).append(':').append(lane.version()).append(':').append(lane.active()));
         future.forEach(revision->snapshot.append("\nrevision:").append(revision.id()).append(':').append(revision.laneId()).append(':')
                 .append(revision.revision()).append(':').append(revision.effectiveAt()));
+        locations.forEach(location->snapshot.append("\nlocation:").append(location.id()).append(':').append(location.version()));
         try {
             return Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(snapshot.toString().getBytes(StandardCharsets.UTF_8)));
         } catch(NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }

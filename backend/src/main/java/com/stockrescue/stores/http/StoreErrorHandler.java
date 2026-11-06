@@ -13,6 +13,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.dao.DataIntegrityViolationException;
 
 @RestControllerAdvice(basePackageClasses = StoreController.class)
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -39,8 +40,11 @@ public class StoreErrorHandler {
             case SCHEDULED_REVISIONS_PENDING -> response(HttpStatus.CONFLICT,ProblemCode.SCHEDULED_REVISIONS_PENDING,"Cancel all future scheduled costs before changing this lane's storage zones.");
             case NO_FUTURE_REVISIONS -> response(HttpStatus.CONFLICT,ProblemCode.NO_FUTURE_REVISIONS,"No future cost revisions remain to cancel. Reload the lane and reconcile its current history.");
             case ZONE_IMPACT_CHANGED -> response(HttpStatus.CONFLICT,ProblemCode.ZONE_IMPACT_CHANGED,"The zone or its lane impact changed. Review the latest impact before confirming archival.");
+            case ZONE_HAS_ACTIVE_LOCATIONS -> response(HttpStatus.CONFLICT,ProblemCode.ZONE_HAS_ACTIVE_LOCATIONS,"Archive active storage locations before deactivating this zone. Refresh the impact preview.");
         };
     }
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiProblem> configurationConflict() { return response(HttpStatus.CONFLICT,ProblemCode.CONFIGURATION_CONFLICT,"Configuration changed or conflicts with retained identity. Reload and review."); }
     private ResponseEntity<ApiProblem> response(HttpStatus status, ProblemCode code, String detail) {
         return ResponseEntity.status(status).contentType(MediaType.APPLICATION_PROBLEM_JSON).body(problems.create(status, code, detail));
     }

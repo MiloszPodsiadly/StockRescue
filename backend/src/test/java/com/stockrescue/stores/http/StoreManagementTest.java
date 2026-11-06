@@ -103,7 +103,8 @@ class StoreManagementTest extends InfrastructureTestBase {
         assertThat(tree(changed).path("code").asString()).isEqualTo("NORTH");
         assertThat(tree(changed).path("version").asLong()).isEqualTo(1);
         for (var user : List.of(f.operator, f.analyst)) {
-            assertThat(tree(user.browser().get(path(f.orgA, f.a1))).path("allowedActions").toString()).isEqualTo("[\"READ_STORE\"]");
+            assertThat(tree(user.browser().get(path(f.orgA, f.a1))).path("allowedActions").toString())
+                    .isEqualTo(user==f.operator?"[\"READ_STORE\",\"REGISTER_SOURCE_EVIDENCE\"]":"[\"READ_STORE\"]");
             problem(user.browser().write("PATCH", path(f.orgA, f.a1), update(1, "Forbidden", "UTC")), 403, "ACCESS_DENIED");
             problem(user.browser().write("POST", path(f.orgA, f.a1) + "/archive", version(1)), 403, "ACCESS_DENIED");
         }

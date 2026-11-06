@@ -37,7 +37,7 @@ public class AccessPolicy {
         var grants = rows.stream().filter(row -> row.storeId() != null)
                 .map(row -> new StorePermission(row.storeId(), row.role(), storeActions(row.role()))).toList();
         return new EffectivePermissions(membership,
-                admin ? Arrays.asList(OrganizationAction.values()) : List.of(OrganizationAction.READ_ORGANIZATION),
+                organizationActions(membership.role()),
                 admin ? Arrays.asList(StoreAction.values()) : List.of(), grants);
     }
 
@@ -45,6 +45,17 @@ public class AccessPolicy {
         var membership = write ? lock(actor, organization, true) : organization(actor, organization);
         if (membership.role() != OrganizationRole.ORG_ADMIN) throw new AccessDeniedException("Action unavailable");
         return membership;
+    }
+
+    public OrganizationAccess requireOrganizationAction(UUID actor, UUID organization, OrganizationAction action, boolean write) {
+        var membership = write ? lock(actor, organization, action == OrganizationAction.MANAGE_FOOD_SAFETY_POLICY) : organization(actor, organization);
+        if (!organizationActions(membership.role()).contains(action)) throw new AccessDeniedException("Action unavailable");
+        return membership;
+    }
+
+    private List<OrganizationAction> organizationActions(OrganizationRole role) {
+        return role == OrganizationRole.ORG_ADMIN ? Arrays.asList(OrganizationAction.values())
+                : List.of(OrganizationAction.READ_ORGANIZATION, OrganizationAction.READ_CATALOG);
     }
 
     public List<StaffAccess.MemberAction> memberActions(UUID actor, StaffAccess.Member member) {
@@ -116,8 +127,10 @@ public class AccessPolicy {
     }
 
     private List<StoreAction> storeActions(StoreRole role) {
-        return role == StoreRole.STORE_MANAGER
-                ? List.of(StoreAction.READ_STORE, StoreAction.EDIT_STORE, StoreAction.MANAGE_STORAGE_ZONES)
-                : List.of(StoreAction.READ_STORE);
+        return switch(role) {
+            case STORE_MANAGER -> List.of(StoreAction.READ_STORE,StoreAction.EDIT_STORE,StoreAction.MANAGE_STORAGE_ZONES,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.MANAGE_STORAGE_LOCATIONS);
+            case INVENTORY_OPERATOR -> List.of(StoreAction.READ_STORE,StoreAction.REGISTER_SOURCE_EVIDENCE);
+            case READ_ONLY_ANALYST -> List.of(StoreAction.READ_STORE);
+        };
     }
 }

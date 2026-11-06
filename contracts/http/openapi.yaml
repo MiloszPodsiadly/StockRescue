@@ -885,6 +885,201 @@ paths:
         grants
       tags:
       - staff-controller
+  /api/v1/organizations/{organizationId}/food-safety-profiles/{temperatureClass}/versions:
+    get:
+      operationId: listFoodSafetyPolicyVersions
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: temperatureClass
+        required: true
+        schema:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FoodSafetyPolicyHistoryResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or unsupported policy override
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Version, replay or immutable block conflict"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid review evidence
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read latest review and immutable version history; an absent profile
+        is explicit
+      tags:
+      - food-safety-controller
+    post:
+      operationId: recordFoodSafetyPolicyReview
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: temperatureClass
+        required: true
+        schema:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordFoodSafetyPolicyReviewRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FoodSafetyPolicyVersionResponse"
+          description: Previously recorded immutable version
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FoodSafetyPolicyVersionResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or unsupported policy override
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Version, replay or immutable block conflict"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid review evidence
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Append an immutable class-specific policy review; a submitted reference
+        never grants independent approval
+      tags:
+      - food-safety-controller
   /api/v1/organizations/{organizationId}/invitations:
     get:
       operationId: listInvitations
@@ -1142,6 +1337,934 @@ paths:
       summary: Revoke a pending invitation without deleting its history
       tags:
       - staff-controller
+  /api/v1/organizations/{organizationId}/lots:
+    get:
+      operationId: listManufacturerLots
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: productId
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: includeArchived
+        required: false
+        schema:
+          type: boolean
+          default: false
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Catalog action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, product or lot unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Known identity, changed retry or inactive parent"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid lot or provenance data
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "List organization lot identities in stable code/UUID order, optionally\
+        \ for one product"
+      tags:
+      - lot-controller
+    post:
+      operationId: registerManufacturerLot
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterLotRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotResponse"
+          description: Recorded retry; current lot state
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Catalog action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, product or lot unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Known identity, changed retry or inactive parent"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid lot or provenance data
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Register one durable lot identity; candidates never merge by code,\
+        \ and invalid date labels remain recorded evidence"
+      tags:
+      - lot-controller
+  /api/v1/organizations/{organizationId}/lots/{lotId}:
+    get:
+      operationId: getManufacturerLot
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: lotId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Catalog action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, product or lot unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Known identity, changed retry or inactive parent"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid lot or provenance data
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Read exact date marking and manufacturer evidence, including archived\
+        \ identity"
+      tags:
+      - lot-controller
+  /api/v1/organizations/{organizationId}/lots/{lotId}/corrections:
+    get:
+      operationId: listLotCorrections
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: lotId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotCorrectionPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Catalog action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, product or lot unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Known identity, changed retry or inactive parent"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid lot or provenance data
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read immutable correction evidence in descending result-version order
+        alongside the current lot version
+      tags:
+      - lot-controller
+    post:
+      operationId: correctLotMetadata
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: lotId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CorrectLotMetadataRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotCorrectionResult"
+          description: Recorded correction with current lot state
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotCorrectionResult"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Catalog action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, product or lot unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Known identity, changed retry or inactive parent"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid lot or provenance data
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Review and correct one expected metadata version with immutable evidence
+        and a durable request outcome
+      tags:
+      - lot-controller
+  /api/v1/organizations/{organizationId}/lots/{lotId}/eligibility:
+    get:
+      operationId: evaluateLotEligibility
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: lotId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: zoneId
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: locationId
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: operation
+        required: true
+        schema:
+          type: string
+          enum:
+          - SALE
+          - TRANSFER
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EligibilityResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or unsupported policy override
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Version, replay or immutable block conflict"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid review evidence
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Recompute a read-only decision for a lot, operation and authorized\
+        \ store context; review is never executable approval"
+      tags:
+      - food-safety-controller
+  /api/v1/organizations/{organizationId}/lots/{lotId}/safety-status-evidence:
+    post:
+      operationId: recordLotSafetyEvidence
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: lotId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordLotSafetyEvidenceRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotCorrectionResult"
+          description: Recorded evidence with current lot state
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotCorrectionResult"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or unsupported policy override
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Version, replay or immutable block conflict"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid review evidence
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Record recall/damage metadata with immutable evidence; existing blocks
+        cannot be cleared by metadata edits
+      tags:
+      - food-safety-controller
+  /api/v1/organizations/{organizationId}/lots/{lotId}/source-evidence:
+    get:
+      operationId: traceLotSources
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: lotId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceTracePage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Source registration or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store, lot or source unavailable in current\
+            \ scope"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Changed retry or archived parent
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid source metadata
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read recorded source trace in current administrator/store scope; it
+        does not establish exact per-unit origin
+      tags:
+      - source-evidence-controller
+    post:
+      operationId: registerSourceEvidence
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: lotId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterSourceEvidenceRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceEvidenceResponse"
+          description: Recorded source replayed in current actor scope
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceEvidenceResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Source registration or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store, lot or source unavailable in current\
+            \ scope"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Changed retry or archived parent
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid source metadata
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Record independent source metadata with a durable retry key; this is
+        not a physical receipt or quantity
+      tags:
+      - source-evidence-controller
+  /api/v1/organizations/{organizationId}/lots/{lotId}/source-evidence/{evidenceId}:
+    get:
+      operationId: getSourceEvidence
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: lotId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: evidenceId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceEvidenceResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Source registration or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store, lot or source unavailable in current\
+            \ scope"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Changed retry or archived parent
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid source metadata
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read one independent source record only when its store/organization
+        scope remains authorized
+      tags:
+      - source-evidence-controller
   /api/v1/organizations/{organizationId}/members:
     get:
       operationId: listMembers
@@ -1776,6 +2899,366 @@ paths:
       summary: Org Admin grants one store role to another active member; no self grant
       tags:
       - staff-controller
+  /api/v1/organizations/{organizationId}/products:
+    get:
+      operationId: listProducts
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: state
+        required: false
+        schema:
+          type: string
+          default: ACTIVE
+          enum:
+          - ACTIVE
+          - ARCHIVED
+          - ALL
+      - in: query
+        name: q
+        required: false
+        schema:
+          type: string
+          default: ""
+          maxLength: 100
+          minLength: 0
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or product unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved SKU, changed retry, stale version or inactive product"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid catalog identity, unit or product data"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Active organization members search literal SKU, name or GTIN with\
+        \ deterministic SKU/UUID ordering"
+      tags:
+      - product-controller
+    post:
+      operationId: createProduct
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductResponse"
+          description: Recorded creation replayed; current product state
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or product unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved SKU, changed retry, stale version or inactive product"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid catalog identity, unit or product data"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Catalog administrator creates one durable product; unchanged retries
+        return its current state
+      tags:
+      - product-controller
+  /api/v1/organizations/{organizationId}/products/{productId}:
+    get:
+      operationId: getProduct
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: productId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or product unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved SKU, changed retry, stale version or inactive product"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid catalog identity, unit or product data"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Read organization catalog metadata, including archived identity"
+      tags:
+      - product-controller
+  /api/v1/organizations/{organizationId}/products/{productId}/archive:
+    post:
+      operationId: archiveProduct
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: productId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchiveProductRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or product unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved SKU, changed retry, stale version or inactive product"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid catalog identity, unit or product data"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Catalog administrator archives a versioned product with a durable retry
+        key and reason
+      tags:
+      - product-controller
   /api/v1/organizations/{organizationId}/stores:
     get:
       operationId: listStores
@@ -2194,6 +3677,456 @@ paths:
         \ or history"
       tags:
       - store-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/storage-locations:
+    get:
+      operationId: listStorageLocations
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: includeArchived
+        required: false
+        schema:
+          type: boolean
+          default: false
+      - in: query
+        name: q
+        required: false
+        schema:
+          type: string
+          default: ""
+          maxLength: 100
+          minLength: 0
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLocationPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid metadata or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Scoped location, zone or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved identity, stale version, changed replay or inactive\
+            \ parent"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read scoped location configuration in stable normalized-code order
+      tags:
+      - storage-location-controller
+    post:
+      operationId: createStorageLocation
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStorageLocationRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLocationResponse"
+          description: Recorded retry with current configuration
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLocationResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid metadata or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Scoped location, zone or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved identity, stale version, changed replay or inactive\
+            \ parent"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Register stable location configuration in an active store and zone
+        with a durable retry key
+      tags:
+      - storage-location-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/storage-locations/{locationId}:
+    get:
+      operationId: getStorageLocation
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: locationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLocationResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid metadata or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Scoped location, zone or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved identity, stale version, changed replay or inactive\
+            \ parent"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read retained location identity and whether its current parent configuration
+        is usable
+      tags:
+      - storage-location-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/storage-locations/{locationId}/archive:
+    post:
+      operationId: archiveStorageLocation
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: locationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchiveStorageLocationRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLocationResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid metadata or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Scoped location, zone or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved identity, stale version, changed replay or inactive\
+            \ parent"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: "Archive an expected location version, retaining its identity and reserved\
+        \ code"
+      tags:
+      - storage-location-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/storage-locations/{locationId}/rename:
+    post:
+      operationId: renameStorageLocation
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: locationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameStorageLocationRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLocationResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid metadata or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Scoped location, zone or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved identity, stale version, changed replay or inactive\
+            \ parent"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Rename an expected configuration version while preserving code and
+        zone identity
+      tags:
+      - storage-location-controller
   /api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones:
     get:
       operationId: listStorageZones
@@ -2627,8 +4560,8 @@ paths:
           description: Service unavailable
       security:
       - session: []
-      summary: Preview scoped active-lane and future-schedule counts before irreversible
-        zone archival
+      summary: "Preview scoped lanes, future schedules and active locations before\
+        \ irreversible zone archival"
       tags:
       - zone-controller
   /api/v1/organizations/{organizationId}/transport-lanes:
@@ -3464,6 +5397,8 @@ components:
           - AUTH_RATE_LIMITED
           - AUTH_REQUIRED
           - CSRF_INVALID
+          - CATALOG_CONFLICT
+          - CATALOG_INACTIVE
           - CONFIGURATION_CONFLICT
           - CONFIGURATION_INACTIVE
           - INCOMPATIBLE_ZONES
@@ -3483,6 +5418,7 @@ components:
           - STORE_CONFLICT
           - STORE_INACTIVE
           - ZONE_IMPACT_CHANGED
+          - ZONE_HAS_ACTIVE_LOCATIONS
         correlationId:
           type: string
         detail:
@@ -3520,6 +5456,43 @@ components:
       - reason
       - verifiedUserId
       - version
+    ArchiveProductRequest:
+      type: object
+      properties:
+        expectedVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - expectedVersion
+      - reason
+      - requestId
+    ArchiveStorageLocationRequest:
+      type: object
+      properties:
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - expectedVersion
+      - reason
+      - requestId
     ArchiveStoreRequest:
       type: object
       properties:
@@ -3602,6 +5575,73 @@ components:
       - reason
       - revision
       - revisionId
+    CatalogProvenanceRequest:
+      type: object
+      properties:
+        reference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        source:
+          type: string
+          maxLength: 256
+          minLength: 0
+      required:
+      - source
+    CatalogProvenanceResponse:
+      type: object
+      properties:
+        reference:
+          type:
+          - string
+          - "null"
+        source:
+          type: string
+      required:
+      - reference
+      - source
+    CorrectLotMetadataRequest:
+      type: object
+      properties:
+        dateMarking:
+          $ref: "#/components/schemas/DateMarkingRequest"
+        evidenceReviewed:
+          type: boolean
+          description: Explicit review of replacement evidence
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        identityState:
+          type: string
+          enum:
+          - CANDIDATE
+          - CONFIRMED
+        manufacturerIdentityKey:
+          type: string
+          maxLength: 200
+          minLength: 0
+        manufacturerProvenance:
+          $ref: "#/components/schemas/CatalogProvenanceRequest"
+        manufacturerVerified:
+          type: boolean
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - dateMarking
+      - evidenceReviewed
+      - expectedVersion
+      - identityState
+      - manufacturerProvenance
+      - manufacturerVerified
+      - reason
+      - requestId
     CostRevisionRequest:
       type: object
       properties:
@@ -3669,6 +5709,64 @@ components:
       - originStoreId
       - originZoneId
       - reason
+    CreateProductRequest:
+      type: object
+      properties:
+        baseUnit:
+          type: string
+          enum:
+          - EA
+          maxLength: 8
+          minLength: 0
+        gtin:
+          type: string
+          maxLength: 14
+          minLength: 0
+        name:
+          type: string
+          maxLength: 160
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+          maxLength: 128
+          minLength: 0
+        temperatureClass:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+      required:
+      - baseUnit
+      - name
+      - requestId
+      - sku
+      - temperatureClass
+    CreateStorageLocationRequest:
+      type: object
+      properties:
+        code:
+          type: string
+          maxLength: 32
+          minLength: 0
+        name:
+          type: string
+          maxLength: 160
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        zoneId:
+          type: string
+          format: uuid
+      required:
+      - code
+      - name
+      - requestId
+      - zoneId
     CreateStoreRequest:
       type: object
       properties:
@@ -3759,6 +5857,342 @@ components:
             type: string
       required:
       - codes
+    DateMarkingRequest:
+      type: object
+      properties:
+        labeledValue:
+          type: string
+          maxLength: 256
+          minLength: 0
+        precision:
+          type: string
+          enum:
+          - DAY
+          - MONTH
+          - YEAR
+          - UNKNOWN
+        provenance:
+          $ref: "#/components/schemas/CatalogProvenanceRequest"
+        type:
+          type: string
+          enum:
+          - USE_BY
+          - BEST_BEFORE
+          - BEST_BEFORE_END
+          - UNKNOWN
+      required:
+      - precision
+      - type
+    DateMarkingResponse:
+      type: object
+      description: Original label and parsing evidence. Validation is not operational
+        safety approval; partial dates never acquire a guessed day.
+      properties:
+        labeledValue:
+          type:
+          - string
+          - "null"
+        normalizedCutoff:
+          type:
+          - string
+          - "null"
+          format: date
+        precision:
+          type: string
+          enum:
+          - DAY
+          - MONTH
+          - YEAR
+          - UNKNOWN
+        provenance:
+          anyOf:
+          - $ref: "#/components/schemas/CatalogProvenanceResponse"
+          - type: "null"
+        type:
+          type: string
+          enum:
+          - USE_BY
+          - BEST_BEFORE
+          - BEST_BEFORE_END
+          - UNKNOWN
+        validationReasons:
+          type: array
+          items:
+            type: string
+            enum:
+            - MISSING_LABEL
+            - UNKNOWN_TYPE
+            - UNKNOWN_PRECISION
+            - MISSING_PROVENANCE
+            - USE_BY_REQUIRES_DAY
+            - UNRECOGNIZED_FORMAT
+            - NONEXISTENT_DATE
+        validationStatus:
+          type: string
+          enum:
+          - VALID
+          - INCOMPLETE
+          - INVALID
+      required:
+      - labeledValue
+      - normalizedCutoff
+      - precision
+      - provenance
+      - type
+      - validationReasons
+      - validationStatus
+    EligibilityEvidenceResponse:
+      type: object
+      properties:
+        damage:
+          type: string
+          enum:
+          - UNKNOWN
+          - REPORTED
+          - BLOCK_RECORDED
+        date:
+          type: string
+          enum:
+          - COMPLETE_LABEL
+          - INCOMPLETE
+          - INVALID
+          - PARTIAL_REQUIRES_VERIFIED_RULE
+        policy:
+          type: string
+          enum:
+          - MISSING
+          - RECORDED_UNVERIFIED
+        recall:
+          type: string
+          enum:
+          - UNKNOWN
+          - REPORTED
+          - BLOCK_RECORDED
+        storage:
+          type: string
+          enum:
+          - MISSING
+          - DECLARED_COMPATIBLE
+          - DECLARED_INCOMPATIBLE
+          - INACTIVE
+      required:
+      - damage
+      - date
+      - policy
+      - recall
+      - storage
+    EligibilityPolicyReferenceResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        profileId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+      required:
+      - id
+      - profileId
+      - version
+    EligibilityResponse:
+      type: object
+      description: "Point-in-time evidence, not a reusable permission or physical\
+        \ hold. Recompute before future operative use. Without independently verified\
+        \ policy approval the pilot returns DENIED or REQUIRES_REVIEW."
+      properties:
+        decision:
+          type: string
+          enum:
+          - ALLOWED
+          - DENIED
+          - REQUIRES_REVIEW
+        evaluatedAt:
+          type: string
+          format: date-time
+        evaluatorVersion:
+          type: string
+        evidence:
+          $ref: "#/components/schemas/EligibilityEvidenceResponse"
+        locationId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        locationVersion:
+          type:
+          - integer
+          - "null"
+          format: int64
+        lotId:
+          type: string
+          format: uuid
+        lotVersion:
+          type: integer
+          format: int64
+        nextAction:
+          type: string
+          enum:
+          - DO_NOT_EXECUTE
+          - REVIEW_LOT_EVIDENCE
+          - RECORD_STORAGE_CONTEXT
+          - OBTAIN_INDEPENDENT_POLICY_APPROVAL
+        operation:
+          type: string
+          enum:
+          - SALE
+          - TRANSFER
+        policy:
+          anyOf:
+          - $ref: "#/components/schemas/EligibilityPolicyReferenceResponse"
+          - type: "null"
+        productId:
+          type: string
+          format: uuid
+        productVersion:
+          type: integer
+          format: int64
+        reasonCodes:
+          type: array
+          items:
+            type: string
+            enum:
+            - LOT_RECALLED
+            - LOT_DAMAGED
+            - LOT_ARCHIVED
+            - PRODUCT_ARCHIVED
+            - STORE_ARCHIVED
+            - ZONE_ARCHIVED
+            - LOCATION_ARCHIVED
+            - TEMPERATURE_CLASS_MISMATCH
+            - USE_BY_EXPIRED
+            - BEST_BEFORE_EXPIRED
+            - LOT_IDENTITY_UNVERIFIED
+            - DATE_LABEL_MISSING
+            - DATE_TYPE_UNKNOWN
+            - DATE_PRECISION_UNKNOWN
+            - DATE_LABEL_INVALID
+            - USE_BY_DAY_REQUIRED
+            - DATE_PROVENANCE_MISSING
+            - DATE_REFERENCE_MISSING
+            - PARTIAL_DATE_RULE_UNVERIFIED
+            - RECALL_STATUS_UNKNOWN
+            - DAMAGE_STATUS_UNKNOWN
+            - STATUS_REFERENCE_MISSING
+            - STORAGE_CONTEXT_MISSING
+            - COLD_CHAIN_EVIDENCE_UNVERIFIED
+            - POLICY_MISSING
+            - POLICY_CLASS_MISMATCH
+            - POLICY_APPROVAL_UNVERIFIED
+        storeId:
+          type: string
+          format: uuid
+        storeLocalDate:
+          type: string
+          format: date
+        storeTimeZone:
+          type: string
+        storeVersion:
+          type: integer
+          format: int64
+        zoneId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        zoneVersion:
+          type:
+          - integer
+          - "null"
+          format: int64
+      required:
+      - decision
+      - evaluatedAt
+      - evaluatorVersion
+      - evidence
+      - locationId
+      - locationVersion
+      - lotId
+      - lotVersion
+      - nextAction
+      - operation
+      - policy
+      - productId
+      - productVersion
+      - reasonCodes
+      - storeId
+      - storeLocalDate
+      - storeTimeZone
+      - storeVersion
+      - zoneId
+      - zoneVersion
+    FoodSafetyPolicyHistoryResponse:
+      type: object
+      properties:
+        current:
+          anyOf:
+          - $ref: "#/components/schemas/FoodSafetyPolicyVersionResponse"
+          - type: "null"
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FoodSafetyPolicyVersionResponse"
+      required:
+      - current
+      - hasMore
+      - items
+    FoodSafetyPolicyVersionResponse:
+      type: object
+      properties:
+        approvalStatus:
+          type: string
+          enum:
+          - UNVERIFIED
+        id:
+          type: string
+          format: uuid
+        partialDateRule:
+          type: string
+          enum:
+          - NO_NORMALIZATION
+          - END_OF_LABELED_PERIOD
+        profileId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        recordedAt:
+          type: string
+          format: date-time
+        recordedByMembershipId:
+          type: string
+          format: uuid
+        reviewProvenance:
+          $ref: "#/components/schemas/CatalogProvenanceResponse"
+        temperatureClass:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+        version:
+          type: integer
+          format: int64
+      required:
+      - approvalStatus
+      - id
+      - partialDateRule
+      - profileId
+      - reason
+      - recordedAt
+      - recordedByMembershipId
+      - reviewProvenance
+      - temperatureClass
+      - version
     GrantRequest:
       type: object
       properties:
@@ -4046,6 +6480,180 @@ components:
       - originZoneId
       - status
       - version
+    LotCorrectionPage:
+      type: object
+      properties:
+        currentVersion:
+          type: integer
+          format: int64
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LotCorrectionResponse"
+      required:
+      - currentVersion
+      - hasMore
+      - items
+    LotCorrectionResponse:
+      type: object
+      properties:
+        actorMembershipId:
+          type: string
+          format: uuid
+        actorUserId:
+          type: string
+          format: uuid
+        after:
+          $ref: "#/components/schemas/LotResponse"
+        before:
+          $ref: "#/components/schemas/LotResponse"
+        expectedVersion:
+          type: integer
+          format: int64
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum:
+          - METADATA
+          - SAFETY_STATUS
+        lotId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        recordedAt:
+          type: string
+          format: date-time
+        resultVersion:
+          type: integer
+          format: int64
+      required:
+      - actorMembershipId
+      - actorUserId
+      - after
+      - before
+      - expectedVersion
+      - id
+      - kind
+      - lotId
+      - reason
+      - recordedAt
+      - resultVersion
+    LotCorrectionResult:
+      type: object
+      properties:
+        correction:
+          $ref: "#/components/schemas/LotCorrectionResponse"
+        lot:
+          $ref: "#/components/schemas/LotResponse"
+      required:
+      - correction
+      - lot
+    LotPage:
+      type: object
+      properties:
+        canRegister:
+          type: boolean
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LotResponse"
+      required:
+      - canRegister
+      - hasMore
+      - items
+    LotResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+        archivedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        confirmedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        confirmedByMembershipId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        damageState:
+          type: string
+          enum:
+          - UNKNOWN
+          - NOT_REPORTED
+          - DAMAGED
+        dateMarking:
+          $ref: "#/components/schemas/DateMarkingResponse"
+        id:
+          type: string
+          format: uuid
+        identityState:
+          type: string
+          enum:
+          - CANDIDATE
+          - CONFIRMED
+        lotCode:
+          type: string
+        manufacturerIdentityKey:
+          type:
+          - string
+          - "null"
+        manufacturerProvenance:
+          anyOf:
+          - $ref: "#/components/schemas/CatalogProvenanceResponse"
+          - type: "null"
+        productId:
+          type: string
+          format: uuid
+        recallState:
+          type: string
+          enum:
+          - UNKNOWN
+          - NOT_REPORTED
+          - RECALLED
+        statusProvenance:
+          anyOf:
+          - $ref: "#/components/schemas/CatalogProvenanceResponse"
+          - type: "null"
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int64
+      required:
+      - active
+      - archivedAt
+      - confirmedAt
+      - confirmedByMembershipId
+      - createdAt
+      - damageState
+      - dateMarking
+      - id
+      - identityState
+      - lotCode
+      - manufacturerIdentityKey
+      - manufacturerProvenance
+      - productId
+      - recallState
+      - statusProvenance
+      - updatedAt
+      - version
     MemberPage:
       type: object
       properties:
@@ -4181,6 +6789,8 @@ components:
             - EDIT_STORE
             - ARCHIVE_STORE
             - MANAGE_STORAGE_ZONES
+            - REGISTER_SOURCE_EVIDENCE
+            - MANAGE_STORAGE_LOCATIONS
         organization:
           $ref: "#/components/schemas/OrganizationResponse"
         organizationActions:
@@ -4192,6 +6802,10 @@ components:
             - MANAGE_ACCESS
             - CREATE_STORE
             - MANAGE_TRANSPORT_LANES
+            - READ_CATALOG
+            - MANAGE_CATALOG
+            - MANAGE_FOOD_SAFETY_POLICY
+            - RECORD_LOT_SAFETY_EVIDENCE
         storeGrants:
           type: array
           items:
@@ -4231,6 +6845,212 @@ components:
       required:
       - role
       - storeId
+    ProductPage:
+      type: object
+      properties:
+        canCreate:
+          type: boolean
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductResponse"
+      required:
+      - canCreate
+      - hasMore
+      - items
+    ProductResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+        allowedActions:
+          type: array
+          items:
+            type: string
+            enum:
+            - READ_ORGANIZATION
+            - MANAGE_ACCESS
+            - CREATE_STORE
+            - MANAGE_TRANSPORT_LANES
+            - READ_CATALOG
+            - MANAGE_CATALOG
+            - MANAGE_FOOD_SAFETY_POLICY
+            - RECORD_LOT_SAFETY_EVIDENCE
+        archivedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        baseUnit:
+          type: string
+          enum:
+          - EA
+        createdAt:
+          type: string
+          format: date-time
+        gtin:
+          type:
+          - string
+          - "null"
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        sku:
+          type: string
+        temperatureClass:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int64
+      required:
+      - active
+      - allowedActions
+      - archivedAt
+      - baseUnit
+      - createdAt
+      - gtin
+      - id
+      - name
+      - sku
+      - temperatureClass
+      - updatedAt
+      - version
+    RecordFoodSafetyPolicyReviewRequest:
+      type: object
+      properties:
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        partialDateRule:
+          type: string
+          description: Requested rule only; UNVERIFIED reviews cannot normalize dates
+          enum:
+          - NO_NORMALIZATION
+          - END_OF_LABELED_PERIOD
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        reviewProvenance:
+          $ref: "#/components/schemas/CatalogProvenanceRequest"
+      required:
+      - expectedVersion
+      - partialDateRule
+      - reason
+      - requestId
+      - reviewProvenance
+    RecordLotSafetyEvidenceRequest:
+      type: object
+      properties:
+        damageState:
+          type: string
+          enum:
+          - UNKNOWN
+          - NOT_REPORTED
+          - DAMAGED
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        provenance:
+          $ref: "#/components/schemas/CatalogProvenanceRequest"
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        recallState:
+          type: string
+          enum:
+          - UNKNOWN
+          - NOT_REPORTED
+          - RECALLED
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - damageState
+      - expectedVersion
+      - provenance
+      - reason
+      - recallState
+      - requestId
+    RegisterLotRequest:
+      type: object
+      properties:
+        dateMarking:
+          $ref: "#/components/schemas/DateMarkingRequest"
+        identityState:
+          type: string
+          enum:
+          - CANDIDATE
+          - CONFIRMED
+        lotCode:
+          type: string
+          maxLength: 128
+          minLength: 0
+        manufacturerIdentityKey:
+          type: string
+          maxLength: 200
+          minLength: 0
+        manufacturerProvenance:
+          $ref: "#/components/schemas/CatalogProvenanceRequest"
+        manufacturerVerified:
+          type: boolean
+          description: Explicit manufacturer identity review; never food-safety policy
+            approval
+        productId:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - dateMarking
+      - identityState
+      - lotCode
+      - manufacturerProvenance
+      - manufacturerVerified
+      - productId
+      - requestId
+    RegisterSourceEvidenceRequest:
+      type: object
+      properties:
+        provenance:
+          $ref: "#/components/schemas/CatalogProvenanceRequest"
+        requestId:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+        supplierName:
+          type: string
+          maxLength: 160
+          minLength: 0
+        supplierReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+      required:
+      - provenance
+      - requestId
     RegistrationResponse:
       type: object
       properties:
@@ -4238,6 +7058,30 @@ components:
           type: string
       required:
       - message
+    RenameStorageLocationRequest:
+      type: object
+      properties:
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        name:
+          type: string
+          maxLength: 160
+          minLength: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - expectedVersion
+      - name
+      - reason
+      - requestId
     RenameZoneRequest:
       type: object
       properties:
@@ -4454,6 +7298,155 @@ components:
           format: uuid
       required:
       - organizationId
+    SourceEvidenceResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+        archivedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        lotId:
+          type: string
+          format: uuid
+        provenance:
+          $ref: "#/components/schemas/CatalogProvenanceResponse"
+        storeId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        supplierName:
+          type:
+          - string
+          - "null"
+        supplierReference:
+          type:
+          - string
+          - "null"
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int64
+      required:
+      - active
+      - archivedAt
+      - createdAt
+      - id
+      - lotId
+      - provenance
+      - storeId
+      - supplierName
+      - supplierReference
+      - updatedAt
+      - version
+    SourceTracePage:
+      type: object
+      properties:
+        coverage:
+          type: string
+          enum:
+          - RECORDED_EVIDENCE_ONLY
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceEvidenceResponse"
+        lotId:
+          type: string
+          format: uuid
+        visibilityScope:
+          type: string
+          enum:
+          - ALL_ORGANIZATION_SOURCES
+          - ASSIGNED_STORE_SOURCES
+      required:
+      - coverage
+      - hasMore
+      - items
+      - lotId
+      - visibilityScope
+    StorageLocationPage:
+      type: object
+      properties:
+        canManage:
+          type: boolean
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StorageLocationResponse"
+      required:
+      - canManage
+      - hasMore
+      - items
+    StorageLocationResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+        archivedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        code:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        storeId:
+          type: string
+          format: uuid
+        temperatureClass:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+        updatedAt:
+          type: string
+          format: date-time
+        usable:
+          type: boolean
+          description: Configuration is active with active store and zone; not a physical
+            availability or capacity claim
+        version:
+          type: integer
+          format: int64
+        zoneId:
+          type: string
+          format: uuid
+      required:
+      - active
+      - archivedAt
+      - code
+      - createdAt
+      - id
+      - name
+      - storeId
+      - temperatureClass
+      - updatedAt
+      - usable
+      - version
+      - zoneId
     StoreOptionPage:
       type: object
       properties:
@@ -4507,6 +7500,8 @@ components:
             - EDIT_STORE
             - ARCHIVE_STORE
             - MANAGE_STORAGE_ZONES
+            - REGISTER_SOURCE_EVIDENCE
+            - MANAGE_STORAGE_LOCATIONS
         role:
           type: string
           enum:
@@ -4538,6 +7533,8 @@ components:
             - EDIT_STORE
             - ARCHIVE_STORE
             - MANAGE_STORAGE_ZONES
+            - REGISTER_SOURCE_EVIDENCE
+            - MANAGE_STORAGE_LOCATIONS
         city:
           type:
           - string
@@ -4680,6 +7677,9 @@ components:
         activeLaneCount:
           type: integer
           format: int32
+        activeLocationCount:
+          type: integer
+          format: int32
         asOf:
           type: string
           format: date-time
@@ -4698,6 +7698,7 @@ components:
           format: int64
       required:
       - activeLaneCount
+      - activeLocationCount
       - asOf
       - futureScheduledRevisionCount
       - impactFingerprint

@@ -78,7 +78,7 @@ function ZoneCard({ zone, canManage, organizationId, storeId, onSaved }: { zone:
   function submitArchive(signal: AbortSignal) {
     if (!impact) return Promise.resolve()
     return archiveZone(organizationId, storeId, zone, archiveReason, impact, signal).catch(error => {
-      if (error instanceof ApiError && error.code === 'ZONE_IMPACT_CHANGED') {
+      if (error instanceof ApiError && (error.code === 'ZONE_IMPACT_CHANGED' || error.code === 'ZONE_HAS_ACTIVE_LOCATIONS')) {
         setImpact(null)
         setConfirmed(false)
         void reviewImpact()
@@ -106,10 +106,12 @@ function ZoneCard({ zone, canManage, organizationId, storeId, onSaved }: { zone:
           <div><dt className="text-muted-foreground">Active lanes affected</dt><dd className="font-semibold">{impact.activeLaneCount}</dd></div>
           <div><dt className="text-muted-foreground">Inactive lanes affected</dt><dd className="font-semibold">{impact.inactiveLaneCount}</dd></div>
           <div><dt className="text-muted-foreground">Future scheduled revisions</dt><dd className="font-semibold">{impact.futureScheduledRevisionCount}</dd></div>
+          <div><dt className="text-muted-foreground">Active storage locations</dt><dd className="font-semibold">{impact.activeLocationCount}</dd></div>
         </dl>
         {hasDependencies
           ? <p className="text-sm">Affected lanes become unavailable. Future revisions remain in history and are not cancelled automatically.</p>
           : <p className="text-sm">No lanes or future scheduled revisions currently depend on this zone.</p>}
+        {impact.activeLocationCount > 0 && <p role="alert" className="text-sm">Archive active storage locations before deactivating this zone.</p>}
       </div>}
       <Button type="button" variant="outline" disabled={impactQuery.isFetching || command.isPending} onClick={() => { void reviewImpact() }}>
         {impactQuery.isFetching ? 'Refreshing impact…' : impact ? 'Refresh impact preview' : 'Review impact before deactivation'}
@@ -117,7 +119,7 @@ function ZoneCard({ zone, canManage, organizationId, storeId, onSaved }: { zone:
       {impact && <>
         <label className="flex items-start gap-3 text-sm"><input type="checkbox" checked={confirmed} disabled={command.isPending} onChange={event => { setConfirmed(event.target.checked) }} />I reviewed this impact and confirm permanent deactivation.</label>
         <div className="flex flex-wrap gap-3">
-          <Button type="button" variant="outline" disabled={!confirmed || !archiveReason.trim() || command.isPending} onClick={() => { command.mutate(submitArchive) }}>
+          <Button type="button" variant="outline" disabled={!confirmed || !archiveReason.trim() || impact.activeLocationCount > 0 || command.isPending} onClick={() => { command.mutate(submitArchive) }}>
             {command.isPending ? 'Deactivating zone…' : 'Confirm zone deactivation'}
           </Button>
           <Button type="button" variant="outline" disabled={command.isPending} onClick={() => { setImpact(null); setConfirmed(false); setArchiveReason('') }}>Cancel deactivation review</Button>

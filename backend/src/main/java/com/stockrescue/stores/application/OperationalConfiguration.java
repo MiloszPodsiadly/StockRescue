@@ -12,7 +12,7 @@ public final class OperationalConfiguration {
     public enum Missing { NO_LANE, INACTIVE_LANE, INACTIVE_STORE, MISSING_ZONES, INACTIVE_ZONE, INCOMPATIBLE_ZONES, NO_EFFECTIVE_COST, COST_ZONE_MISMATCH }
     public record Zone(UUID id, String name, TemperatureClass temperatureClass, boolean active, long version, Instant createdAt, Instant updatedAt) { }
     public record ZonePage(List<Zone> items, boolean hasMore, boolean canManage) { }
-    public record ZoneArchiveImpact(int activeLaneCount, int inactiveLaneCount, int futureScheduledRevisionCount,
+    public record ZoneArchiveImpact(int activeLaneCount, int inactiveLaneCount, int futureScheduledRevisionCount, int activeLocationCount,
                                     long zoneVersion, String impactFingerprint, Instant asOf) { }
     public record Lane(UUID id, UUID originStoreId, String originStoreName, boolean originStoreActive,
                        UUID destinationStoreId, String destinationStoreName, boolean destinationStoreActive,

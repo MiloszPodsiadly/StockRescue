@@ -99,6 +99,20 @@ public class SecurityConfiguration {
                             .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/stores", "/api/v1/organizations/*/stores/*").authenticated()
                             .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/stores", "/api/v1/organizations/*/stores/*/archive").authenticated()
                             .requestMatchers(HttpMethod.PATCH, "/api/v1/organizations/*/stores/*").authenticated()
+                            .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/stores/*/storage-locations", "/api/v1/organizations/*/stores/*/storage-locations/*").authenticated()
+                            .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/stores/*/storage-locations",
+                                    "/api/v1/organizations/*/stores/*/storage-locations/*/rename", "/api/v1/organizations/*/stores/*/storage-locations/*/archive").authenticated()
+                            .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/products", "/api/v1/organizations/*/products/*").authenticated()
+                            .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/products", "/api/v1/organizations/*/products/*/archive").authenticated()
+                            .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/lots", "/api/v1/organizations/*/lots/*",
+                                    "/api/v1/organizations/*/lots/*/source-evidence", "/api/v1/organizations/*/lots/*/source-evidence/*",
+                                    "/api/v1/organizations/*/lots/*/corrections").authenticated()
+                            .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/food-safety-profiles/*/versions",
+                                    "/api/v1/organizations/*/lots/*/eligibility").authenticated()
+                            .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/food-safety-profiles/*/versions",
+                                    "/api/v1/organizations/*/lots/*/safety-status-evidence").authenticated()
+                            .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/lots", "/api/v1/organizations/*/lots/*/source-evidence",
+                                    "/api/v1/organizations/*/lots/*/corrections").authenticated()
                             .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/stores/*/storage-zones",
                                     "/api/v1/organizations/*/stores/*/storage-zones/*/archive-impact",
                                     "/api/v1/organizations/*/transport-lanes", "/api/v1/organizations/*/transport-lanes/*", "/api/v1/organizations/*/transport-lanes/*/revisions").authenticated()
