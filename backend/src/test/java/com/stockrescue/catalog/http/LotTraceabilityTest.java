@@ -78,7 +78,8 @@ class LotTraceabilityTest extends InfrastructureTestBase {
     @Test
     void originalLabelsKeepInvalidAndIncompleteDateEvidenceDistinct() throws Exception {
         for (var value:new String[][]{{"2027-04-30","DAY","USE_BY","VALID"},{" 2027-02 ","MONTH","BEST_BEFORE_END","VALID"},
-                {"2027","YEAR","BEST_BEFORE_END","VALID"},{"2027-02","MONTH","USE_BY","INCOMPLETE"},
+                {"2027","YEAR","BEST_BEFORE_END","VALID"},{"2027-12-15","DAY","BEST_BEFORE_END","INCOMPLETE"},
+                {"2027-02","MONTH","USE_BY","INCOMPLETE"},
                 {"2027-02-31","DAY","USE_BY","INVALID"},{"01/02/2027","DAY","USE_BY","INVALID"},
                 {null,"UNKNOWN","UNKNOWN","INCOMPLETE"}}) {
             var body=lotBody(UUID.randomUUID(),"DATE",false);
@@ -92,6 +93,8 @@ class LotTraceabilityTest extends InfrastructureTestBase {
             assertThat(date.path("precision").asString()).isEqualTo(value[1]);
             assertThat(date.path("type").asString()).isEqualTo(value[2]);
             assertThat(date.path("validationStatus").asString()).isEqualTo(value[3]);
+            if (value[2].equals("BEST_BEFORE_END") && value[1].equals("DAY"))
+                assertThat(date.path("validationReasons").toString()).contains("BEST_BEFORE_END_REQUIRES_PERIOD");
             assertThat(date.path("normalizedCutoff").isNull()).isTrue();
         }
         var malformed=lotBody(UUID.randomUUID(),"INPUT",false);
@@ -103,6 +106,14 @@ class LotTraceabilityTest extends InfrastructureTestBase {
         var unknown=tree(f.ownerA.browser().get(lot(legacy)));
         assertThat(unknown.path("manufacturerProvenance").isNull()).isTrue();
         assertThat(unknown.path("dateMarking").path("validationStatus").asString()).isEqualTo("INCOMPLETE");
+
+        var unreferenced=lotBody(UUID.randomUUID(),"NO-LABEL-REFERENCE",false);
+        unreferenced.put("dateMarking",Map.of("labeledValue","2027-04-30","type","USE_BY","precision","DAY",
+                "provenance",Map.of("source","Package photo")));
+        var unreferencedId=register(unreferenced);
+        var date=tree(f.ownerA.browser().get(lot(unreferencedId))).path("dateMarking");
+        assertThat(date.path("validationStatus").asString()).isEqualTo("INCOMPLETE");
+        assertThat(date.path("validationReasons").toString()).contains("MISSING_REFERENCE");
     }
 
     @Test
@@ -286,7 +297,7 @@ class LotTraceabilityTest extends InfrastructureTestBase {
         UUID store(UUID org,String code) { var id=UUID.randomUUID(); jdbc.sql("INSERT INTO stockrescue.store(id,org_id,code,name,zone_id) VALUES (:id,:org,:code,:code,'UTC')").param("id",id).param("org",org).param("code",code).update(); return id; }
         void member(User actor,UUID org,String role,UUID store,String grant) { var id=UUID.randomUUID(); jdbc.sql("INSERT INTO stockrescue.membership(id,org_id,user_id,org_role) VALUES (:id,:org,:actor,:role)").param("id",id).param("org",org).param("actor",actor.id).param("role",role).update(); if (store!=null) jdbc.sql("INSERT INTO stockrescue.store_grant(id,org_id,membership_id,store_id,role) VALUES (:id,:org,:member,:store,:role)").param("id",UUID.randomUUID()).param("org",org).param("member",id).param("store",store).param("role",grant).update(); }
         UUID membership(User actor) { return jdbc.sql("SELECT id FROM stockrescue.membership WHERE org_id=:org AND user_id=:actor").param("org",orgA).param("actor",actor.id).query(UUID.class).single(); }
-        UUID product(User actor,UUID org) throws Exception { var response=actor.browser().write("/api/v1/organizations/"+org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","MILK","name","Milk","baseUnit","EA","temperatureClass","CHILLED")); assertThat(response.statusCode()).as(response.body()).isEqualTo(201); return UUID.fromString(tree(response).path("id").asString()); }
+        UUID product(User actor,UUID org) throws Exception { var response=actor.browser().write("/api/v1/organizations/"+org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","MILK","name","Milk","baseUnit","EA","category","DAIRY","temperatureClass","CHILLED")); assertThat(response.statusCode()).as(response.body()).isEqualTo(201); return UUID.fromString(tree(response).path("id").asString()); }
     }
     private class User {
         final UUID id; final String email; Browser browser;

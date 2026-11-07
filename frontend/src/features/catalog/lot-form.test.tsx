@@ -51,3 +51,22 @@ it('shows raw label text and partial precision separately from policy approval',
   expect(screen.getByText('No verified normalization')).toBeVisible()
   expect(screen.queryByText('2027-04-30')).not.toBeInTheDocument()
 })
+
+it('explains an incomplete best-before-end day without changing the observed label', () => {
+  render(<DateMarking value={{ ...lotFixture.dateMarking, labeledValue: ' 2026-11-04 ', type: 'BEST_BEFORE_END', precision: 'DAY',
+    validationStatus: 'INCOMPLETE', validationReasons: ['BEST_BEFORE_END_REQUIRES_PERIOD'] }} />)
+  expect(screen.getByText('2026-11-04').textContent).toBe(' 2026-11-04 ')
+  expect(screen.getByText('INCOMPLETE')).toBeVisible()
+  expect(screen.getByText('A best-before-end label uses month or year precision; a recorded day is incomplete.')).toBeVisible()
+  expect(screen.getByText('No verified normalization')).toBeVisible()
+  expect(screen.queryByText('2026-11-30')).not.toBeInTheDocument()
+})
+
+it('explains a nonexistent date as invalid instead of showing an inferred cutoff', () => {
+  render(<DateMarking value={{ ...lotFixture.dateMarking, labeledValue: '2026-02-31', type: 'USE_BY', precision: 'DAY',
+    validationStatus: 'INVALID', validationReasons: ['NONEXISTENT_DATE'], normalizedCutoff: null }} />)
+  expect(screen.getByText('2026-02-31')).toBeVisible()
+  expect(screen.getByText('INVALID')).toBeVisible()
+  expect(screen.getByText('The recorded date is not a real calendar date.')).toBeVisible()
+  expect(screen.getByText('No verified normalization')).toBeVisible()
+})

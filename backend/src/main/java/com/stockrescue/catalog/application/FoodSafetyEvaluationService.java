@@ -8,6 +8,7 @@ import com.stockrescue.access.application.EffectivePermissions.StoreAction;
 import com.stockrescue.access.application.OrganizationUnavailableException;
 import com.stockrescue.catalog.application.FoodSafetyEvaluation.Operation;
 import com.stockrescue.catalog.persistence.FoodSafetyPolicyRepository;
+import com.stockrescue.catalog.persistence.FoodSafetyPolicyApprovalRepository;
 import com.stockrescue.catalog.persistence.LotRepository;
 import com.stockrescue.catalog.persistence.ProductRepository;
 import com.stockrescue.stores.persistence.StoreRepository;
@@ -22,10 +23,14 @@ import org.springframework.transaction.annotation.Transactional;
 public class FoodSafetyEvaluationService {
     private final AccessPolicy access; private final LotRepository lots; private final ProductRepository products;
     private final StoreRepository stores; private final ZoneRepository zones; private final FoodSafetyPolicyRepository policies; private final Clock clock;
+    private final FoodSafetyPolicyApprovalRepository approvals; private final FoodSafetyPolicyApprovalVerifier approvalVerifier;
     private final StorageLocationRepository locations;
     private final FoodSafetyEvaluator evaluator=new FoodSafetyEvaluator();
-    public FoodSafetyEvaluationService(AccessPolicy access,LotRepository lots,ProductRepository products,StoreRepository stores,ZoneRepository zones,StorageLocationRepository locations,FoodSafetyPolicyRepository policies,Clock clock) {
-        this.access=access;this.lots=lots;this.products=products;this.stores=stores;this.zones=zones;this.locations=locations;this.policies=policies;this.clock=clock;
+    public FoodSafetyEvaluationService(AccessPolicy access,LotRepository lots,ProductRepository products,StoreRepository stores,ZoneRepository zones,
+            StorageLocationRepository locations,FoodSafetyPolicyRepository policies,FoodSafetyPolicyApprovalRepository approvals,
+            FoodSafetyPolicyApprovalVerifier approvalVerifier,Clock clock) {
+        this.access=access;this.lots=lots;this.products=products;this.stores=stores;this.zones=zones;this.locations=locations;
+        this.policies=policies;this.approvals=approvals;this.approvalVerifier=approvalVerifier;this.clock=clock;
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public FoodSafetyEvaluation evaluate(UUID actor,UUID org,UUID lotId,UUID storeId,UUID zoneId,UUID locationId,Operation operation) {
@@ -38,7 +43,11 @@ public class FoodSafetyEvaluationService {
         var location=locationId==null?null:locations.detail(org,storeId,locationId,false).orElseThrow(OrganizationUnavailableException::new);
         var actualZone=location==null?zoneId:location.data().zoneId();
         var zone=actualZone==null?null:zones.detail(org,storeId,actualZone,false).orElseThrow(OrganizationUnavailableException::new);
-        var policy=policies.current(org,product.data().temperatureClass()).orElse(null);
-        return evaluator.evaluate(new FoodSafetyEvaluator.Context(lot,product,store,zone,policy,location),operation,clock.instant());
+        var policy=policies.current(org,product.data().category(),product.data().temperatureClass()).orElse(null);
+        var evaluatedAt=clock.instant();
+        var approval=policy==null?null:approvals.forPolicy(org,policy.id()).orElse(null);
+        var revocation=approval==null?null:approvals.revocation(org,approval.id()).orElse(null);
+        var verification=policy==null?null:approvalVerifier.verify(policy,org,approval,revocation,operation,evaluatedAt);
+        return evaluator.evaluate(new FoodSafetyEvaluator.Context(lot,product,store,zone,policy,location),operation,evaluatedAt,verification);
     }
 }

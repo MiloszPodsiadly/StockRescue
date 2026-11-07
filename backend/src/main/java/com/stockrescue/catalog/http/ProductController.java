@@ -7,6 +7,7 @@ import com.stockrescue.access.application.EffectivePermissions.OrganizationActio
 import com.stockrescue.catalog.application.ProductData;
 import com.stockrescue.catalog.application.ProductService;
 import com.stockrescue.catalog.domain.UnitOfMeasure;
+import com.stockrescue.catalog.domain.ProductCategory;
 import com.stockrescue.platform.http.ApiProblem;
 import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
 import io.swagger.v3.oas.annotations.Operation;
@@ -49,7 +50,7 @@ public class ProductController {
             @ApiResponse(responseCode="200",description="Recorded creation replayed; current product state",content=@Content(schema=@Schema(implementation=ProductResponse.class)))
     })
     public ResponseEntity<ProductResponse> create(Authentication actor,@PathVariable UUID organizationId,@Valid @RequestBody CreateProductRequest request) {
-        var result=products.create(actor(actor),organizationId,request.requestId(),ProductData.parse(request.sku(),request.name(),request.gtin(),request.baseUnit(),request.temperatureClass()));
+        var result=products.create(actor(actor),organizationId,request.requestId(),ProductData.parse(request.sku(),request.name(),request.gtin(),request.baseUnit(),request.category(),request.temperatureClass()));
         return ResponseEntity.status(result.created()?HttpStatus.CREATED:HttpStatus.OK).body(ProductResponse.from(result.view()));
     }
 
@@ -79,6 +80,13 @@ public class ProductController {
         return ProductResponse.from(products.archive(actor(actor),organizationId,productId,request.requestId(),request.expectedVersion(),request.reason()));
     }
 
+    @PostMapping(value="/{productId}/category-corrections",consumes=MediaType.APPLICATION_JSON_VALUE)
+    @Operation(operationId="correctProductCategory",summary="Correct a product's descriptive category with an expected version and audited reason")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=ProductResponse.class)))
+    public ProductResponse correctCategory(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID productId,@Valid @RequestBody CorrectProductCategoryRequest request) {
+        return ProductResponse.from(products.reclassify(actor(actor),organizationId,productId,request.requestId(),request.expectedVersion(),request.category(),request.reason()));
+    }
+
     private UUID actor(Authentication actor) { return UUID.fromString(actor.getName()); }
     public record CreateProductRequest(
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
@@ -86,10 +94,16 @@ public class ProductController {
             @NotBlank @Size(max=160) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String name,
             @Size(max=14) String gtin,
             @NotBlank @Size(max=8) @Schema(requiredMode=Schema.RequiredMode.REQUIRED,allowableValues={"EA"}) String baseUnit,
+            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Descriptive product category; UNCLASSIFIED is not safety approval") ProductCategory category,
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) TemperatureClass temperatureClass) { }
     public record ArchiveProductRequest(
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
             @NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedVersion,
+            @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
+    public record CorrectProductCategoryRequest(
+            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
+            @NotNull @Min(0) @Max(Long.MAX_VALUE-1) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedVersion,
+            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Descriptive product category only") ProductCategory category,
             @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
     public record ProductPage(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<ProductResponse> items,
                               @Schema(requiredMode=Schema.RequiredMode.REQUIRED) boolean hasMore,
@@ -100,6 +114,7 @@ public class ProductController {
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String name,
             @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String gtin,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UnitOfMeasure baseUnit,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) ProductCategory category,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) TemperatureClass temperatureClass,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) boolean active,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long version,
@@ -110,7 +125,7 @@ public class ProductController {
         static ProductResponse from(ProductService.View view) {
             var product=view.product();
             var data=product.data();
-            return new ProductResponse(product.id(),data.sku().value(),data.name(),data.gtin()==null?null:data.gtin().value(),data.baseUnit(),
+            return new ProductResponse(product.id(),data.sku().value(),data.name(),data.gtin()==null?null:data.gtin().value(),data.baseUnit(),data.category(),
                     data.temperatureClass(),product.active(),product.version(),product.createdAt(),product.updatedAt(),product.archivedAt(),view.allowedActions());
         }
     }

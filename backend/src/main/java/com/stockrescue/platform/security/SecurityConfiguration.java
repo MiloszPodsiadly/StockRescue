@@ -103,13 +103,17 @@ public class SecurityConfiguration {
                             .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/stores/*/storage-locations",
                                     "/api/v1/organizations/*/stores/*/storage-locations/*/rename", "/api/v1/organizations/*/stores/*/storage-locations/*/archive").authenticated()
                             .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/products", "/api/v1/organizations/*/products/*").authenticated()
-                            .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/products", "/api/v1/organizations/*/products/*/archive").authenticated()
+                            .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/products", "/api/v1/organizations/*/products/*/archive",
+                                    "/api/v1/organizations/*/products/*/category-corrections").authenticated()
                             .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/lots", "/api/v1/organizations/*/lots/*",
                                     "/api/v1/organizations/*/lots/*/source-evidence", "/api/v1/organizations/*/lots/*/source-evidence/*",
                                     "/api/v1/organizations/*/lots/*/corrections").authenticated()
-                            .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/food-safety-profiles/*/versions",
+                            .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/food-safety-profiles/*/*/versions",
+                                    "/api/v1/organizations/*/food-safety-profiles/*/*/versions/*/approval-evidence",
                                     "/api/v1/organizations/*/lots/*/eligibility").authenticated()
-                            .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/food-safety-profiles/*/versions",
+                            .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/food-safety-profiles/*/*/versions",
+                                    "/api/v1/organizations/*/food-safety-profiles/*/*/versions/*/approval-evidence",
+                                    "/api/v1/organizations/*/food-safety-policy-approvals/*/revocation",
                                     "/api/v1/organizations/*/lots/*/safety-status-evidence").authenticated()
                             .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/lots", "/api/v1/organizations/*/lots/*/source-evidence",
                                     "/api/v1/organizations/*/lots/*/corrections").authenticated()

@@ -40,12 +40,16 @@ function StorageChoice({ organizationId, storeId, location, value, onChange }: {
   return <div className="space-y-3"><Field label={location ? 'Assessment location' : 'Assessment zone'}>{id => <select id={id} required value={value} onChange={event => { onChange(event.target.value) }} className={inputClass}><option value="">Choose configuration</option>{value && !options.data?.items.some(item => item.id === value) && <option value={value}>Previous selection — current status will be checked</option>}{options.data?.items.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select>}</Field>{options.isError && <p role="alert">Storage choices could not be refreshed.</p>}{options.data && <Pager label="storage choices" offset={offset} hasMore={options.data.hasMore} onChange={setOffset} size={location ? 25 : 100} />}</div>
 }
 export function EligibilityResult({ value }: { value: Eligibility }) {
-  const unexpectedApproval = value.decision === 'ALLOWED'
+  const verifiedForOperation = value.approvalVerification?.outcome === 'VERIFIED'
+    && (value.approvalVerification.allowedOperations ?? []).includes(value.operation)
+    && value.evidence.policy === 'INDEPENDENTLY_VERIFIED'
+  const allowed = value.decision === 'ALLOWED' && verifiedForOperation && value.reasonCodes.length === 0
+  const unexpectedApproval = value.decision === 'ALLOWED' && !allowed
   return <section aria-label="Assessment result" className={`space-y-4 rounded-2xl border p-5 ${value.decision === 'DENIED' ? 'border-destructive/50' : 'border-border'}`}>
-    <h4 className="text-xl font-semibold">{value.decision === 'DENIED' ? 'Denied' : 'Requires review'}</h4>
-    {unexpectedApproval && <p role="alert">Returned approval cannot be independently verified from this policy evidence. Do not execute an operation from this result.</p>}
+    <h4 className="text-xl font-semibold">{value.decision === 'DENIED' ? 'Denied' : allowed ? 'Allowed' : 'Requires review'}</h4>
+    {unexpectedApproval && <p role="alert">The returned allowed decision does not satisfy every approval and evidence check. Do not execute an operation from this result.</p>}
     <p className="font-medium">{nextActions[value.nextAction]}</p><ul className="list-inside list-disc space-y-2 text-sm">{value.reasonCodes.map(reason => <li key={reason}>{reasonMessages[reason]}</li>)}</ul>
-    <Facts values={[["Assessment time", value.evaluatedAt], ['Store local date', value.storeLocalDate], ['Store time zone', value.storeTimeZone], ['Lot version assessed', value.lotVersion], ['Policy version', value.policy ? `${value.policy.version} · ${value.policy.id}` : 'No recorded policy'], ['Policy evidence', value.evidence.policy === 'MISSING' ? 'Missing' : 'Recorded, unverified'], ['Date evidence', value.evidence.date.replaceAll('_', ' ').toLowerCase()], ['Storage evidence', value.evidence.storage.replaceAll('_', ' ').toLowerCase()]]} />
+    <Facts values={[["Assessment time", value.evaluatedAt], ['Store local date', value.storeLocalDate], ['Store time zone', value.storeTimeZone], ['Lot version assessed', value.lotVersion], ['Policy version', value.policy ? `${value.policy.version} · ${value.policy.id}` : 'No recorded policy'], ['Policy evidence', value.evidence.policy === 'MISSING' ? 'Missing' : value.evidence.policy === 'INDEPENDENTLY_VERIFIED' ? 'Cryptographically verified' : 'Recorded, unverified'], ['Approval verification', value.approvalVerification?.outcome ?? 'Not available'], ['Date evidence', value.evidence.date.replaceAll('_', ' ').toLowerCase()], ['Storage evidence', value.evidence.storage.replaceAll('_', ' ').toLowerCase()]]} />
     <p className="text-sm text-muted-foreground">This is evidence at the displayed time, not a reusable permission or a physical stock hold.</p>
   </section>
 }

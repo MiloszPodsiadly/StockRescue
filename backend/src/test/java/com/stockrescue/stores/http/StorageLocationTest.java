@@ -128,7 +128,7 @@ class StorageLocationTest extends InfrastructureTestBase {
     @Test
     void eligibilityResolvesTheScopedLocationZoneAndDeniesArchivedLocations() throws Exception {
         var owner=f.owner.browser();var id=register("A-01");
-        var product=owner.write("/api/v1/organizations/"+f.org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","BREAD","name","Packaged bread","baseUnit","EA","temperatureClass","AMBIENT"));
+        var product=owner.write("/api/v1/organizations/"+f.org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","BREAD","name","Packaged bread","baseUnit","EA","category","BAKERY","temperatureClass","AMBIENT"));
         assertThat(product.statusCode()).isEqualTo(201);
         var lot=owner.write("/api/v1/organizations/"+f.org+"/lots",Map.of("requestId",UUID.randomUUID(),"productId",tree(product).path("id").asString(),"lotCode","LOT",
                 "identityState","CANDIDATE","manufacturerVerified",false,"manufacturerProvenance",Map.of("source","Label","reference","photo"),

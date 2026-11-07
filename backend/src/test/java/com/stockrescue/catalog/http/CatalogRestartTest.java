@@ -41,7 +41,7 @@ class CatalogRestartTest {
             var actor=UUID.randomUUID(); var org=UUID.randomUUID(); var membership=UUID.randomUUID();
             var email=actor+"@example.test"; var password="product-restart-test-passphrase";
             var request=UUID.randomUUID();
-            var body=Map.of("requestId",request,"sku","PERSISTED","name","Persisted product","gtin","036000291452","baseUnit","EA","temperatureClass","AMBIENT");
+            var body=Map.of("requestId",request,"sku","PERSISTED","name","Persisted product","gtin","036000291452","baseUnit","EA","category","UNCLASSIFIED","temperatureClass","AMBIENT");
             UUID product;
             UUID lot;
             var store=UUID.randomUUID(); var zone=UUID.randomUUID();
@@ -192,7 +192,7 @@ class CatalogRestartTest {
     private String base(UUID org) { return "/api/v1/organizations/"+org+"/products"; }
     private String lots(UUID org) { return "/api/v1/organizations/"+org+"/lots"; }
     private String sources(UUID org,UUID lot) { return lots(org)+"/"+lot+"/source-evidence"; }
-    private String policies(UUID org) { return "/api/v1/organizations/"+org+"/food-safety-profiles/AMBIENT/versions"; }
+    private String policies(UUID org) { return "/api/v1/organizations/"+org+"/food-safety-profiles/UNCLASSIFIED/AMBIENT/versions"; }
     private String locations(UUID org,UUID store) { return "/api/v1/organizations/"+org+"/stores/"+store+"/storage-locations"; }
     private JsonNode tree(HttpResponse<String> response) { return json.readTree(response.body()); }
     private HttpResponse<String> get(String path) throws Exception { return send("GET",path,null,null); }

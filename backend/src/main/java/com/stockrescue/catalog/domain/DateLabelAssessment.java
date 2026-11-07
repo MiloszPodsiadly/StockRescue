@@ -9,7 +9,10 @@ import java.util.List;
 /** Interprets only explicit ISO label precision; it never derives a safety cutoff. */
 public record DateLabelAssessment(Status status,List<Reason> reasons) {
     public enum Status { VALID, INCOMPLETE, INVALID }
-    public enum Reason { MISSING_LABEL, UNKNOWN_TYPE, UNKNOWN_PRECISION, MISSING_PROVENANCE, USE_BY_REQUIRES_DAY, UNRECOGNIZED_FORMAT, NONEXISTENT_DATE }
+    public enum Reason {
+        MISSING_LABEL, UNKNOWN_TYPE, UNKNOWN_PRECISION, MISSING_PROVENANCE, MISSING_REFERENCE,
+        USE_BY_REQUIRES_DAY, BEST_BEFORE_END_REQUIRES_PERIOD, UNRECOGNIZED_FORMAT, NONEXISTENT_DATE
+    }
     public DateLabelAssessment { reasons=List.copyOf(reasons); }
 
     public static DateLabelAssessment assess(DateMarking marking) {
@@ -20,7 +23,10 @@ public record DateLabelAssessment(Status status,List<Reason> reasons) {
         if (marking.type()==DateMarkingType.UNKNOWN) reasons.add(Reason.UNKNOWN_TYPE);
         if (marking.precision()==DatePrecision.UNKNOWN) reasons.add(Reason.UNKNOWN_PRECISION);
         if (marking.provenance().isEmpty()) reasons.add(Reason.MISSING_PROVENANCE);
+        else if (marking.provenance().orElseThrow().reference()==null) reasons.add(Reason.MISSING_REFERENCE);
         if (marking.type()==DateMarkingType.USE_BY && marking.precision()!=DatePrecision.DAY) reasons.add(Reason.USE_BY_REQUIRES_DAY);
+        if (marking.type()==DateMarkingType.BEST_BEFORE_END && marking.precision()==DatePrecision.DAY)
+            reasons.add(Reason.BEST_BEFORE_END_REQUIRES_PERIOD);
         boolean invalid=false;
         if (!missing && marking.precision()!=DatePrecision.UNKNOWN) {
             var value=label.strip();

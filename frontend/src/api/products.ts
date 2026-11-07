@@ -4,6 +4,8 @@ import { api, ApiError, csrf, requestSignal } from './client'
 export type Product = components['schemas']['ProductResponse']
 export type CreateProduct = components['schemas']['CreateProductRequest']
 export type ArchiveProduct = components['schemas']['ArchiveProductRequest']
+export type CorrectProductCategory = components['schemas']['CorrectProductCategoryRequest']
+export type ProductCategory = Product['category']
 export type ProductState = NonNullable<operations['listProducts']['parameters']['query']>['state']
 
 export async function listProducts(organizationId: string, state: ProductState, q: string, offset: number, signal: AbortSignal) {
@@ -27,6 +29,13 @@ export async function createProduct(organizationId: string, body: CreateProduct,
 
 export async function archiveProduct(organizationId: string, productId: string, body: ArchiveProduct, signal: AbortSignal) {
   const { data, error, response } = await api.POST('/api/v1/organizations/{organizationId}/products/{productId}/archive', { params: { path: { organizationId, productId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
+  signal.throwIfAborted()
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function correctProductCategory(organizationId: string, productId: string, body: CorrectProductCategory, signal: AbortSignal) {
+  const { data, error, response } = await api.POST('/api/v1/organizations/{organizationId}/products/{productId}/category-corrections', { params: { path: { organizationId, productId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
   signal.throwIfAborted()
   if (!data) throw new ApiError(response, error)
   return data

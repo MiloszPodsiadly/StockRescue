@@ -47,11 +47,31 @@ class FoodSafetyEvaluatorTest {
 
     @Test
     void pastBestBeforeIsDeniedForBothPilotOperationsWithoutUseByRelabeling() {
-        for (var type:new DateMarkingType[]{DateMarkingType.BEST_BEFORE,DateMarkingType.BEST_BEFORE_END}) for (var operation:Operation.values()) {
+        for (var type:new DateMarkingType[]{DateMarkingType.BEST_BEFORE}) for (var operation:Operation.values()) {
             var result=evaluator.evaluate(context("2026-11-04",type,DatePrecision.DAY,"UTC",TemperatureClass.AMBIENT),operation,NOW);
             assertThat(result.decision()).isEqualTo(Decision.DENIED);
             assertThat(result.reasonCodes()).contains(ReasonCode.BEST_BEFORE_EXPIRED).doesNotContain(ReasonCode.USE_BY_EXPIRED);
         }
+    }
+
+    @Test
+    void bestBeforeEndWithDayPrecisionCannotBecomeCompleteOrTriggerExpiry() {
+        var result=evaluator.evaluate(context("2026-11-04",DateMarkingType.BEST_BEFORE_END,DatePrecision.DAY,"UTC",TemperatureClass.AMBIENT),
+                Operation.SALE,NOW);
+        assertThat(result.evidence().date()).isEqualTo(DateEvidenceStatus.INCOMPLETE);
+        assertThat(result.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
+        assertThat(result.reasonCodes()).contains(ReasonCode.DATE_TYPE_PRECISION_MISMATCH);
+        assertThat(result.reasonCodes()).doesNotContain(ReasonCode.BEST_BEFORE_EXPIRED,ReasonCode.USE_BY_EXPIRED);
+    }
+
+    @Test
+    void unreferencedDayLabelCannotBeUsedAsAnExpiryDecision() {
+        var context=context("2026-11-04",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",TemperatureClass.AMBIENT,
+                ProductCategory.UNCLASSIFIED,Optional.of(new EvidenceProvenance("Observed label",null)));
+        var result=evaluator.evaluate(context,Operation.SALE,NOW);
+        assertThat(result.evidence().date()).isEqualTo(DateEvidenceStatus.INCOMPLETE);
+        assertThat(result.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
+        assertThat(result.reasonCodes()).contains(ReasonCode.DATE_REFERENCE_MISSING).doesNotContain(ReasonCode.USE_BY_EXPIRED);
     }
 
     @Test
@@ -75,7 +95,7 @@ class FoodSafetyEvaluatorTest {
     @Test
     void aRequestedPeriodEndRuleIsUnverifiedEvenWhenAnAdministratorRecordedReviewEvidence() {
         var original=context("2027-02",DateMarkingType.BEST_BEFORE_END,DatePrecision.MONTH,"UTC",TemperatureClass.AMBIENT);
-        var policy=new FoodSafetyPolicyVersion(UUID.randomUUID(),UUID.randomUUID(),TemperatureClass.AMBIENT,1,PartialDateRule.END_OF_LABELED_PERIOD,
+        var policy=new FoodSafetyPolicyVersion(UUID.randomUUID(),UUID.randomUUID(),ProductCategory.UNCLASSIFIED,TemperatureClass.AMBIENT,1,PartialDateRule.END_OF_LABELED_PERIOD,
                 ApprovalStatus.UNVERIFIED,source(),UUID.randomUUID(),NOW,"Requested rule reviewed");
         var result=evaluator.evaluate(new Context(original.lot(),original.product(),original.store(),original.zone(),policy),Operation.SALE,NOW);
         assertThat(result.reasonCodes()).contains(ReasonCode.PARTIAL_DATE_RULE_UNVERIFIED,ReasonCode.POLICY_APPROVAL_UNVERIFIED);
@@ -121,9 +141,40 @@ class FoodSafetyEvaluatorTest {
         }
     }
 
+    @Test
+    void aPolicyForAnotherProductCategoryCannotApplyAtTheSameTemperatureClass() {
+        var productContext=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",TemperatureClass.CHILLED,ProductCategory.DAIRY);
+        var bakeryPolicy=new FoodSafetyPolicyVersion(UUID.randomUUID(),UUID.randomUUID(),ProductCategory.BAKERY,TemperatureClass.CHILLED,1,
+                PartialDateRule.NO_NORMALIZATION,ApprovalStatus.UNVERIFIED,source(),UUID.randomUUID(),NOW,"Separate bakery scope");
+        var result=evaluator.evaluate(new Context(productContext.lot(),productContext.product(),productContext.store(),productContext.zone(),bakeryPolicy),Operation.SALE,NOW);
+        assertThat(result.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
+        assertThat(result.reasonCodes()).contains(ReasonCode.POLICY_SCOPE_MISMATCH,ReasonCode.POLICY_APPROVAL_UNVERIFIED);
+        assertThat(result.policy().productCategory()).isEqualTo(ProductCategory.BAKERY);
+    }
+
+    @Test
+    void anUnclassifiedProductCannotBecomeAllowedEvenWithAValidScopedAttestation() {
+        var original=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",TemperatureClass.AMBIENT);
+        var policy=new FoodSafetyPolicyVersion(UUID.randomUUID(),UUID.randomUUID(),ProductCategory.UNCLASSIFIED,TemperatureClass.AMBIENT,1,
+                PartialDateRule.NO_NORMALIZATION,ApprovalStatus.UNVERIFIED,source(),UUID.randomUUID(),NOW,"Unclassified scope review");
+        var verified=new FoodSafetyPolicyApprovalVerification(FoodSafetyPolicyApprovalVerification.Outcome.VERIFIED,1,
+                FoodSafetyPolicyDigest.hex(policy),"test-issuer","test-key",java.util.List.of(Operation.SALE),NOW,NOW,NOW.plusSeconds(60),
+                "test-evidence",NOW,false,null,null,null);
+        var result=evaluator.evaluate(new Context(original.lot(),original.product(),original.store(),original.zone(),policy),Operation.SALE,NOW,verified);
+        assertThat(result.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
+        assertThat(result.reasonCodes()).contains(ReasonCode.PRODUCT_CATEGORY_UNCLASSIFIED);
+    }
+
     private Context context(String label,DateMarkingType type,DatePrecision precision,String zoneId,TemperatureClass temperature) {
-        var product=new Product(UUID.randomUUID(),ProductData.parse("MILK","Milk",null,"EA",temperature),true,0,NOW,NOW,null);
-        var marking=new DateMarking(label,type,precision,Optional.of(source()),Optional.empty());
+        return context(label,type,precision,zoneId,temperature,ProductCategory.UNCLASSIFIED);
+    }
+    private Context context(String label,DateMarkingType type,DatePrecision precision,String zoneId,TemperatureClass temperature,ProductCategory category) {
+        return context(label,type,precision,zoneId,temperature,category,Optional.of(source()));
+    }
+    private Context context(String label,DateMarkingType type,DatePrecision precision,String zoneId,TemperatureClass temperature,
+            ProductCategory category,Optional<EvidenceProvenance> provenance) {
+        var product=new Product(UUID.randomUUID(),ProductData.parse("MILK","Milk",null,"EA",category,temperature),true,0,NOW,NOW,null);
+        var marking=new DateMarking(label,type,precision,provenance,Optional.empty());
         var lot=new ManufacturerLot(UUID.randomUUID(),new LotData(product.id(),"LOT",LotIdentityState.CONFIRMED,"maker",source(),true,marking),
                 UUID.randomUUID(),NOW,RecallState.NOT_REPORTED,DamageState.NOT_REPORTED,source(),true,0,NOW,NOW,null);
         var store=new Store(UUID.randomUUID(),new StoreData("NORTH","North",null,null,null,null,zoneId),true,0,NOW,NOW);

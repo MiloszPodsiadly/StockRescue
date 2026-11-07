@@ -76,6 +76,10 @@ stockrescue:
     maximum-session-age-seconds: 43200
   intelligence:
     base-url: ${INTELLIGENCE_BASE_URL}
+  food-safety:
+    approval:
+      enabled: false
+      trusted-issuers: {}
 
 logging:
   structured:

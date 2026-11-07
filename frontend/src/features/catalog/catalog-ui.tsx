@@ -4,6 +4,16 @@ import { errorMessage } from '@/api/client'
 import type { ManufacturerLot } from '@/api/lots'
 import type { components } from '@/api/schema'
 
+type DateValidationReason = ManufacturerLot['dateMarking']['validationReasons'][number]
+const dateValidationMessages: Record<DateValidationReason, string> = {
+  MISSING_LABEL: 'No original date label was supplied.', UNKNOWN_TYPE: 'The type of date marking needs review.',
+  UNKNOWN_PRECISION: 'The label precision needs review.', MISSING_PROVENANCE: 'The observation source is missing.',
+  MISSING_REFERENCE: 'Add a reference to the document or image containing the label.',
+  USE_BY_REQUIRES_DAY: 'A use-by marking requires an explicit day.',
+  BEST_BEFORE_END_REQUIRES_PERIOD: 'A best-before-end label uses month or year precision; a recorded day is incomplete.',
+  UNRECOGNIZED_FORMAT: 'The label format is ambiguous; review the original evidence.', NONEXISTENT_DATE: 'The recorded date is not a real calendar date.',
+}
+
 export function QueryNotice({ title, error, reload }: { title: string, error?: unknown, reload: () => void }) {
   return <div className="space-y-3 rounded-xl border border-border p-5"><p role={error ? 'alert' : 'status'}>{title}{error ? ` ${errorMessage(error)}` : ''}</p><Button variant="outline" onClick={reload}>Reload saved data</Button></div>
 }
@@ -21,5 +31,5 @@ export function DateMarking({ value }: { value: ManufacturerLot['dateMarking'] }
     ['Label exactly as recorded', value.labeledValue === null ? 'Not supplied' : <span className="whitespace-pre-wrap">{value.labeledValue === '' ? '(empty label)' : value.labeledValue}</span>],
     ['Date marking type', value.type], ['Label precision', value.precision], ['Label evidence', <Provenance value={value.provenance} />],
     ['Label validation', value.validationStatus], ['Policy-derived cutoff', value.normalizedCutoff ?? 'No verified normalization'],
-  ]} />{value.validationReasons.length > 0 && <ul className="list-inside list-disc text-sm">{value.validationReasons.map(reason => <li key={reason}>{reason.replaceAll('_', ' ').toLowerCase()}</li>)}</ul>}<p className="text-sm text-muted-foreground">Label validation describes the recorded evidence. Food-safety approval requires a separate review.</p></section>
+  ]} />{value.validationReasons.length > 0 && <ul className="list-inside list-disc text-sm">{value.validationReasons.map(reason => <li key={reason}>{dateValidationMessages[reason]}</li>)}</ul>}<p className="text-sm text-muted-foreground">Label validation describes the recorded evidence. Food-safety approval requires a separate review.</p></section>
 }

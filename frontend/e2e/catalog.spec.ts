@@ -34,6 +34,8 @@ test('owner preserves original labels and independent sources, reviews safety ev
     await productForm.getByLabel('SKU', { exact: true }).fill(`BREAD-${suffix}`)
     await productForm.getByLabel('Product name', { exact: true }).fill(productName)
     await productForm.getByLabel('GTIN (optional)').fill('036000291452')
+    await productForm.getByLabel('Product category').selectOption('BAKERY')
+    await productForm.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
     let rejectedCsrf = false
     const productRequests: object[] = []
     await page.route('**/api/v1/auth/csrf', async route => {
@@ -101,7 +103,7 @@ test('owner preserves original labels and independent sources, reviews safety ev
     await page.getByRole('button', { name: 'Assess current evidence' }).click()
     const result = page.getByRole('region', { name: 'Assessment result', exact: true })
     await expect(result.getByRole('heading', { name: 'Requires review', exact: true })).toBeVisible()
-    await expect(result).toContainText('No class-specific policy review is recorded.')
+    await expect(result).toContainText('No policy review is recorded for this category and temperature scope.')
 
     await page.getByRole('button', { name: 'Record policy review', exact: true }).click()
     const policyForm = page.getByRole('form', { name: 'Record policy review evidence', exact: true })
@@ -112,7 +114,7 @@ test('owner preserves original labels and independent sources, reviews safety ev
     await policyForm.getByLabel('I confirm this records review evidence, not independent policy approval.').check()
     await submitCapturedWhenAdmitted(page, policyForm, 'Save policy review', page.getByRole('heading', { name: 'Policy version 1', exact: true }))
     await expect(page.getByRole('heading', { name: 'Policy version 1', exact: true })).toBeVisible()
-    await expect(result).toContainText('Independent class-specific policy approval has not been verified.')
+    await expect(result).toContainText('Independent approval for this category and temperature scope has not been verified.')
     await expect(result.getByRole('heading', { name: 'Requires review' })).toBeVisible()
 
     await page.getByRole('button', { name: 'Review metadata correction' }).click()
@@ -202,13 +204,13 @@ test('catalog respects assigned source visibility, revocation, foreign links and
     const base = `/api/v1/organizations/${a.id}`
     const north = await write<Store>(owner.context, `${base}/stores`, { requestId: randomUUID(), code: 'NORTH', name: 'Private north store', zoneId: 'UTC' }, 201)
     const south = await write<Store>(owner.context, `${base}/stores`, { requestId: randomUUID(), code: 'SOUTH', name: 'Private south store', zoneId: 'UTC' }, 201)
-    const product = await write<Product>(owner.context, `${base}/products`, { requestId: randomUUID(), sku: 'PRIVATE-A', name: 'Private A product', baseUnit: 'EA', temperatureClass: 'AMBIENT' }, 201)
+    const product = await write<Product>(owner.context, `${base}/products`, { requestId: randomUUID(), sku: 'PRIVATE-A', name: 'Private A product', baseUnit: 'EA', category: 'UNCLASSIFIED', temperatureClass: 'AMBIENT' }, 201)
     const lot = await write<Lot>(owner.context, `${base}/lots`, { requestId: randomUUID(), productId: product.id, lotCode: 'PRIVATE-A-LOT', identityState: 'CANDIDATE', manufacturerVerified: false,
       manufacturerProvenance: { source: 'Supplier claim' }, dateMarking: { type: 'UNKNOWN', precision: 'UNKNOWN' } }, 201)
     const sourcePath = `${base}/lots/${lot.id}/source-evidence`
     await write(owner.context, sourcePath, { requestId: randomUUID(), storeId: north.id, supplierName: 'Visible north supplier', provenance: { source: 'North document', reference: 'NORTH-PRIVATE-REF' } }, 201)
     await write(owner.context, sourcePath, { requestId: randomUUID(), storeId: south.id, supplierName: 'Hidden south supplier', provenance: { source: 'South document', reference: 'SOUTH-PRIVATE-REF' } }, 201)
-    await write(staff.context, `/api/v1/organizations/${b.id}/products`, { requestId: randomUUID(), sku: 'PRIVATE-B', name: 'Private B product', baseUnit: 'EA', temperatureClass: 'AMBIENT' }, 201)
+    await write(staff.context, `/api/v1/organizations/${b.id}/products`, { requestId: randomUUID(), sku: 'PRIVATE-B', name: 'Private B product', baseUnit: 'EA', category: 'UNCLASSIFIED', temperatureClass: 'AMBIENT' }, 201)
     const page = await staff.context.newPage()
     const lotPath = `/organizations/${a.id}/catalog/lots/${lot.id}`
     await page.goto(lotPath)

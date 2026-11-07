@@ -304,7 +304,7 @@ class LotCorrectionTest extends InfrastructureTestBase {
             member(owner,org,"ORG_ADMIN"); member(coowner,org,"ORG_ADMIN"); member(operator,org,"MEMBER"); member(foreign,otherOrg,"ORG_ADMIN");
             jdbc.sql("INSERT INTO stockrescue.store_grant(id,org_id,membership_id,store_id,role) VALUES (:id,:org,:member,:store,'INVENTORY_OPERATOR')")
                     .param("id",UUID.randomUUID()).param("org",org).param("member",membership(operator)).param("store",store).update();
-            var result=owner.browser().write("/api/v1/organizations/"+org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","MILK","name","Milk","baseUnit","EA","temperatureClass","CHILLED"));
+            var result=owner.browser().write("/api/v1/organizations/"+org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","MILK","name","Milk","baseUnit","EA","category","DAIRY","temperatureClass","CHILLED"));
             assertThat(result.statusCode()).as(result.body()).isEqualTo(201); product=UUID.fromString(tree(result).path("id").asString());
         }
         User user() { var u=new User(UUID.randomUUID()); jdbc.sql("INSERT INTO stockrescue.user_account(id,email_display) VALUES (:id,:email)").param("id",u.id).param("email",u.email).update(); jdbc.sql("INSERT INTO stockrescue.credential(user_id,password_hash) VALUES (:id,:hash)").param("id",u.id).param("hash",hash).update(); return u; }

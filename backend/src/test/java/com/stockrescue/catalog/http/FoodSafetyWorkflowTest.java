@@ -4,6 +4,9 @@ import java.net.CookieManager;
 import java.net.CookiePolicy;
 import java.net.URI;
 import java.net.http.*;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.Signature;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -11,6 +14,13 @@ import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.*;
 import com.stockrescue.platform.audit.AuditWriter;
+import com.stockrescue.catalog.application.FoodSafetyApprovalProperties;
+import com.stockrescue.catalog.application.FoodSafetyEvaluation.Operation;
+import com.stockrescue.catalog.application.FoodSafetyPolicyAttestation;
+import com.stockrescue.catalog.application.FoodSafetyPolicyDigest;
+import com.stockrescue.catalog.persistence.FoodSafetyPolicyRepository;
+import com.stockrescue.catalog.domain.ProductCategory;
+import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
 import com.stockrescue.support.InfrastructureTestBase;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,12 +48,167 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
     @Autowired private JdbcClient jdbc;
     @Autowired private PasswordEncoder encoder;
     @Autowired private ObjectMapper json;
+    @Autowired private FoodSafetyApprovalProperties approvalProperties;
+    @Autowired private FoodSafetyPolicyRepository policyRepository;
     @MockitoBean private Clock clock;
     @MockitoSpyBean private AuditWriter audit;
     private String hash;
     private Fixture f;
     @BeforeAll void credentials() { hash=encoder.encode(PASSWORD); }
-    @BeforeEach void fixture() throws Exception { when(clock.instant()).thenReturn(NOW);when(clock.getZone()).thenReturn(ZoneOffset.UTC);f=new Fixture(); }
+    @BeforeEach void fixture() throws Exception {
+        when(clock.instant()).thenReturn(NOW);when(clock.getZone()).thenReturn(ZoneOffset.UTC);
+        approvalProperties.setEnabled(false);approvalProperties.setTrustedIssuers(Map.of());f=new Fixture();
+    }
+
+    @Test
+    void independentlySignedApprovalAuthorizesOnlyItsExactCurrentPolicyOperationAndCanBeRevoked() throws Exception {
+        var owner=f.owner.browser();var lotId=register("2027-04-30","USE_BY","DAY");
+        assertThat(owner.write(statusPath(lotId),status(0,"NOT_REPORTED","NOT_REPORTED")).statusCode()).isEqualTo(201);
+        var policyResponse=owner.write(policies(),review(0,"NO_NORMALIZATION"));assertThat(policyResponse.statusCode()).isEqualTo(201);
+        var policyId=UUID.fromString(tree(policyResponse).path("id").asString());var signer=signer();var trusted=trust(signer);
+        var approvalPath=approvalPath(policyId);var submission=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:ambient-pilot-1");
+        var before=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(before.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(before.path("approvalVerification").path("outcome").asString()).isEqualTo("NOT_SUBMITTED");
+
+        var submitted=owner.write(approvalPath,submission);assertThat(submitted.statusCode()).as(submitted.body()).isEqualTo(201);
+        var evidence=tree(submitted);var approvalId=UUID.fromString(evidence.path("approvalId").asString());
+        assertThat(evidence.path("verification").path("outcome").asString()).isEqualTo("VERIFIED");
+        assertThat(submitted.body()).doesNotContain("signature","publicKey","privateKey");
+        for (var sql:List.of("UPDATE stockrescue.food_safety_policy_approval SET evidence_reference='rewritten' WHERE org_id=:org AND id=:id",
+                "DELETE FROM stockrescue.food_safety_policy_approval WHERE org_id=:org AND id=:id"))
+            assertThatThrownBy(() -> jdbc.sql(sql).param("org",f.org).param("id",approvalId).update())
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        var sale=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(sale.path("decision").asString()).isEqualTo("ALLOWED");
+        assertThat(sale.path("reasonCodes")).isEmpty();
+        assertThat(sale.path("evidence").path("policy").asString()).isEqualTo("INDEPENDENTLY_VERIFIED");
+        trusted.setEnabled(false);
+        var keyDisabled=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(keyDisabled.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(keyDisabled.path("approvalVerification").path("outcome").asString()).isEqualTo("TRUSTED_KEY_DISABLED");
+        trusted.setEnabled(true);
+        approvalProperties.setEnabled(false);
+        var trustDisabled=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(trustDisabled.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(trustDisabled.path("approvalVerification").path("outcome").asString()).isEqualTo("TRUST_REGISTRY_DISABLED");
+        approvalProperties.setEnabled(true);
+        assertThat(tree(owner.get(eligibility(lotId,f.store,f.zone))).path("decision").asString()).isEqualTo("ALLOWED");
+        var transfer=tree(owner.get(eligibility(lotId,f.store,f.zone,Operation.TRANSFER)));
+        assertThat(transfer.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(transfer.path("approvalVerification").path("outcome").asString()).isEqualTo("OPERATION_NOT_APPROVED");
+
+        var replay=owner.write(approvalPath,submission);assertThat(replay.statusCode()).isEqualTo(200);
+        assertThat(tree(replay).path("approvalId").asString()).isEqualTo(approvalId.toString());
+        var changed=new HashMap<>(submission);changed.put("evidenceReference","external-case:changed");
+        problem(owner.write(approvalPath,changed),409,"CATALOG_CONFLICT");
+        problem(f.operator.browser().write(approvalPath,submission),403,"ACCESS_DENIED");
+        problem(f.foreign.browser().get(approvalPath),404,"RESOURCE_NOT_FOUND");
+
+        var revoke=Map.of("requestId",UUID.randomUUID(),"reason","Issuer withdrew the reviewed evidence");
+        var revoked=owner.write("/api/v1/organizations/"+f.org+"/food-safety-policy-approvals/"+approvalId+"/revocation",revoke);
+        assertThat(revoked.statusCode()).as(revoked.body()).isEqualTo(201);
+        assertThat(tree(revoked).path("verification").path("outcome").asString()).isEqualTo("REVOKED");
+        assertThatThrownBy(() -> jdbc.sql("DELETE FROM stockrescue.food_safety_policy_approval_revocation WHERE org_id=:org AND approval_id=:id")
+                .param("org",f.org).param("id",approvalId).update()).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        var afterRevocation=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(afterRevocation.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(afterRevocation.path("approvalVerification").path("outcome").asString()).isEqualTo("REVOKED");
+        var revokeReplay=owner.write("/api/v1/organizations/"+f.org+"/food-safety-policy-approvals/"+approvalId+"/revocation",revoke);
+        assertThat(revokeReplay.statusCode()).isEqualTo(200);
+
+        var next=owner.write(policies(),review(1,"NO_NORMALIZATION"));assertThat(next.statusCode()).isEqualTo(201);
+        var newVersion=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(newVersion.path("policy").path("version").asLong()).isEqualTo(2);
+        assertThat(newVersion.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(newVersion.path("approvalVerification").path("outcome").asString()).isEqualTo("NOT_SUBMITTED");
+        assertThat(count("food_safety_policy_approval")).isEqualTo(1);
+        assertThat(count("food_safety_policy_approval_revocation")).isEqualTo(1);
+        assertThat(audits("FOOD_SAFETY_POLICY_APPROVAL_SUBMITTED")).isEqualTo(1);
+        assertThat(audits("FOOD_SAFETY_POLICY_APPROVAL_REVOKED")).isEqualTo(1);
+    }
+
+    @Test
+    void approvalSubmissionFailsClosedWithoutExternalTrustOrWhenTheSignatureIsTampered() throws Exception {
+        var owner=f.owner.browser();var policy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policy.statusCode()).isEqualTo(201);var policyId=UUID.fromString(tree(policy).path("id").asString());
+        var signer=signer();var path=approvalPath(policyId);
+        var untrusted=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:untrusted");
+        problem(owner.write(path,untrusted),422,"INVALID_REQUEST");
+        assertThat(count("food_safety_policy_approval")).isZero();
+        assertThat(tree(owner.get(path)).path("verification").path("outcome").asString()).isEqualTo("TRUST_REGISTRY_DISABLED");
+
+        trust(signer);var tampered=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:tampered");
+        var signature=Base64.getDecoder().decode((String)tampered.get("signatureBase64"));signature[0]^=1;
+        tampered.put("signatureBase64",Base64.getEncoder().encodeToString(signature));
+        problem(owner.write(path,tampered),422,"INVALID_REQUEST");
+        assertThat(count("food_safety_policy_approval")).isZero();
+        assertThat(tree(owner.get(eligibility(register("2027-04-30","USE_BY","DAY"),f.store,f.zone)))
+                .path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+    }
+
+    @Test
+    void expiredAndWrongDigestAttestationsCannotBeRecordedAsApproval() throws Exception {
+        var owner=f.owner.browser();var policy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policy.statusCode()).isEqualTo(201);var policyId=UUID.fromString(tree(policy).path("id").asString());
+        var signer=signer();trust(signer);var path=approvalPath(policyId);
+        var wrongDigest=signedApproval(f.org,policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:wrong-digest",
+                "a".repeat(64),NOW.minusSeconds(30),NOW.minusSeconds(20),NOW.plus(Duration.ofDays(1)));
+        problem(owner.write(path,wrongDigest),422,"INVALID_REQUEST");
+        var expired=signedApproval(f.org,policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:expired",null,
+                NOW.minus(Duration.ofDays(2)),NOW.minus(Duration.ofDays(1)),NOW.minusSeconds(1));
+        problem(owner.write(path,expired),422,"INVALID_REQUEST");
+        assertThat(count("food_safety_policy_approval")).isZero();
+        var otherScope=policyPath("DAIRY","AMBIENT")+"/"+policyId+"/approval-evidence";
+        problem(owner.write(otherScope,expired),404,"RESOURCE_NOT_FOUND");
+        assertThat(tree(owner.get(path)).path("verification").path("outcome").asString()).isEqualTo("NOT_SUBMITTED");
+    }
+
+    @Test
+    void approvalAndRevocationAuditsCommitAtomicallyWithTheirImmutableEvidence() throws Exception {
+        var owner=f.owner.browser();var policy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policy.statusCode()).isEqualTo(201);var policyId=UUID.fromString(tree(policy).path("id").asString());
+        var signer=signer();trust(signer);var path=approvalPath(policyId);
+        var submission=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:rollback");
+        doThrow(new IllegalStateException("Audit unavailable")).when(audit).securityChange(any(),eq(f.org),eq("food-safety-policy-approval"),any(),
+                eq("FOOD_SAFETY_POLICY_APPROVAL_SUBMITTED"),anyMap(),anyString());
+        problem(owner.write(path,submission),500,"INTERNAL_ERROR");assertThat(count("food_safety_policy_approval")).isZero();
+        doCallRealMethod().when(audit).securityChange(any(),eq(f.org),eq("food-safety-policy-approval"),any(),
+                eq("FOOD_SAFETY_POLICY_APPROVAL_SUBMITTED"),anyMap(),anyString());
+        var created=owner.write(path,submission);assertThat(created.statusCode()).isEqualTo(201);
+        var approvalId=UUID.fromString(tree(created).path("approvalId").asString());var revocationPath="/api/v1/organizations/"+f.org+
+                "/food-safety-policy-approvals/"+approvalId+"/revocation";var revoke=Map.of("requestId",UUID.randomUUID(),"reason","Issuer withdrew evidence");
+        doThrow(new IllegalStateException("Audit unavailable")).when(audit).securityChange(any(),eq(f.org),eq("food-safety-policy-approval"),eq(approvalId),
+                eq("FOOD_SAFETY_POLICY_APPROVAL_REVOKED"),anyMap(),anyString());
+        problem(owner.write(revocationPath,revoke),500,"INTERNAL_ERROR");assertThat(count("food_safety_policy_approval_revocation")).isZero();
+        doCallRealMethod().when(audit).securityChange(any(),eq(f.org),eq("food-safety-policy-approval"),eq(approvalId),
+                eq("FOOD_SAFETY_POLICY_APPROVAL_REVOKED"),anyMap(),anyString());
+        assertThat(owner.write(revocationPath,revoke).statusCode()).isEqualTo(201);
+        assertThat(count("food_safety_policy_approval")).isEqualTo(1);assertThat(count("food_safety_policy_approval_revocation")).isEqualTo(1);
+    }
+
+    @Test
+    void policyVersionAppendWaitsForAnInFlightApprovalAndCannotInheritItsEvidence() throws Exception {
+        var owner=f.owner.browser();var policy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policy.statusCode()).isEqualTo(201);var policyId=UUID.fromString(tree(policy).path("id").asString());
+        var signer=signer();trust(signer);var path=approvalPath(policyId);
+        var submission=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:concurrency");
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+        doAnswer(call -> { entered.countDown();if (!release.await(15,TimeUnit.SECONDS)) throw new IllegalStateException("Command barrier timed out");return call.callRealMethod(); })
+                .when(audit).securityChange(any(),eq(f.org),eq("food-safety-policy-approval"),any(),
+                        eq("FOOD_SAFETY_POLICY_APPROVAL_SUBMITTED"),anyMap(),anyString());
+        try (var workers=Executors.newFixedThreadPool(2)) {
+            var submit=workers.submit(() -> owner.write(path,submission));assertThat(entered.await(10,TimeUnit.SECONDS)).isTrue();
+            var append=workers.submit(() -> f.coowner.browser().write(policies(),review(1,"NO_NORMALIZATION")));
+            await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(jdbc.sql("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%stockrescue.organization%' ").query(Long.class).single()).isPositive());
+            release.countDown();assertThat(submit.get(15,TimeUnit.SECONDS).statusCode()).isEqualTo(201);assertThat(append.get(15,TimeUnit.SECONDS).statusCode()).isEqualTo(201);
+        } finally { release.countDown(); }
+        var current=tree(owner.get(policies()));assertThat(current.path("current").path("version").asLong()).isEqualTo(2);
+        assertThat(current.path("items").get(1).path("id").asString()).isEqualTo(policyId.toString());
+        assertThat(tree(owner.get(approvalPath(UUID.fromString(current.path("current").path("id").asString()))))
+                .path("verification").path("outcome").asString()).isEqualTo("NOT_SUBMITTED");
+        assertThat(count("food_safety_policy_approval")).isEqualTo(1);
+    }
 
     @Test
     void evaluationUsesCurrentStoreDateAndIsReadOnlyAndUncacheable() throws Exception {
@@ -97,6 +262,66 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
     }
 
     @Test
+    void policyHistoryAndEligibilityAreIsolatedByProductCategoryWithinOneTemperatureClass() throws Exception {
+        var owner=f.owner.browser();
+        var bakeryPolicy=owner.write(policyPath("BAKERY","CHILLED"),review(0,"NO_NORMALIZATION"));
+        assertThat(bakeryPolicy.statusCode()).as(bakeryPolicy.body()).isEqualTo(201);
+        problem(f.foreign.browser().get(policyPath("BAKERY","CHILLED")),404,"RESOURCE_NOT_FOUND");
+        problem(f.foreign.browser().write(policyPath("BAKERY","CHILLED"),review(0,"NO_NORMALIZATION")),404,"RESOURCE_NOT_FOUND");
+        assertThat(count("food_safety_policy_version")).isEqualTo(1);
+        assertThat(tree(owner.get(policyPath("DAIRY","CHILLED"))).path("current").isNull()).isTrue();
+        var dairyProduct=owner.write("/api/v1/organizations/"+f.org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","MILK-SCOPE","name","Packaged milk","baseUnit","EA","category","DAIRY","temperatureClass","CHILLED"));
+        assertThat(dairyProduct.statusCode()).as(dairyProduct.body()).isEqualTo(201);
+        var bakeryProduct=owner.write("/api/v1/organizations/"+f.org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","BREAD-SCOPE","name","Packaged bread","baseUnit","EA","category","BAKERY","temperatureClass","CHILLED"));
+        assertThat(bakeryProduct.statusCode()).as(bakeryProduct.body()).isEqualTo(201);
+        var dairyProductId=UUID.fromString(tree(dairyProduct).path("id").asString());
+        var bakeryProductId=UUID.fromString(tree(bakeryProduct).path("id").asString());
+        var dairyLotId=register(dairyProductId,"MILK-SCOPE-LOT","2027-04-30","USE_BY","DAY");
+        var bakeryLotId=register(bakeryProductId,"BREAD-SCOPE-LOT","2027-04-30","USE_BY","DAY");
+        var missing=tree(owner.get(eligibility(dairyLotId,f.store,f.incompatibleZone)));
+        assertThat(missing.path("policy").isNull()).isTrue();
+        assertThat(missing.path("reasonCodes").toString()).contains("POLICY_MISSING");
+        var bakeryMatch=tree(owner.get(eligibility(bakeryLotId,f.store,f.incompatibleZone)));
+        assertThat(bakeryMatch.path("policy").path("id")).isEqualTo(tree(bakeryPolicy).path("id"));
+        assertThat(bakeryMatch.path("policy").path("productCategory").asString()).isEqualTo("BAKERY");
+        var dairyPolicy=owner.write(policyPath("DAIRY","CHILLED"),review(0,"NO_NORMALIZATION"));
+        assertThat(dairyPolicy.statusCode()).as(dairyPolicy.body()).isEqualTo(201);
+        assertThat(tree(dairyPolicy).path("productCategory").asString()).isEqualTo("DAIRY");
+        assertThat(tree(dairyPolicy).path("version").asLong()).isEqualTo(1);
+        assertThat(tree(bakeryPolicy).path("productCategory").asString()).isEqualTo("BAKERY");
+        assertThat(tree(bakeryPolicy).path("profileId")).isNotEqualTo(tree(dairyPolicy).path("profileId"));
+        var matched=tree(owner.get(eligibility(dairyLotId,f.store,f.incompatibleZone)));
+        assertThat(matched.path("policy").path("id")).isEqualTo(tree(dairyPolicy).path("id"));
+        assertThat(matched.path("policy").path("productCategory").asString()).isEqualTo("DAIRY");
+        assertThat(tree(owner.get(policyPath("BAKERY","CHILLED"))).path("current").path("id")).isEqualTo(tree(bakeryPolicy).path("id"));
+    }
+
+    @Test
+    void concurrentCategoryCorrectionAndPolicyReviewLeaveEligibilityOnTheCurrentScope() throws Exception {
+        var owner=f.owner.browser();
+        var initialPolicy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(initialPolicy.statusCode()).as(initialPolicy.body()).isEqualTo(201);
+        var lotId=register("2027-04-30","USE_BY","DAY");
+        var productPath="/api/v1/organizations/"+f.org+"/products/"+f.product;
+        var toDairy=owner.write(productPath+"/category-corrections",
+                Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"category","DAIRY","reason","Corrected package category"));
+        assertThat(toDairy.statusCode()).as(toDairy.body()).isEqualTo(200);
+
+        var correction=Map.of("requestId",UUID.randomUUID(),"expectedVersion",1,"category","BAKERY","reason","Rechecked package category");
+        var outcomes=concurrent(
+                () -> owner.write(productPath+"/category-corrections",correction),
+                () -> owner.write(policyPath("BAKERY"),review(1,"NO_NORMALIZATION")));
+        assertThat(outcomes.get(0).statusCode()).as(outcomes.get(0).body()).isEqualTo(200);
+        assertThat(outcomes.get(1).statusCode()).as(outcomes.get(1).body()).isEqualTo(201);
+
+        var current=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(current.path("policy").path("productCategory").asString()).isEqualTo("BAKERY");
+        assertThat(current.path("policy").path("version").asLong()).isEqualTo(2);
+        assertThat(current.path("policy").path("id")).isEqualTo(tree(outcomes.get(1)).path("id"));
+        assertThat(current.path("decision").asString()).isNotEqualTo("ALLOWED");
+    }
+
+    @Test
     void partialLabelsAndRequestedNormalizationNeverProduceCutoffsOrApproval() throws Exception {
         var owner=f.owner.browser(); assertThat(owner.write(policies(),review(0,"END_OF_LABELED_PERIOD")).statusCode()).isEqualTo(201);
         for (var example:new String[][]{{" 2027-02 ","BEST_BEFORE_END","MONTH"},{"2027","BEST_BEFORE_END","YEAR"},{null,"UNKNOWN","UNKNOWN"},{"2027-02-31","USE_BY","DAY"}}) {
@@ -127,6 +352,22 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
         assertThat(result.path("decision").asString()).isEqualTo("DENIED");
         assertThat(result.path("reasonCodes").toString()).contains("TEMPERATURE_CLASS_MISMATCH");
         assertThat(count("food_safety_policy_version")).isEqualTo(1);
+    }
+
+    @Test
+    void anUnverifiedPolicyCannotMakeAnInvalidOriginalDateEligible() throws Exception {
+        var owner=f.owner.browser();
+        var policy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policy.statusCode()).as(policy.body()).isEqualTo(201);
+        var id=register("2026-02-31","USE_BY","DAY");
+        var saved=tree(owner.get(lot(id))).path("dateMarking");
+        assertThat(saved.path("labeledValue").asString()).isEqualTo("2026-02-31");
+        assertThat(saved.path("validationStatus").asString()).isEqualTo("INVALID");
+        var result=tree(owner.get(eligibility(id,f.store,f.zone)));
+        assertThat(result.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(result.path("evidence").path("date").asString()).isEqualTo("INVALID");
+        assertThat(result.path("reasonCodes").toString()).contains("DATE_LABEL_INVALID","POLICY_APPROVAL_UNVERIFIED")
+                .doesNotContain("USE_BY_EXPIRED","ALLOWED");
     }
 
     @Test
@@ -270,19 +511,46 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
         assertThat(count("food_safety_policy_version")).isEqualTo(writeFirst?1:0);
     }
 
+    private KeyPair signer() throws Exception { return KeyPairGenerator.getInstance("Ed25519").generateKeyPair(); }
+    private FoodSafetyApprovalProperties.TrustedIssuer trust(KeyPair signer) {
+        var trusted=new FoodSafetyApprovalProperties.TrustedIssuer();trusted.setIssuerId("test-issuer");
+        trusted.setPublicKeyX509(Base64.getEncoder().encodeToString(signer.getPublic().getEncoded()));trusted.setEnabled(true);
+        approvalProperties.setTrustedIssuers(Map.of("test-key",trusted));approvalProperties.setEnabled(true);return trusted;
+    }
+    private Map<String,Object> signedApproval(UUID policyId,UUID requestId,Set<Operation> operations,KeyPair signer,String evidenceReference) throws Exception {
+        return signedApproval(f.org,policyId,requestId,operations,signer,evidenceReference,null,NOW.minusSeconds(30),NOW.minusSeconds(20),NOW.plus(Duration.ofDays(1)));
+    }
+    private Map<String,Object> signedApproval(UUID signingOrganization,UUID policyId,UUID requestId,Set<Operation> operations,KeyPair signer,
+            String evidenceReference,String digestOverride,Instant issuedAt,Instant validFrom,Instant validUntil) throws Exception {
+        var policy=policyRepository.byId(f.org,policyId).orElseThrow();var digest=digestOverride==null?FoodSafetyPolicyDigest.hex(policy):digestOverride;
+        var issuer="test-issuer";var key="test-key";
+        var payload=FoodSafetyPolicyAttestation.canonicalPayload(signingOrganization,policy,HexFormat.of().parseHex(digest),operations,issuer,key,
+                issuedAt,validFrom,validUntil,evidenceReference);
+        var signature=Signature.getInstance("Ed25519");signature.initSign(signer.getPrivate());signature.update(payload);
+        return new HashMap<>(Map.of("requestId",requestId,"issuerId",issuer,"keyId",key,"policyDigest",digest,
+                "allowedOperations",operations.stream().map(Enum::name).sorted().toList(),"issuedAt",issuedAt,"validFrom",validFrom,
+                "validUntil",validUntil,"evidenceReference",evidenceReference,"signatureBase64",Base64.getEncoder().encodeToString(signature.sign())));
+    }
     private Map<String,Object> review(long version,String rule) { return new HashMap<>(Map.of("requestId",UUID.randomUUID(),"expectedVersion",version,"reason","Review of class-specific source evidence","partialDateRule",rule,"reviewProvenance",provenance("policy-document"))); }
     private Map<String,Object> status(long version,String recall,String damage) { return new HashMap<>(Map.of("requestId",UUID.randomUUID(),"expectedVersion",version,"reason","Reviewed supplier safety notice","recallState",recall,"damageState",damage,"provenance",provenance("supplier-notice"))); }
     private Map<String,Object> marking(String label,String type,String precision) { var body=new HashMap<String,Object>(Map.of("type",type,"precision",precision,"provenance",provenance("label-photo")));if (label!=null) body.put("labeledValue",label);return body; }
     private Map<String,String> provenance(String reference) { return Map.of("source","Observed document","reference",reference); }
     private UUID register(String label,String type,String precision) throws Exception {
-        var body=Map.of("requestId",UUID.randomUUID(),"productId",f.product,"lotCode",UUID.randomUUID().toString(),"identityState","CONFIRMED","manufacturerIdentityKey","registry:maker-a",
+        return register(f.product,UUID.randomUUID().toString(),label,type,precision);
+    }
+    private UUID register(UUID product,String lotCode,String label,String type,String precision) throws Exception {
+        var body=Map.of("requestId",UUID.randomUUID(),"productId",product,"lotCode",lotCode,"identityState","CONFIRMED","manufacturerIdentityKey","registry:maker-a",
                 "manufacturerVerified",true,"manufacturerProvenance",provenance("registry-17"),"dateMarking",marking(label,type,precision));
         var result=f.owner.browser().write("/api/v1/organizations/"+f.org+"/lots",body);assertThat(result.statusCode()).as(result.body()).isEqualTo(201);return UUID.fromString(tree(result).path("id").asString());
     }
     private String lot(UUID id) { return "/api/v1/organizations/"+f.org+"/lots/"+id; }
-    private String policies() { return "/api/v1/organizations/"+f.org+"/food-safety-profiles/AMBIENT/versions"; }
+    private String policies() { return "/api/v1/organizations/"+f.org+"/food-safety-profiles/BAKERY/AMBIENT/versions"; }
+    private String approvalPath(UUID policyId) { return policies()+"/"+policyId+"/approval-evidence"; }
+    private String policyPath(String category) { return "/api/v1/organizations/"+f.org+"/food-safety-profiles/"+category+"/AMBIENT/versions"; }
+    private String policyPath(String category,String temperature) { return "/api/v1/organizations/"+f.org+"/food-safety-profiles/"+category+"/"+temperature+"/versions"; }
     private String statusPath(UUID id) { return lot(id)+"/safety-status-evidence"; }
     private String eligibility(UUID id,UUID store,UUID zone) { return lot(id)+"/eligibility?operation=SALE&storeId="+store+(zone==null?"":"&zoneId="+zone); }
+    private String eligibility(UUID id,UUID store,UUID zone,Operation operation) { return lot(id)+"/eligibility?operation="+operation+"&storeId="+store+(zone==null?"":"&zoneId="+zone); }
     private JsonNode tree(HttpResponse<String> result) { return json.readTree(result.body()); }
     private long count(String table) { return jdbc.sql("SELECT count(*) FROM stockrescue."+table+" WHERE org_id=:org").param("org",f.org).query(Long.class).single(); }
     private long audits(String action) { return jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND action=:action").param("org",f.org).param("action",action).query(Long.class).single(); }
@@ -295,7 +563,7 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
             member(owner,org,"ORG_ADMIN");member(coowner,org,"ORG_ADMIN");member(operator,org,"MEMBER");member(foreign,otherOrg,"ORG_ADMIN");
             jdbc.sql("INSERT INTO stockrescue.store_grant(id,org_id,membership_id,store_id,role) VALUES (:id,:org,:member,:store,'INVENTORY_OPERATOR')")
                     .param("id",UUID.randomUUID()).param("org",org).param("member",membership(operator)).param("store",store).update();
-            var result=owner.browser().write("/api/v1/organizations/"+org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","BREAD","name","Packaged bread","baseUnit","EA","temperatureClass","AMBIENT"));
+            var result=owner.browser().write("/api/v1/organizations/"+org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","BREAD","name","Packaged bread","baseUnit","EA","category","BAKERY","temperatureClass","AMBIENT"));
             assertThat(result.statusCode()).as(result.body()).isEqualTo(201);product=UUID.fromString(tree(result).path("id").asString());
         }
         User user() { var u=new User(UUID.randomUUID());jdbc.sql("INSERT INTO stockrescue.user_account(id,email_display) VALUES (:id,:email)").param("id",u.id).param("email",u.email).update();jdbc.sql("INSERT INTO stockrescue.credential(user_id,password_hash) VALUES (:id,:hash)").param("id",u.id).param("hash",hash).update();return u; }

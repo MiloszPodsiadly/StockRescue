@@ -5,8 +5,34 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class DateLabelAssessmentTest {
-    @Test void explicitIsoPrecisionIsParsedWithoutDerivingACutoff() {
-        for (var entry:java.util.Map.of(DatePrecision.DAY,"2028-02-29",DatePrecision.MONTH,"2027-02",DatePrecision.YEAR,"2027").entrySet()) {
+    @Test void everyDateTypeAndPrecisionPairHasAnExplicitConservativeAssessment() {
+        for (var type:DateMarkingType.values()) for (var precision:DatePrecision.values()) {
+            var assessment=DateLabelAssessment.assess(marking(label(precision),type,precision,true));
+            assertThat(assessment.status()).as("%s × %s",type,precision).isEqualTo(expected(type,precision));
+            if (type==DateMarkingType.UNKNOWN) assertThat(assessment.reasons()).contains(DateLabelAssessment.Reason.UNKNOWN_TYPE);
+            if (precision==DatePrecision.UNKNOWN) assertThat(assessment.reasons()).contains(DateLabelAssessment.Reason.UNKNOWN_PRECISION);
+            if (type==DateMarkingType.USE_BY && precision!=DatePrecision.DAY)
+                assertThat(assessment.reasons()).contains(DateLabelAssessment.Reason.USE_BY_REQUIRES_DAY);
+            if (type==DateMarkingType.BEST_BEFORE_END && precision==DatePrecision.DAY)
+                assertThat(assessment.reasons()).contains(DateLabelAssessment.Reason.BEST_BEFORE_END_REQUIRES_PERIOD);
+        }
+    }
+    @Test void validLeapDayAndWhitespaceKeepTheOriginalObservedLabel() {
+        var value=" 2028-02-29 ";
+        var marking=marking(value,DateMarkingType.USE_BY,DatePrecision.DAY,true);
+        assertThat(DateLabelAssessment.assess(marking).status()).isEqualTo(DateLabelAssessment.Status.VALID);
+        assertThat(marking.labeledValue()).isEqualTo(value);
+        assertThat(marking.normalizedCutoff()).isEmpty();
+    }
+    @Test void missingReferenceIsIncompleteEvenWhenTheDateTextIsValid() {
+        var marking=new DateMarking("2028-02-29",DateMarkingType.USE_BY,DatePrecision.DAY,
+                java.util.Optional.of(new EvidenceProvenance("label photo",null)),java.util.Optional.empty());
+        var assessment=DateLabelAssessment.assess(marking);
+        assertThat(assessment.status()).isEqualTo(DateLabelAssessment.Status.INCOMPLETE);
+        assertThat(assessment.reasons()).containsExactly(DateLabelAssessment.Reason.MISSING_REFERENCE);
+    }
+    @Test void explicitPartialPeriodsKeepTheirPrecisionAndNeverDeriveACutoff() {
+        for (var entry:java.util.Map.of(DatePrecision.MONTH,"2027-02",DatePrecision.YEAR,"2027").entrySet()) {
             var marking=marking(entry.getValue(),DateMarkingType.BEST_BEFORE_END,entry.getKey(),true);
             assertThat(DateLabelAssessment.assess(marking).status()).isEqualTo(DateLabelAssessment.Status.VALID);
             assertThat(marking.normalizedCutoff()).isEmpty();
@@ -32,6 +58,15 @@ class DateLabelAssessmentTest {
         assertThat(DateLabelAssessment.assess(marking("2027-13",DateMarkingType.BEST_BEFORE_END,DatePrecision.MONTH,true)).status()).isEqualTo(DateLabelAssessment.Status.INVALID);
     }
     private DateMarking marking(String label,DateMarkingType type,DatePrecision precision,boolean source) {
-        return new DateMarking(label,type,precision,source?Optional.of(new EvidenceProvenance("label",null)):Optional.empty(),Optional.empty());
+        return new DateMarking(label,type,precision,source?Optional.of(new EvidenceProvenance("label","photo-17")):Optional.empty(),Optional.empty());
+    }
+    private static String label(DatePrecision precision) {
+        return switch (precision) { case DAY -> "2028-02-29"; case MONTH -> "2027-02"; case YEAR -> "2027"; case UNKNOWN -> "2027-02-29"; };
+    }
+    private static DateLabelAssessment.Status expected(DateMarkingType type,DatePrecision precision) {
+        if (type==DateMarkingType.UNKNOWN || precision==DatePrecision.UNKNOWN
+                || type==DateMarkingType.USE_BY && precision!=DatePrecision.DAY
+                || type==DateMarkingType.BEST_BEFORE_END && precision==DatePrecision.DAY) return DateLabelAssessment.Status.INCOMPLETE;
+        return DateLabelAssessment.Status.VALID;
     }
 }

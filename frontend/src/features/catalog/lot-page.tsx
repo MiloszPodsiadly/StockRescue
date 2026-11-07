@@ -58,7 +58,7 @@ function LotDetail({ organizationId, lotId }: { organizationId: string, lotId: s
     <StorePicker organizationId={organizationId} value={storeId} onChange={setStoreId} disabled={sourceFrozen || locationFrozen} />
     {storeId ? <StoreEvidence key={storeId} organizationId={organizationId} storeId={storeId} lot={current} productActive={product.data.active} sourceFrozen={sourceFrozen} onSourceLock={setSourceFrozen} onLocationLock={setLocationFrozen} />
       : administrator && ((current.active && product.data.active) || sourceFrozen) ? <SourceForm key="organization-source" organizationId={organizationId} lotId={lotId} onLock={setSourceFrozen} /> : <p className="text-sm text-muted-foreground">Choose an assigned store to record source evidence and assess its storage context.</p>}
-    <PolicyPanel organizationId={organizationId} temperature={product.data.temperatureClass} />
+    <PolicyPanel organizationId={organizationId} category={product.data.category} temperature={product.data.temperatureClass} />
   </section>
 }
 function StoreEvidence({ organizationId, storeId, lot, productActive, sourceFrozen, onSourceLock, onLocationLock }: {

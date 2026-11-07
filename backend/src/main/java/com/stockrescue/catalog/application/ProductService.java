@@ -9,6 +9,7 @@ import com.stockrescue.access.application.EffectivePermissions;
 import com.stockrescue.access.application.EffectivePermissions.OrganizationAction;
 import com.stockrescue.access.application.OrganizationUnavailableException;
 import com.stockrescue.catalog.domain.CatalogFailure;
+import com.stockrescue.catalog.domain.ProductCategory;
 import com.stockrescue.catalog.persistence.ProductRepository;
 import com.stockrescue.catalog.persistence.ProductRepository.Operation;
 import com.stockrescue.platform.audit.AuditWriter;
@@ -79,6 +80,27 @@ public class ProductService {
         if (before.version()!=expectedVersion) throw conflict();
         var after=products.archive(org,id,expectedVersion).orElseThrow(ProductService::conflict);
         audit.securityChange(actor,org,"product",id,"PRODUCT_ARCHIVED",Map.of("outcome","SUCCEEDED","before",before,"after",after),reason);
+        return view(actor,org,after);
+    }
+
+    @Transactional
+    public View reclassify(UUID actor, UUID org, UUID id, UUID request, long expectedVersion, ProductCategory category, String reason) {
+        access.requireOrganizationAction(actor,org,OrganizationAction.MANAGE_CATALOG,true);
+        if (request==null || expectedVersion<0 || expectedVersion==Long.MAX_VALUE || category==null
+                || reason==null || reason.isBlank() || reason.length()>500 || reason.codePoints().anyMatch(Character::isISOControl)) invalid();
+        reason=reason.strip();
+        var digest=CatalogCommandDigest.of(id.toString(),Long.toString(expectedVersion),category.name(),reason);
+        if (!products.reserve(actor,org,Operation.RECLASSIFY,request,id,expectedVersion+1,digest)) {
+            var previous=products.receipt(actor,org,Operation.RECLASSIFY,request);
+            samePayload(previous,digest);
+            return view(actor,org,existing(org,previous.productId(),false));
+        }
+        var before=existing(org,id,true);
+        if (!before.active()) throw new CatalogFailure(CatalogFailure.Kind.INACTIVE);
+        if (before.version()!=expectedVersion || before.data().category()==category) throw conflict();
+        var after=products.reclassify(org,id,expectedVersion,category).orElseThrow(ProductService::conflict);
+        audit.securityChange(actor,org,"product",id,"PRODUCT_CATEGORY_CORRECTED",
+                Map.of("outcome","SUCCEEDED","before",before,"after",after),reason);
         return view(actor,org,after);
     }
 

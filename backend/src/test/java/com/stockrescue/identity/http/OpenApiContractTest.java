@@ -47,6 +47,9 @@ class OpenApiContractTest extends InfrastructureTestBase {
         var schemaRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/v3/api-docs")).GET().build();
         var document=json.readTree(HttpClient.newHttpClient().send(schemaRequest,HttpResponse.BodyHandlers.ofString()).body());
         var schemas=document.path("components").path("schemas");
+        var policyPath="/api/v1/organizations/{organizationId}/food-safety-profiles/{productCategory}/{temperatureClass}/versions";
+        assertThat(document.path("paths").path(policyPath).path("post").path("operationId").asString()).isEqualTo("recordFoodSafetyPolicyReview");
+        assertThat(document.path("paths").path(policyPath).path("get").path("operationId").asString()).isEqualTo("listFoodSafetyPolicyVersions");
         var lotPath="/api/v1/organizations/{organizationId}/lots";
         assertThat(document.path("paths").path(lotPath).path("post").path("operationId").asString()).isEqualTo("registerManufacturerLot");
         var sourcePath=lotPath+"/{lotId}/source-evidence";
@@ -83,6 +86,10 @@ class OpenApiContractTest extends InfrastructureTestBase {
         assertThat(productOperations.path("get").path("operationId").asString()).isEqualTo("listProducts");
         assertThat(productOperations.path("post").path("responses").has("422")).isTrue();
         assertThat(schemas.path("ProductResponse").path("properties").path("gtin").path("type")).anyMatch(value -> value.asString().equals("null"));
+        assertThat(schemas.path("ProductResponse").path("properties").path("category").path("enum").toString()).isEqualTo("[\"UNCLASSIFIED\",\"DAIRY\",\"BAKERY\"]");
+        assertThat(schemas.path("CreateProductRequest").path("required")).anyMatch(value -> value.asString().equals("category"));
+        var categoryCorrection=document.path("paths").path(productPath+"/{productId}/category-corrections").path("post");
+        assertThat(categoryCorrection.path("operationId").asString()).isEqualTo("correctProductCategory");
         var archiveProduct=document.path("paths").path(productPath+"/{productId}/archive").path("post");
         assertThat(archiveProduct.path("operationId").asString()).isEqualTo("archiveProduct");
         var productArchiveProperties=schemas.path("ArchiveProductRequest").path("properties");

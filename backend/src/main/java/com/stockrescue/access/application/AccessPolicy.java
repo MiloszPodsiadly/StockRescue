@@ -48,7 +48,10 @@ public class AccessPolicy {
     }
 
     public OrganizationAccess requireOrganizationAction(UUID actor, UUID organization, OrganizationAction action, boolean write) {
-        var membership = write ? lock(actor, organization, action == OrganizationAction.MANAGE_FOOD_SAFETY_POLICY) : organization(actor, organization);
+        boolean securityChange=action==OrganizationAction.MANAGE_FOOD_SAFETY_POLICY
+                || action==OrganizationAction.SUBMIT_FOOD_SAFETY_APPROVAL_EVIDENCE
+                || action==OrganizationAction.REVOKE_FOOD_SAFETY_APPROVAL;
+        var membership = write ? lock(actor, organization, securityChange) : organization(actor, organization);
         if (!organizationActions(membership.role()).contains(action)) throw new AccessDeniedException("Action unavailable");
         return membership;
     }

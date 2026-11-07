@@ -7,13 +7,14 @@ import java.util.Optional;
 import java.util.UUID;
 import com.stockrescue.catalog.application.Product;
 import com.stockrescue.catalog.application.ProductData;
+import com.stockrescue.catalog.domain.ProductCategory;
 import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 @Repository
 public class ProductRepository {
-    public enum Operation { CREATE, ARCHIVE }
+    public enum Operation { CREATE, ARCHIVE, RECLASSIFY }
     public record Receipt(UUID productId, long resultVersion, byte[] digest) { }
     private final JdbcClient jdbc;
     public ProductRepository(JdbcClient jdbc) { this.jdbc = jdbc; }
@@ -38,12 +39,12 @@ public class ProductRepository {
 
     public Optional<Product> create(UUID org, UUID id, ProductData data) {
         return jdbc.sql("""
-                INSERT INTO stockrescue.product(id,org_id,sku,name,gtin,base_unit,temperature_class)
-                VALUES (:id,:org,:sku,:name,:gtin,:unit,:temperature)
+                INSERT INTO stockrescue.product(id,org_id,sku,name,gtin,base_unit,category,temperature_class)
+                VALUES (:id,:org,:sku,:name,:gtin,:unit,:category,:temperature)
                 ON CONFLICT (org_id,sku_normalized) DO NOTHING RETURNING *
                 """).param("id",id).param("org",org).param("sku",data.sku().value()).param("name",data.name())
                 .param("gtin",data.gtin() == null ? null : data.gtin().value(),java.sql.Types.VARCHAR)
-                .param("unit",data.baseUnit().name()).param("temperature",data.temperatureClass().name())
+                .param("unit",data.baseUnit().name()).param("category",data.category().name()).param("temperature",data.temperatureClass().name())
                 .query((row,index) -> product(row)).optional();
     }
 
@@ -75,10 +76,18 @@ public class ProductRepository {
                 """).param("org",org).param("id",id).param("version",version).query((row,index) -> product(row)).optional();
     }
 
+    public Optional<Product> reclassify(UUID org, UUID id, long version, ProductCategory category) {
+        return jdbc.sql("""
+                UPDATE stockrescue.product SET category=:category,version=version+1
+                WHERE org_id=:org AND id=:id AND version=:version AND active RETURNING *
+                """).param("category",category.name()).param("org",org).param("id",id).param("version",version)
+                .query((row,index) -> product(row)).optional();
+    }
+
     private Product product(ResultSet row) throws SQLException {
         var archived = row.getTimestamp("archived_at");
         return new Product(row.getObject("id",UUID.class), ProductData.parse(row.getString("sku_normalized"),row.getString("name"),
-                row.getString("gtin"),row.getString("base_unit"),
+                row.getString("gtin"),row.getString("base_unit"),ProductCategory.valueOf(row.getString("category")),
                 TemperatureClass.valueOf(row.getString("temperature_class"))),
                 row.getBoolean("active"),row.getLong("version"),row.getTimestamp("created_at").toInstant(),
                 row.getTimestamp("updated_at").toInstant(),archived == null ? null : archived.toInstant());

@@ -885,7 +885,102 @@ paths:
         grants
       tags:
       - staff-controller
-  /api/v1/organizations/{organizationId}/food-safety-profiles/{temperatureClass}/versions:
+  /api/v1/organizations/{organizationId}/food-safety-policy-approvals/{approvalId}/revocation:
+    post:
+      operationId: revokeFoodSafetyPolicyApproval
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: approvalId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokePolicyApprovalRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyApprovalEvidenceResponse"
+          description: Previously recorded revocation
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyApprovalEvidenceResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or unsupported policy override
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Version, replay or immutable block conflict"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid review evidence
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Append an immutable revocation of policy approval evidence; trust and
+        evidence history remain visible
+      tags:
+      - food-safety-controller
+  /api/v1/organizations/{organizationId}/food-safety-profiles/{productCategory}/{temperatureClass}/versions:
     get:
       operationId: listFoodSafetyPolicyVersions
       parameters:
@@ -895,6 +990,15 @@ paths:
         schema:
           type: string
           format: uuid
+      - in: path
+        name: productCategory
+        required: true
+        schema:
+          type: string
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
       - in: path
         name: temperatureClass
         required: true
@@ -979,8 +1083,8 @@ paths:
           description: Service unavailable
       security:
       - session: []
-      summary: Read latest review and immutable version history; an absent profile
-        is explicit
+      summary: Read latest review and immutable version history for a category and
+        temperature scope; an absent profile is explicit
       tags:
       - food-safety-controller
     post:
@@ -992,6 +1096,15 @@ paths:
         schema:
           type: string
           format: uuid
+      - in: path
+        name: productCategory
+        required: true
+        schema:
+          type: string
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
       - in: path
         name: temperatureClass
         required: true
@@ -1076,8 +1189,215 @@ paths:
           description: Service unavailable
       security:
       - session: []
-      summary: Append an immutable class-specific policy review; a submitted reference
-        never grants independent approval
+      summary: Append an immutable category and temperature scoped policy review;
+        a submitted reference never grants independent approval
+      tags:
+      - food-safety-controller
+  ? /api/v1/organizations/{organizationId}/food-safety-profiles/{productCategory}/{temperatureClass}/versions/{policyVersionId}/approval-evidence
+  : get:
+      operationId: getFoodSafetyPolicyApprovalEvidence
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: productCategory
+        required: true
+        schema:
+          type: string
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
+      - in: path
+        name: temperatureClass
+        required: true
+        schema:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+      - in: path
+        name: policyVersionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyApprovalEvidenceResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or unsupported policy override
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Version, replay or immutable block conflict"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid review evidence
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read the current cryptographic verification explanation for one exact
+        policy version without exposing its signature
+      tags:
+      - food-safety-controller
+    post:
+      operationId: submitFoodSafetyPolicyApprovalEvidence
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: productCategory
+        required: true
+        schema:
+          type: string
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
+      - in: path
+        name: temperatureClass
+        required: true
+        schema:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
+      - in: path
+        name: policyVersionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitPolicyApprovalEvidenceRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyApprovalEvidenceResponse"
+          description: Previously recorded immutable evidence
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyApprovalEvidenceResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or unsupported policy override
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Scoped resource unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Version, replay or immutable block conflict"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid review evidence
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Submit externally signed Ed25519 evidence for restricted verification;
+        organization administrators cannot configure trust keys
       tags:
       - food-safety-controller
   /api/v1/organizations/{organizationId}/invitations:
@@ -3257,6 +3577,95 @@ paths:
       - session: []
       summary: Catalog administrator archives a versioned product with a durable retry
         key and reason
+      tags:
+      - product-controller
+  /api/v1/organizations/{organizationId}/products/{productId}/category-corrections:
+    post:
+      operationId: correctProductCategory
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: productId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CorrectProductCategoryRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or product unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved SKU, changed retry, stale version or inactive product"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid catalog identity, unit or product data"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Correct a product's descriptive category with an expected version and
+        audited reason
       tags:
       - product-controller
   /api/v1/organizations/{organizationId}/stores:
@@ -5456,6 +5865,99 @@ components:
       - reason
       - verifiedUserId
       - version
+    ApprovalVerificationResponse:
+      type: object
+      properties:
+        allowedOperations:
+          type: array
+          items:
+            type: string
+            enum:
+            - SALE
+            - TRANSFER
+        evidenceReference:
+          type:
+          - string
+          - "null"
+        issuedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        issuerId:
+          type:
+          - string
+          - "null"
+        keyId:
+          type:
+          - string
+          - "null"
+        outcome:
+          type: string
+          enum:
+          - NOT_SUBMITTED
+          - TRUST_REGISTRY_DISABLED
+          - TRUSTED_ISSUER_UNKNOWN
+          - TRUSTED_KEY_DISABLED
+          - SIGNATURE_INVALID
+          - NOT_YET_VALID
+          - EXPIRED
+          - REVOKED
+          - POLICY_SCOPE_MISMATCH
+          - OPERATION_NOT_APPROVED
+          - VERIFIED
+        policyDigest:
+          type: string
+        policyVersion:
+          type: integer
+          format: int64
+        recordedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        revocationReason:
+          type:
+          - string
+          - "null"
+        revoked:
+          type: boolean
+        revokedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        revokedByMembershipId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        validFrom:
+          type:
+          - string
+          - "null"
+          format: date-time
+        validUntil:
+          type:
+          - string
+          - "null"
+          format: date-time
+      required:
+      - allowedOperations
+      - evidenceReference
+      - issuedAt
+      - issuerId
+      - keyId
+      - outcome
+      - policyDigest
+      - policyVersion
+      - recordedAt
+      - revocationReason
+      - revoked
+      - revokedAt
+      - revokedByMembershipId
+      - validFrom
+      - validUntil
     ArchiveProductRequest:
       type: object
       properties:
@@ -5642,6 +6144,33 @@ components:
       - manufacturerVerified
       - reason
       - requestId
+    CorrectProductCategoryRequest:
+      type: object
+      properties:
+        category:
+          type: string
+          description: Descriptive product category only
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - category
+      - expectedVersion
+      - reason
+      - requestId
     CostRevisionRequest:
       type: object
       properties:
@@ -5718,6 +6247,13 @@ components:
           - EA
           maxLength: 8
           minLength: 0
+        category:
+          type: string
+          description: Descriptive product category; UNCLASSIFIED is not safety approval
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
         gtin:
           type: string
           maxLength: 14
@@ -5741,6 +6277,7 @@ components:
           - FROZEN
       required:
       - baseUnit
+      - category
       - name
       - requestId
       - sku
@@ -5924,7 +6461,9 @@ components:
             - UNKNOWN_TYPE
             - UNKNOWN_PRECISION
             - MISSING_PROVENANCE
+            - MISSING_REFERENCE
             - USE_BY_REQUIRES_DAY
+            - BEST_BEFORE_END_REQUIRES_PERIOD
             - UNRECOGNIZED_FORMAT
             - NONEXISTENT_DATE
         validationStatus:
@@ -5962,6 +6501,7 @@ components:
           enum:
           - MISSING
           - RECORDED_UNVERIFIED
+          - INDEPENDENTLY_VERIFIED
         recall:
           type: string
           enum:
@@ -5987,6 +6527,12 @@ components:
         id:
           type: string
           format: uuid
+        productCategory:
+          type: string
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
         profileId:
           type: string
           format: uuid
@@ -5995,14 +6541,20 @@ components:
           format: int64
       required:
       - id
+      - productCategory
       - profileId
       - version
     EligibilityResponse:
       type: object
       description: "Point-in-time evidence, not a reusable permission or physical\
-        \ hold. Recompute before future operative use. Without independently verified\
-        \ policy approval the pilot returns DENIED or REQUIRES_REVIEW."
+        \ hold. ALLOWED requires a current signed approval for this exact policy and\
+        \ operation plus every narrow-pilot evidence gate. Recompute before future\
+        \ operative use."
       properties:
+        approvalVerification:
+          anyOf:
+          - $ref: "#/components/schemas/ApprovalVerificationResponse"
+          - type: "null"
         decision:
           type: string
           enum:
@@ -6039,6 +6591,7 @@ components:
           - REVIEW_LOT_EVIDENCE
           - RECORD_STORAGE_CONTEXT
           - OBTAIN_INDEPENDENT_POLICY_APPROVAL
+          - NO_ADDITIONAL_ACTION
         operation:
           type: string
           enum:
@@ -6075,6 +6628,7 @@ components:
             - DATE_PRECISION_UNKNOWN
             - DATE_LABEL_INVALID
             - USE_BY_DAY_REQUIRED
+            - DATE_TYPE_PRECISION_MISMATCH
             - DATE_PROVENANCE_MISSING
             - DATE_REFERENCE_MISSING
             - PARTIAL_DATE_RULE_UNVERIFIED
@@ -6083,7 +6637,9 @@ components:
             - STATUS_REFERENCE_MISSING
             - STORAGE_CONTEXT_MISSING
             - COLD_CHAIN_EVIDENCE_UNVERIFIED
+            - PRODUCT_CATEGORY_UNCLASSIFIED
             - POLICY_MISSING
+            - POLICY_SCOPE_MISMATCH
             - POLICY_CLASS_MISMATCH
             - POLICY_APPROVAL_UNVERIFIED
         storeId:
@@ -6108,6 +6664,7 @@ components:
           - "null"
           format: int64
       required:
+      - approvalVerification
       - decision
       - evaluatedAt
       - evaluatorVersion
@@ -6160,6 +6717,12 @@ components:
           enum:
           - NO_NORMALIZATION
           - END_OF_LABELED_PERIOD
+        productCategory:
+          type: string
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
         profileId:
           type: string
           format: uuid
@@ -6186,6 +6749,7 @@ components:
       - approvalStatus
       - id
       - partialDateRule
+      - productCategory
       - profileId
       - reason
       - recordedAt
@@ -6805,6 +7369,8 @@ components:
             - READ_CATALOG
             - MANAGE_CATALOG
             - MANAGE_FOOD_SAFETY_POLICY
+            - SUBMIT_FOOD_SAFETY_APPROVAL_EVIDENCE
+            - REVOKE_FOOD_SAFETY_APPROVAL
             - RECORD_LOT_SAFETY_EVIDENCE
         storeGrants:
           type: array
@@ -6845,6 +7411,19 @@ components:
       required:
       - role
       - storeId
+    PolicyApprovalEvidenceResponse:
+      type: object
+      properties:
+        approvalId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        verification:
+          $ref: "#/components/schemas/ApprovalVerificationResponse"
+      required:
+      - approvalId
+      - verification
     ProductPage:
       type: object
       properties:
@@ -6877,6 +7456,8 @@ components:
             - READ_CATALOG
             - MANAGE_CATALOG
             - MANAGE_FOOD_SAFETY_POLICY
+            - SUBMIT_FOOD_SAFETY_APPROVAL_EVIDENCE
+            - REVOKE_FOOD_SAFETY_APPROVAL
             - RECORD_LOT_SAFETY_EVIDENCE
         archivedAt:
           type:
@@ -6887,6 +7468,12 @@ components:
           type: string
           enum:
           - EA
+        category:
+          type: string
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
         createdAt:
           type: string
           format: date-time
@@ -6918,6 +7505,7 @@ components:
       - allowedActions
       - archivedAt
       - baseUnit
+      - category
       - createdAt
       - gtin
       - id
@@ -7213,6 +7801,19 @@ components:
       - revision
       - temperatureClass
       - validUntil
+    RevokePolicyApprovalRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - reason
+      - requestId
     RoleRequest:
       type: object
       properties:
@@ -7579,6 +8180,65 @@ components:
       - updatedAt
       - version
       - zoneId
+    SubmitPolicyApprovalEvidenceRequest:
+      type: object
+      properties:
+        allowedOperations:
+          type: array
+          items:
+            type: string
+            enum:
+            - SALE
+            - TRANSFER
+          minItems: 1
+          uniqueItems: true
+        evidenceReference:
+          type: string
+          description: Evidence pointer only; raw source documents are not submitted
+            or logged
+          maxLength: 256
+          minLength: 0
+        issuedAt:
+          type: string
+          format: date-time
+        issuerId:
+          type: string
+          maxLength: 128
+          minLength: 0
+        keyId:
+          type: string
+          maxLength: 128
+          minLength: 0
+        policyDigest:
+          type: string
+          description: SHA-256 digest of the exact immutable policy rules and scope
+          minLength: 1
+          pattern: "[0-9a-f]{64}"
+        requestId:
+          type: string
+          format: uuid
+        signatureBase64:
+          type: string
+          description: Canonical Base64 Ed25519 signature; never returned by the API
+          maxLength: 88
+          minLength: 88
+        validFrom:
+          type: string
+          format: date-time
+        validUntil:
+          type: string
+          format: date-time
+      required:
+      - allowedOperations
+      - evidenceReference
+      - issuedAt
+      - issuerId
+      - keyId
+      - policyDigest
+      - requestId
+      - signatureBase64
+      - validFrom
+      - validUntil
     UpdateLaneRequest:
       type: object
       properties:

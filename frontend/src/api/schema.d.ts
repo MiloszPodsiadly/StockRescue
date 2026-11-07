@@ -193,18 +193,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/organizations/{organizationId}/food-safety-profiles/{temperatureClass}/versions": {
+    "/api/v1/organizations/{organizationId}/food-safety-policy-approvals/{approvalId}/revocation": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Read latest review and immutable version history; an absent profile is explicit */
+        get?: never;
+        put?: never;
+        /** Append an immutable revocation of policy approval evidence; trust and evidence history remain visible */
+        post: operations["revokeFoodSafetyPolicyApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/food-safety-profiles/{productCategory}/{temperatureClass}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read latest review and immutable version history for a category and temperature scope; an absent profile is explicit */
         get: operations["listFoodSafetyPolicyVersions"];
         put?: never;
-        /** Append an immutable class-specific policy review; a submitted reference never grants independent approval */
+        /** Append an immutable category and temperature scoped policy review; a submitted reference never grants independent approval */
         post: operations["recordFoodSafetyPolicyReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/food-safety-profiles/{productCategory}/{temperatureClass}/versions/{policyVersionId}/approval-evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the current cryptographic verification explanation for one exact policy version without exposing its signature */
+        get: operations["getFoodSafetyPolicyApprovalEvidence"];
+        put?: never;
+        /** Submit externally signed Ed25519 evidence for restricted verification; organization administrators cannot configure trust keys */
+        post: operations["submitFoodSafetyPolicyApprovalEvidence"];
         delete?: never;
         options?: never;
         head?: never;
@@ -501,6 +536,23 @@ export interface paths {
         put?: never;
         /** Catalog administrator archives a versioned product with a durable retry key and reason */
         post: operations["archiveProduct"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/products/{productId}/category-corrections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Correct a product's descriptive category with an expected version and audited reason */
+        post: operations["correctProductCategory"];
         delete?: never;
         options?: never;
         head?: never;
@@ -854,6 +906,31 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        ApprovalVerificationResponse: {
+            allowedOperations: ("SALE" | "TRANSFER")[];
+            evidenceReference: string | null;
+            /** Format: date-time */
+            issuedAt: string | null;
+            issuerId: string | null;
+            keyId: string | null;
+            /** @enum {string} */
+            outcome: "NOT_SUBMITTED" | "TRUST_REGISTRY_DISABLED" | "TRUSTED_ISSUER_UNKNOWN" | "TRUSTED_KEY_DISABLED" | "SIGNATURE_INVALID" | "NOT_YET_VALID" | "EXPIRED" | "REVOKED" | "POLICY_SCOPE_MISMATCH" | "OPERATION_NOT_APPROVED" | "VERIFIED";
+            policyDigest: string;
+            /** Format: int64 */
+            policyVersion: number;
+            /** Format: date-time */
+            recordedAt: string | null;
+            revocationReason: string | null;
+            revoked: boolean;
+            /** Format: date-time */
+            revokedAt: string | null;
+            /** Format: uuid */
+            revokedByMembershipId: string | null;
+            /** Format: date-time */
+            validFrom: string | null;
+            /** Format: date-time */
+            validUntil: string | null;
+        };
         ArchiveProductRequest: {
             /** Format: int64 */
             expectedVersion: number;
@@ -926,6 +1003,18 @@ export interface components {
             /** Format: uuid */
             requestId: string;
         };
+        CorrectProductCategoryRequest: {
+            /**
+             * @description Descriptive product category only
+             * @enum {string}
+             */
+            category: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
+            /** Format: int64 */
+            expectedVersion: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
         CostRevisionRequest: {
             costAmount: string;
             currencyCode: string;
@@ -956,6 +1045,11 @@ export interface components {
         CreateProductRequest: {
             /** @enum {string} */
             baseUnit: "EA";
+            /**
+             * @description Descriptive product category; UNCLASSIFIED is not safety approval
+             * @enum {string}
+             */
+            category: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
             gtin?: string;
             name: string;
             /** Format: uuid */
@@ -1018,7 +1112,7 @@ export interface components {
             provenance: components["schemas"]["CatalogProvenanceResponse"] | null;
             /** @enum {string} */
             type: "USE_BY" | "BEST_BEFORE" | "BEST_BEFORE_END" | "UNKNOWN";
-            validationReasons: ("MISSING_LABEL" | "UNKNOWN_TYPE" | "UNKNOWN_PRECISION" | "MISSING_PROVENANCE" | "USE_BY_REQUIRES_DAY" | "UNRECOGNIZED_FORMAT" | "NONEXISTENT_DATE")[];
+            validationReasons: ("MISSING_LABEL" | "UNKNOWN_TYPE" | "UNKNOWN_PRECISION" | "MISSING_PROVENANCE" | "MISSING_REFERENCE" | "USE_BY_REQUIRES_DAY" | "BEST_BEFORE_END_REQUIRES_PERIOD" | "UNRECOGNIZED_FORMAT" | "NONEXISTENT_DATE")[];
             /** @enum {string} */
             validationStatus: "VALID" | "INCOMPLETE" | "INVALID";
         };
@@ -1028,7 +1122,7 @@ export interface components {
             /** @enum {string} */
             date: "COMPLETE_LABEL" | "INCOMPLETE" | "INVALID" | "PARTIAL_REQUIRES_VERIFIED_RULE";
             /** @enum {string} */
-            policy: "MISSING" | "RECORDED_UNVERIFIED";
+            policy: "MISSING" | "RECORDED_UNVERIFIED" | "INDEPENDENTLY_VERIFIED";
             /** @enum {string} */
             recall: "UNKNOWN" | "REPORTED" | "BLOCK_RECORDED";
             /** @enum {string} */
@@ -1037,13 +1131,16 @@ export interface components {
         EligibilityPolicyReferenceResponse: {
             /** Format: uuid */
             id: string;
+            /** @enum {string} */
+            productCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
             /** Format: uuid */
             profileId: string;
             /** Format: int64 */
             version: number;
         };
-        /** @description Point-in-time evidence, not a reusable permission or physical hold. Recompute before future operative use. Without independently verified policy approval the pilot returns DENIED or REQUIRES_REVIEW. */
+        /** @description Point-in-time evidence, not a reusable permission or physical hold. ALLOWED requires a current signed approval for this exact policy and operation plus every narrow-pilot evidence gate. Recompute before future operative use. */
         EligibilityResponse: {
+            approvalVerification: components["schemas"]["ApprovalVerificationResponse"] | null;
             /** @enum {string} */
             decision: "ALLOWED" | "DENIED" | "REQUIRES_REVIEW";
             /** Format: date-time */
@@ -1059,7 +1156,7 @@ export interface components {
             /** Format: int64 */
             lotVersion: number;
             /** @enum {string} */
-            nextAction: "DO_NOT_EXECUTE" | "REVIEW_LOT_EVIDENCE" | "RECORD_STORAGE_CONTEXT" | "OBTAIN_INDEPENDENT_POLICY_APPROVAL";
+            nextAction: "DO_NOT_EXECUTE" | "REVIEW_LOT_EVIDENCE" | "RECORD_STORAGE_CONTEXT" | "OBTAIN_INDEPENDENT_POLICY_APPROVAL" | "NO_ADDITIONAL_ACTION";
             /** @enum {string} */
             operation: "SALE" | "TRANSFER";
             policy: components["schemas"]["EligibilityPolicyReferenceResponse"] | null;
@@ -1067,7 +1164,7 @@ export interface components {
             productId: string;
             /** Format: int64 */
             productVersion: number;
-            reasonCodes: ("LOT_RECALLED" | "LOT_DAMAGED" | "LOT_ARCHIVED" | "PRODUCT_ARCHIVED" | "STORE_ARCHIVED" | "ZONE_ARCHIVED" | "LOCATION_ARCHIVED" | "TEMPERATURE_CLASS_MISMATCH" | "USE_BY_EXPIRED" | "BEST_BEFORE_EXPIRED" | "LOT_IDENTITY_UNVERIFIED" | "DATE_LABEL_MISSING" | "DATE_TYPE_UNKNOWN" | "DATE_PRECISION_UNKNOWN" | "DATE_LABEL_INVALID" | "USE_BY_DAY_REQUIRED" | "DATE_PROVENANCE_MISSING" | "DATE_REFERENCE_MISSING" | "PARTIAL_DATE_RULE_UNVERIFIED" | "RECALL_STATUS_UNKNOWN" | "DAMAGE_STATUS_UNKNOWN" | "STATUS_REFERENCE_MISSING" | "STORAGE_CONTEXT_MISSING" | "COLD_CHAIN_EVIDENCE_UNVERIFIED" | "POLICY_MISSING" | "POLICY_CLASS_MISMATCH" | "POLICY_APPROVAL_UNVERIFIED")[];
+            reasonCodes: ("LOT_RECALLED" | "LOT_DAMAGED" | "LOT_ARCHIVED" | "PRODUCT_ARCHIVED" | "STORE_ARCHIVED" | "ZONE_ARCHIVED" | "LOCATION_ARCHIVED" | "TEMPERATURE_CLASS_MISMATCH" | "USE_BY_EXPIRED" | "BEST_BEFORE_EXPIRED" | "LOT_IDENTITY_UNVERIFIED" | "DATE_LABEL_MISSING" | "DATE_TYPE_UNKNOWN" | "DATE_PRECISION_UNKNOWN" | "DATE_LABEL_INVALID" | "USE_BY_DAY_REQUIRED" | "DATE_TYPE_PRECISION_MISMATCH" | "DATE_PROVENANCE_MISSING" | "DATE_REFERENCE_MISSING" | "PARTIAL_DATE_RULE_UNVERIFIED" | "RECALL_STATUS_UNKNOWN" | "DAMAGE_STATUS_UNKNOWN" | "STATUS_REFERENCE_MISSING" | "STORAGE_CONTEXT_MISSING" | "COLD_CHAIN_EVIDENCE_UNVERIFIED" | "PRODUCT_CATEGORY_UNCLASSIFIED" | "POLICY_MISSING" | "POLICY_SCOPE_MISMATCH" | "POLICY_CLASS_MISMATCH" | "POLICY_APPROVAL_UNVERIFIED")[];
             /** Format: uuid */
             storeId: string;
             /** Format: date */
@@ -1092,6 +1189,8 @@ export interface components {
             id: string;
             /** @enum {string} */
             partialDateRule: "NO_NORMALIZATION" | "END_OF_LABELED_PERIOD";
+            /** @enum {string} */
+            productCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
             /** Format: uuid */
             profileId: string;
             reason: string;
@@ -1327,7 +1426,7 @@ export interface components {
         PermissionsResponse: {
             allStoreActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS")[];
             organization: components["schemas"]["OrganizationResponse"];
-            organizationActions: ("READ_ORGANIZATION" | "MANAGE_ACCESS" | "CREATE_STORE" | "MANAGE_TRANSPORT_LANES" | "READ_CATALOG" | "MANAGE_CATALOG" | "MANAGE_FOOD_SAFETY_POLICY" | "RECORD_LOT_SAFETY_EVIDENCE")[];
+            organizationActions: ("READ_ORGANIZATION" | "MANAGE_ACCESS" | "CREATE_STORE" | "MANAGE_TRANSPORT_LANES" | "READ_CATALOG" | "MANAGE_CATALOG" | "MANAGE_FOOD_SAFETY_POLICY" | "SUBMIT_FOOD_SAFETY_APPROVAL_EVIDENCE" | "REVOKE_FOOD_SAFETY_APPROVAL" | "RECORD_LOT_SAFETY_EVIDENCE")[];
             storeGrants: components["schemas"]["StorePermissionResponse"][];
         };
         PlannedGrantRequest: {
@@ -1342,6 +1441,11 @@ export interface components {
             /** Format: uuid */
             storeId: string;
         };
+        PolicyApprovalEvidenceResponse: {
+            /** Format: uuid */
+            approvalId: string | null;
+            verification: components["schemas"]["ApprovalVerificationResponse"];
+        };
         ProductPage: {
             canCreate: boolean;
             hasMore: boolean;
@@ -1349,11 +1453,13 @@ export interface components {
         };
         ProductResponse: {
             active: boolean;
-            allowedActions: ("READ_ORGANIZATION" | "MANAGE_ACCESS" | "CREATE_STORE" | "MANAGE_TRANSPORT_LANES" | "READ_CATALOG" | "MANAGE_CATALOG" | "MANAGE_FOOD_SAFETY_POLICY" | "RECORD_LOT_SAFETY_EVIDENCE")[];
+            allowedActions: ("READ_ORGANIZATION" | "MANAGE_ACCESS" | "CREATE_STORE" | "MANAGE_TRANSPORT_LANES" | "READ_CATALOG" | "MANAGE_CATALOG" | "MANAGE_FOOD_SAFETY_POLICY" | "SUBMIT_FOOD_SAFETY_APPROVAL_EVIDENCE" | "REVOKE_FOOD_SAFETY_APPROVAL" | "RECORD_LOT_SAFETY_EVIDENCE")[];
             /** Format: date-time */
             archivedAt: string | null;
             /** @enum {string} */
             baseUnit: "EA";
+            /** @enum {string} */
+            category: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
             /** Format: date-time */
             createdAt: string;
             gtin: string | null;
@@ -1485,6 +1591,11 @@ export interface components {
              */
             validUntil: string | null;
         };
+        RevokePolicyApprovalRequest: {
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
         RoleRequest: {
             reason: string;
             /** @enum {string} */
@@ -1612,6 +1723,25 @@ export interface components {
             /** Format: int64 */
             version: number;
             zoneId: string;
+        };
+        SubmitPolicyApprovalEvidenceRequest: {
+            allowedOperations: ("SALE" | "TRANSFER")[];
+            /** @description Evidence pointer only; raw source documents are not submitted or logged */
+            evidenceReference: string;
+            /** Format: date-time */
+            issuedAt: string;
+            issuerId: string;
+            keyId: string;
+            /** @description SHA-256 digest of the exact immutable policy rules and scope */
+            policyDigest: string;
+            /** Format: uuid */
+            requestId: string;
+            /** @description Canonical Base64 Ed25519 signature; never returned by the API */
+            signatureBase64: string;
+            /** Format: date-time */
+            validFrom: string;
+            /** Format: date-time */
+            validUntil: string;
         };
         UpdateLaneRequest: {
             active: boolean;
@@ -2852,6 +2982,117 @@ export interface operations {
             };
         };
     };
+    revokeFoodSafetyPolicyApproval: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                approvalId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokePolicyApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Previously recorded revocation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyApprovalEvidenceResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyApprovalEvidenceResponse"];
+                };
+            };
+            /** @description Malformed fields or unsupported policy override */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Scoped resource unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Version, replay or immutable block conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid review evidence */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
     listFoodSafetyPolicyVersions: {
         parameters: {
             query?: {
@@ -2861,6 +3102,7 @@ export interface operations {
             header?: never;
             path: {
                 organizationId: string;
+                productCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
                 temperatureClass: "AMBIENT" | "CHILLED" | "FROZEN";
             };
             cookie?: never;
@@ -2959,6 +3201,7 @@ export interface operations {
             };
             path: {
                 organizationId: string;
+                productCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
                 temperatureClass: "AMBIENT" | "CHILLED" | "FROZEN";
             };
             cookie?: never;
@@ -2985,6 +3228,216 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FoodSafetyPolicyVersionResponse"];
+                };
+            };
+            /** @description Malformed fields or unsupported policy override */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Scoped resource unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Version, replay or immutable block conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid review evidence */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    getFoodSafetyPolicyApprovalEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                productCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
+                temperatureClass: "AMBIENT" | "CHILLED" | "FROZEN";
+                policyVersionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyApprovalEvidenceResponse"];
+                };
+            };
+            /** @description Malformed fields or unsupported policy override */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Scoped resource unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Version, replay or immutable block conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid review evidence */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    submitFoodSafetyPolicyApprovalEvidence: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                productCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
+                temperatureClass: "AMBIENT" | "CHILLED" | "FROZEN";
+                policyVersionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitPolicyApprovalEvidenceRequest"];
+            };
+        };
+        responses: {
+            /** @description Previously recorded immutable evidence */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyApprovalEvidenceResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyApprovalEvidenceResponse"];
                 };
             };
             /** @description Malformed fields or unsupported policy override */
@@ -5413,6 +5866,108 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ArchiveProductRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductResponse"];
+                };
+            };
+            /** @description Malformed fields or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization or product unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Reserved SKU, changed retry, stale version or inactive product */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid catalog identity, unit or product data */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    correctProductCategory: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                productId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectProductCategoryRequest"];
             };
         };
         responses: {
