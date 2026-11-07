@@ -54,4 +54,10 @@ public class ZoneRepository {
                 row.getTimestamp("created_at").toInstant(),row.getTimestamp("updated_at").toInstant());
     }
     public record ImpactLane(UUID id,long version,boolean active) { }
+    public List<ImpactLocation> activeLocations(UUID org,UUID store,UUID zone) {
+        return jdbc.sql("SELECT id,version FROM stockrescue.storage_location WHERE org_id=:org AND store_id=:store AND zone_id=:zone AND active ORDER BY id")
+                .param("org",org).param("store",store).param("zone",zone)
+                .query((row,index) -> new ImpactLocation(row.getObject("id",UUID.class),row.getLong("version"))).list();
+    }
+    public record ImpactLocation(UUID id,long version) { }
 }

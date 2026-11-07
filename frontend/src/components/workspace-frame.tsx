@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Building2, Leaf, Settings, Store, Truck, Users } from 'lucide-react'
+import { Building2, Leaf, Settings, Store, Truck, Users, Package } from 'lucide-react'
 import { useRouterState } from '@tanstack/react-router'
 import { Button } from './ui/button'
 import { AppLink } from './app-link'
@@ -8,6 +8,7 @@ export function WorkspaceFrame({ children, organizationId, administrator = false
   const pathname = useRouterState({ select: state => state.location.pathname })
   const base = organizationId ? `/organizations/${organizationId}` : ''
   const links = organizationId ? [
+    { href: `${base}/catalog`, text: 'Catalog', icon: Package },
     { href: `${base}/stores`, text: 'Stores', icon: Store },
     ...(administrator ? [{ href: `${base}/transport-lanes`, text: 'Transport lanes', icon: Truck }, { href: `${base}/members`, text: 'Members and access', icon: Users }] : []),
     { href: `${base}/settings`, text: 'Settings', icon: Settings },

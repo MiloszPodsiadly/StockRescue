@@ -78,7 +78,7 @@ it('submits the zone version and fingerprint from the same reviewed impact snaps
     createdAt: '2026-10-31T12:00:00Z', updatedAt: '2026-10-31T12:00:00Z',
   }
   const impact = {
-    activeLaneCount: 1, inactiveLaneCount: 0, futureScheduledRevisionCount: 1,
+    activeLaneCount: 1, inactiveLaneCount: 0, futureScheduledRevisionCount: 1, activeLocationCount: 0,
     zoneVersion: 5, impactFingerprint: 'A'.repeat(43), asOf: '2026-10-31T12:00:00Z',
   }
 

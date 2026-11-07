@@ -188,7 +188,7 @@ class OrganizationWorkflowTest extends InfrastructureTestBase {
         assertThat(actor.select(b).statusCode()).isEqualTo(200);
         var manager = tree(actor.get("/api/v1/auth/me/effective-permissions"));
         assertThat(manager.path("organization").path("role").asString()).isEqualTo("MEMBER");
-        assertThat(manager.path("organizationActions").toString()).isEqualTo("[\"READ_ORGANIZATION\"]");
+        assertThat(manager.path("organizationActions").toString()).isEqualTo("[\"READ_ORGANIZATION\",\"READ_CATALOG\"]");
         assertThat(manager.path("allStoreActions").isEmpty()).isTrue();
         assertThat(manager.path("storeGrants")).hasSize(1);
         assertThat(manager.path("storeGrants").get(0).path("actions").toString()).contains("EDIT_STORE").doesNotContain("ARCHIVE_STORE");

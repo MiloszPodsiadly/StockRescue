@@ -20,7 +20,7 @@ class ArchitectureTest {
     private static final ArchRule PLATFORM_HAS_NO_BUSINESS_DEPENDENCIES = noClasses()
             .that().resideInAPackage("com.stockrescue.platform..")
             .should().dependOnClassesThat().resideInAnyPackage("com.stockrescue.identity..",
-                    "com.stockrescue.organizations..", "com.stockrescue.access..", "com.stockrescue.stores..")
+                    "com.stockrescue.organizations..", "com.stockrescue.access..", "com.stockrescue.stores..", "com.stockrescue.catalog..")
             .because("features implement platform ports, while technical adapters do not own business rules");
 
     @Test
@@ -29,19 +29,19 @@ class ArchitectureTest {
                 .importPackages("com.stockrescue");
         PLATFORM_HAS_NO_BUSINESS_DEPENDENCIES.check(production);
         noClasses().that().resideInAnyPackage("com.stockrescue.identity.http..", "com.stockrescue.organizations.http..",
-                        "com.stockrescue.access.http..", "com.stockrescue.stores.http..")
+                        "com.stockrescue.access.http..", "com.stockrescue.stores.http..", "com.stockrescue.catalog.http..")
                 .should().dependOnClassesThat().resideInAnyPackage("com.stockrescue.identity.persistence..",
-                        "com.stockrescue.organizations.persistence..", "com.stockrescue.access.persistence..", "com.stockrescue.stores.persistence..")
+                        "com.stockrescue.organizations.persistence..", "com.stockrescue.access.persistence..", "com.stockrescue.stores.persistence..", "com.stockrescue.catalog.persistence..")
                 .check(production);
         noClasses().that().resideInAnyPackage("com.stockrescue.identity.application..", "com.stockrescue.organizations.application..",
-                        "com.stockrescue.access.application..", "com.stockrescue.stores.application..")
+                        "com.stockrescue.access.application..", "com.stockrescue.stores.application..", "com.stockrescue.catalog.application..")
                 .should().dependOnClassesThat().resideInAPackage("org.springframework.jdbc..")
                 .because("application services delegate SQL to their feature repositories")
                 .check(production);
         noClasses().that().resideInAnyPackage("com.stockrescue.identity.application..", "com.stockrescue.organizations.application..",
-                        "com.stockrescue.access.application..", "com.stockrescue.stores.application..")
+                        "com.stockrescue.access.application..", "com.stockrescue.stores.application..", "com.stockrescue.catalog.application..")
                 .should().dependOnClassesThat().resideInAnyPackage("jakarta.servlet..", "com.stockrescue.identity.http..",
-                        "com.stockrescue.organizations.http..", "com.stockrescue.access.http..", "com.stockrescue.stores.http..")
+                        "com.stockrescue.organizations.http..", "com.stockrescue.access.http..", "com.stockrescue.stores.http..", "com.stockrescue.catalog.http..")
                 .check(production);
     }
 

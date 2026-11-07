@@ -11,6 +11,7 @@ function Settings() {
   const organization = useOrganization()
   const base = `/organizations/${organization.id}`
   const links = [
+    { href: `${base}/catalog`, title: 'Product catalog and provenance', description: 'Review products, original lot labels, source documents and food-safety evidence.' },
     { href: `${base}/stores`, title: 'Stores and storage zones', description: 'Open a store to review its timezone, address and declared storage compatibility.' },
     ...(organization.role === 'ORG_ADMIN' ? [
       { href: `${base}/transport-lanes`, title: 'Transport lanes and costs', description: 'Configure directed routes and approve costs while preserving earlier revisions.' },

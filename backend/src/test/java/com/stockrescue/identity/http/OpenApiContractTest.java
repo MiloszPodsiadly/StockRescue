@@ -47,6 +47,53 @@ class OpenApiContractTest extends InfrastructureTestBase {
         var schemaRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/v3/api-docs")).GET().build();
         var document=json.readTree(HttpClient.newHttpClient().send(schemaRequest,HttpResponse.BodyHandlers.ofString()).body());
         var schemas=document.path("components").path("schemas");
+        var policyPath="/api/v1/organizations/{organizationId}/food-safety-profiles/{productCategory}/{temperatureClass}/versions";
+        assertThat(document.path("paths").path(policyPath).path("post").path("operationId").asString()).isEqualTo("recordFoodSafetyPolicyReview");
+        assertThat(document.path("paths").path(policyPath).path("get").path("operationId").asString()).isEqualTo("listFoodSafetyPolicyVersions");
+        var lotPath="/api/v1/organizations/{organizationId}/lots";
+        assertThat(document.path("paths").path(lotPath).path("post").path("operationId").asString()).isEqualTo("registerManufacturerLot");
+        var sourcePath=lotPath+"/{lotId}/source-evidence";
+        var correctionPath=lotPath+"/{lotId}/corrections";
+        var eligibilityPath=lotPath+"/{lotId}/eligibility";
+        assertThat(document.path("paths").path(eligibilityPath).path("get").path("operationId").asString()).isEqualTo("evaluateLotEligibility");
+        assertThat(document.path("paths").path(lotPath+"/{lotId}/safety-status-evidence").path("post").path("operationId").asString()).isEqualTo("recordLotSafetyEvidence");
+        var decisions=schemas.path("EligibilityResponse").path("properties").path("decision").path("enum");
+        assertThat(decisions).extracting(value -> value.asString()).containsExactly("ALLOWED","DENIED","REQUIRES_REVIEW");
+        assertThat(schemas.path("EligibilityResponse").path("properties").path("policy").path("anyOf")).hasSize(2);
+        assertThat(schemas.path("FoodSafetyPolicyHistoryResponse").path("properties").path("current").path("anyOf")).hasSize(2);
+        var policyInput=schemas.path("RecordFoodSafetyPolicyReviewRequest").path("properties");
+        assertThat(policyInput.has("approvalStatus")).isFalse();
+        assertThat(policyInput.has("allowExpiredUseBy")).isFalse();
+        assertThat(schemas.path("FoodSafetyPolicyVersionResponse").path("properties").path("approvalStatus").path("enum").toString()).isEqualTo("[\"UNVERIFIED\"]");
+        assertThat(document.path("paths").path(correctionPath).path("post").path("operationId").asString()).isEqualTo("correctLotMetadata");
+        assertThat(document.path("paths").path(correctionPath).path("get").path("operationId").asString()).isEqualTo("listLotCorrections");
+        for (var field:java.util.List.of("requestId","expectedVersion","reason","evidenceReviewed"))
+            assertThat(schemas.path("CorrectLotMetadataRequest").path("required")).anyMatch(value -> value.asString().equals(field));
+        for (var field:java.util.List.of("before","after","actorUserId","actorMembershipId","recordedAt","resultVersion"))
+            assertThat(schemas.path("LotCorrectionResponse").path("properties").has(field)).isTrue();
+        assertThat(document.path("paths").path(sourcePath).path("post").path("operationId").asString()).isEqualTo("registerSourceEvidence");
+        assertThat(document.path("paths").path(sourcePath).path("get").path("operationId").asString()).isEqualTo("traceLotSources");
+        assertThat(schemas.path("DateMarkingResponse").path("properties").path("provenance").path("anyOf")).hasSize(2);
+        var validation=schemas.path("DateMarkingResponse").path("properties").path("validationStatus").path("enum").toString();
+        assertThat(validation).contains("VALID","INCOMPLETE","INVALID").doesNotContain("ALLOWED");
+        for (var field:java.util.List.of("labeledValue","type","precision","validationStatus","validationReasons","normalizedCutoff"))
+            assertThat(schemas.path("DateMarkingResponse").path("properties").has(field)).isTrue();
+        assertThat(schemas.path("SourceEvidenceResponse").path("properties").has("quantity")).isFalse();
+        assertThat(schemas.path("SourceEvidenceResponse").path("properties").has("receivedAt")).isFalse();
+        var productPath="/api/v1/organizations/{organizationId}/products";
+        var productOperations=document.path("paths").path(productPath);
+        assertThat(productOperations.path("post").path("operationId").asString()).isEqualTo("createProduct");
+        assertThat(productOperations.path("get").path("operationId").asString()).isEqualTo("listProducts");
+        assertThat(productOperations.path("post").path("responses").has("422")).isTrue();
+        assertThat(schemas.path("ProductResponse").path("properties").path("gtin").path("type")).anyMatch(value -> value.asString().equals("null"));
+        assertThat(schemas.path("ProductResponse").path("properties").path("category").path("enum").toString()).isEqualTo("[\"UNCLASSIFIED\",\"DAIRY\",\"BAKERY\"]");
+        assertThat(schemas.path("CreateProductRequest").path("required")).anyMatch(value -> value.asString().equals("category"));
+        var categoryCorrection=document.path("paths").path(productPath+"/{productId}/category-corrections").path("post");
+        assertThat(categoryCorrection.path("operationId").asString()).isEqualTo("correctProductCategory");
+        var archiveProduct=document.path("paths").path(productPath+"/{productId}/archive").path("post");
+        assertThat(archiveProduct.path("operationId").asString()).isEqualTo("archiveProduct");
+        var productArchiveProperties=schemas.path("ArchiveProductRequest").path("properties");
+        for (var field:java.util.List.of("requestId","expectedVersion","reason")) assertThat(productArchiveProperties.has(field)).isTrue();
         for (var field : java.util.Map.of("LaneResponse", "currentCost", "LaneLookupResponse", "lane").entrySet()) {
             var union = schemas.path(field.getKey()).path("properties").path(field.getValue()).path("anyOf");
             assertThat(union).hasSize(2);
@@ -84,11 +131,18 @@ class OpenApiContractTest extends InfrastructureTestBase {
         assertThat(archiveImpact.path("operationId").asString()).isEqualTo("previewStorageZoneArchiveImpact");
         assertThat(archiveImpact.path("responses").has("200")).isTrue();
         var impactProperties=schemas.path("ZoneArchiveImpactResponse").path("properties");
-        for(var field:java.util.List.of("activeLaneCount","inactiveLaneCount","futureScheduledRevisionCount","zoneVersion","impactFingerprint","asOf"))
+        for(var field:java.util.List.of("activeLaneCount","inactiveLaneCount","futureScheduledRevisionCount","activeLocationCount","zoneVersion","impactFingerprint","asOf"))
             assertThat(impactProperties.has(field)).isTrue();
         var archiveOperation=document.path("paths").path("/api/v1/organizations/{organizationId}/stores/{storeId}/storage-zones/{zoneId}/archive").path("post");
         assertThat(archiveOperation.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())
                 .isEqualTo("#/components/schemas/ArchiveZoneRequest");
         assertThat(schemas.path("ArchiveZoneRequest").path("properties").has("impactFingerprint")).isTrue();
+        var locationPath="/api/v1/organizations/{organizationId}/stores/{storeId}/storage-locations";
+        assertThat(document.path("paths").path(locationPath).path("post").path("operationId").asString()).isEqualTo("createStorageLocation");
+        assertThat(document.path("paths").path(locationPath+"/{locationId}/archive").path("post").path("operationId").asString()).isEqualTo("archiveStorageLocation");
+        var locationSchema=schemas.path("StorageLocationResponse").path("properties");
+        for(var field:java.util.List.of("id","code","zoneId","temperatureClass","active","usable","version","archivedAt")) assertThat(locationSchema.has(field)).isTrue();
+        for(var field:java.util.List.of("quantity","capacity","availableQuantity")) assertThat(locationSchema.has(field)).isFalse();
+        assertThat(schemas.path("EligibilityResponse").path("properties").has("locationVersion")).isTrue();
     }
 }
