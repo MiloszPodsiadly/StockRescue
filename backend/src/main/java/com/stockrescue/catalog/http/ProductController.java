@@ -50,8 +50,23 @@ public class ProductController {
             @ApiResponse(responseCode="200",description="Recorded creation replayed; current product state",content=@Content(schema=@Schema(implementation=ProductResponse.class)))
     })
     public ResponseEntity<ProductResponse> create(Authentication actor,@PathVariable UUID organizationId,@Valid @RequestBody CreateProductRequest request) {
-        var result=products.create(actor(actor),organizationId,request.requestId(),ProductData.parse(request.sku(),request.name(),request.gtin(),request.baseUnit(),request.category(),request.temperatureClass()));
+        var result=products.create(actor(actor),organizationId,request.requestId(),
+                ProductData.parse(request.sku(),request.name(),request.gtin(),request.baseUnit(),request.category(),request.temperatureClass()),
+                request.gtinReviewAcknowledged(),request.gtinReviewRevision());
         return ResponseEntity.status(result.created()?HttpStatus.CREATED:HttpStatus.OK).body(ProductResponse.from(result.view()));
+    }
+
+    @GetMapping(value="/gtin-review",produces=MediaType.APPLICATION_JSON_VALUE)
+    @Operation(operationId="reviewProductGtin",summary="Preview exact organization-scoped active and archived GTIN matches with a complete-set revision")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=GtinReviewResponse.class)))
+    public GtinReviewResponse reviewGtin(Authentication actor,@PathVariable UUID organizationId,
+            @RequestParam @NotBlank @Pattern(regexp="(?:[0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})") String gtin,
+            @RequestParam(defaultValue="0") @Min(0) @Max(10000) int offset,
+            @RequestParam(defaultValue="25") @Min(1) @Max(100) int limit) {
+        var result=products.reviewGtin(actor(actor),organizationId,gtin,offset,limit);
+        return new GtinReviewResponse(result.gtin(),result.matches().stream()
+                .map(match -> new GtinMatchResponse(match.productId(),match.sku(),match.name(),match.active()?"ACTIVE":"ARCHIVED",match.gtin())).toList(),
+                result.offset(),result.limit(),result.hasMore(),result.matchSetRevision());
     }
 
     @GetMapping
@@ -93,9 +108,25 @@ public class ProductController {
             @NotBlank @Size(max=128) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String sku,
             @NotBlank @Size(max=160) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String name,
             @Size(max=14) String gtin,
+            @Schema(types={"boolean","null"},description="Explicit operator acknowledgement after reviewing every exact match") Boolean gtinReviewAcknowledged,
+            @Size(min=64,max=64) @Pattern(regexp="[0-9a-f]{64}")
+            @Schema(types={"string","null"},description="Opaque revision of the complete organization-scoped match set; not authorization") String gtinReviewRevision,
             @NotBlank @Size(max=8) @Schema(requiredMode=Schema.RequiredMode.REQUIRED,allowableValues={"EA"}) String baseUnit,
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Descriptive product category; UNCLASSIFIED is not safety approval") ProductCategory category,
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) TemperatureClass temperatureClass) { }
+    public record GtinMatchResponse(
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID productId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String sku,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String name,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,allowableValues={"ACTIVE","ARCHIVED"}) String status,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String gtin) { }
+    public record GtinReviewResponse(
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String gtin,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<GtinMatchResponse> matches,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) int offset,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) int limit,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) boolean hasMore,
+            @Schema(types={"string","null"},description="Opaque revision of the complete organization-scoped match set; not authorization",requiredMode=Schema.RequiredMode.REQUIRED) String matchSetRevision) { }
     public record ArchiveProductRequest(
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
             @NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedVersion,

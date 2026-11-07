@@ -65,6 +65,15 @@ class OpenApiContractTest extends InfrastructureTestBase {
         assertThat(policyInput.has("approvalStatus")).isFalse();
         assertThat(policyInput.has("allowExpiredUseBy")).isFalse();
         assertThat(schemas.path("FoodSafetyPolicyVersionResponse").path("properties").path("approvalStatus").path("enum").toString()).isEqualTo("[\"UNVERIFIED\"]");
+        var signedApproval=schemas.path("SubmitPolicyApprovalEvidenceRequest");
+        for (var field:java.util.List.of("rulesetId","rulesetDigest")) {
+            assertThat(signedApproval.path("properties").has(field)).isTrue();
+            assertThat(signedApproval.path("required")).anyMatch(value -> value.asString().equals(field));
+        }
+        var approvalVerification=schemas.path("ApprovalVerificationResponse");
+        for (var field:java.util.List.of("attestationVersion","signedRulesetId","signedRulesetDigest","activeRulesetId","activeRulesetDigest"))
+            assertThat(approvalVerification.path("properties").has(field)).isTrue();
+        assertThat(approvalVerification.path("properties").path("outcome").path("enum").toString()).contains("LEGACY_ATTESTATION","RULESET_MISMATCH");
         assertThat(document.path("paths").path(correctionPath).path("post").path("operationId").asString()).isEqualTo("correctLotMetadata");
         assertThat(document.path("paths").path(correctionPath).path("get").path("operationId").asString()).isEqualTo("listLotCorrections");
         for (var field:java.util.List.of("requestId","expectedVersion","reason","evidenceReviewed"))
@@ -85,11 +94,40 @@ class OpenApiContractTest extends InfrastructureTestBase {
         assertThat(productOperations.path("post").path("operationId").asString()).isEqualTo("createProduct");
         assertThat(productOperations.path("get").path("operationId").asString()).isEqualTo("listProducts");
         assertThat(productOperations.path("post").path("responses").has("422")).isTrue();
+        var gtinReviewPath=productPath+"/gtin-review";
+        assertThat(document.path("paths").path(gtinReviewPath).path("get").path("operationId").asString()).isEqualTo("reviewProductGtin");
+        var gtinReviewSchema=schemas.path("GtinReviewResponse");
+        assertThat(gtinReviewSchema.path("properties").path("matches").path("items").path("$ref").asString())
+                .isEqualTo("#/components/schemas/GtinMatchResponse");
+        assertThat(gtinReviewSchema.path("properties").has("hasMore")).isTrue();
+        assertThat(gtinReviewSchema.path("properties").path("matchSetRevision").path("type")).anyMatch(value -> value.asString().equals("null"));
+        var gtinMatchSchema=schemas.path("GtinMatchResponse");
+        for (var field:java.util.List.of("productId","sku","name","status","gtin"))
+            assertThat(gtinMatchSchema.path("properties").has(field)).isTrue();
+        assertThat(gtinMatchSchema.path("properties").path("status").path("enum").toString()).isEqualTo("[\"ACTIVE\",\"ARCHIVED\"]");
+        var createProductRequest=schemas.path("CreateProductRequest");
+        for (var field:java.util.List.of("gtinReviewAcknowledged","gtinReviewRevision")) {
+            assertThat(createProductRequest.path("properties").has(field)).isTrue();
+            assertThat(createProductRequest.path("required")).noneMatch(value -> value.asString().equals(field));
+        }
         assertThat(schemas.path("ProductResponse").path("properties").path("gtin").path("type")).anyMatch(value -> value.asString().equals("null"));
         assertThat(schemas.path("ProductResponse").path("properties").path("category").path("enum").toString()).isEqualTo("[\"UNCLASSIFIED\",\"DAIRY\",\"BAKERY\"]");
         assertThat(schemas.path("CreateProductRequest").path("required")).anyMatch(value -> value.asString().equals("category"));
         var categoryCorrection=document.path("paths").path(productPath+"/{productId}/category-corrections").path("post");
         assertThat(categoryCorrection.path("operationId").asString()).isEqualTo("correctProductCategory");
+        var classificationPath=productPath+"/{productId}/classification-evidence";
+        assertThat(document.path("paths").path(classificationPath).path("get").path("operationId").asString()).isEqualTo("getProductClassificationEvidence");
+        assertThat(document.path("paths").path(classificationPath).path("post").path("operationId").asString()).isEqualTo("submitProductClassificationEvidence");
+        assertThat(document.path("paths").path(classificationPath+"/{attestationId}/revocation").path("post").path("operationId").asString())
+                .isEqualTo("revokeProductClassificationEvidence");
+        var classificationRequest=schemas.path("SubmitProductClassificationEvidenceRequest");
+        for (var field:java.util.List.of("requestId","expectedProductVersion","issuerId","keyId","issuedAt","validFrom","validUntil","evidenceReference","signatureBase64")) {
+            assertThat(classificationRequest.path("properties").has(field)).isTrue();
+            assertThat(classificationRequest.path("required")).anyMatch(value -> value.asString().equals(field));
+        }
+        assertThat(schemas.path("ProductClassificationEvidenceResponse").path("properties").has("signature")).isFalse();
+        assertThat(schemas.path("EligibilityResponse").path("properties").has("classificationVerification")).isTrue();
+        assertThat(schemas.path("EligibilityEvidenceResponse").path("properties").has("classification")).isTrue();
         var archiveProduct=document.path("paths").path(productPath+"/{productId}/archive").path("post");
         assertThat(archiveProduct.path("operationId").asString()).isEqualTo("archiveProduct");
         var productArchiveProperties=schemas.path("ArchiveProductRequest").path("properties");

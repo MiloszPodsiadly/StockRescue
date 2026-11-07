@@ -26,6 +26,8 @@ public class CatalogErrorHandler {
         return switch (failure.kind()) {
             case CONFLICT -> conflict();
             case INACTIVE -> response(HttpStatus.CONFLICT,ProblemCode.CATALOG_INACTIVE,"This catalog record or its parent is archived. Review saved history.");
+            case GTIN_REVIEW_REQUIRED -> response(HttpStatus.CONFLICT,ProblemCode.GTIN_REVIEW_REQUIRED,
+                    "Potential matches for this GTIN changed. Review the current catalog matches before creating this product.");
             case INVALID_STORAGE_CONTEXT -> response(HttpStatus.BAD_REQUEST,ProblemCode.INVALID_REQUEST,"Select one storage location or zone for evaluation.");
             case INVALID_SKU, INVALID_GTIN, UNSUPPORTED_UNIT, INVALID_PROVENANCE, INVALID_DATE_MARKING, INVALID_PRODUCT, INVALID_LOT, INVALID_SOURCE, INVALID_POLICY, INVALID_SAFETY_EVIDENCE ->
                     response(HttpStatus.UNPROCESSABLE_CONTENT,ProblemCode.INVALID_REQUEST,"Review catalog identity, check digit, unit and metadata.");

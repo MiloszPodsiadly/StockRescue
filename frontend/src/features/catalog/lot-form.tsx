@@ -6,8 +6,8 @@ import type { ManufacturerLot, RegisterLot } from '@/api/lots'
 import { DurableForm } from './durable-form'
 
 type Marking = RegisterLot['dateMarking']
-export function LotForm({ organizationId, productId, lot, onRefresh, onSaved, onCancel }: {
-  organizationId: string, productId: string, lot?: ManufacturerLot, onRefresh: () => Promise<void>, onSaved?: () => Promise<void>, onCancel?: () => void,
+export function LotForm({ organizationId, productId, lot, storeId, onRefresh, onSaved, onCancel, onLock }: {
+  organizationId: string, productId: string, lot?: ManufacturerLot, storeId?: string, onRefresh: () => Promise<void>, onSaved?: () => Promise<void>, onCancel?: () => void, onLock?: (locked: boolean) => void,
 }) {
   const navigate = useNavigate()
   // The reviewed snapshot stays fixed while a request may be committed but unacknowledged.
@@ -25,27 +25,29 @@ export function LotForm({ organizationId, productId, lot, onRefresh, onSaved, on
   const [labelReference, setLabelReference] = useState(lot?.dateMarking.provenance?.reference ?? '')
   const [reason, setReason] = useState('')
   const correction = Boolean(original)
+  const storeRegistration = Boolean(storeId)
   function data() {
     return {
-      identityState: identity, ...(manufacturer ? { manufacturerIdentityKey: manufacturer } : {}),
+      identityState: storeRegistration ? 'CANDIDATE' as const : identity,
+      ...(!storeRegistration && manufacturer ? { manufacturerIdentityKey: manufacturer } : {}),
       manufacturerProvenance: { source: manufacturerSource, ...(manufacturerReference ? { reference: manufacturerReference } : {}) },
-      manufacturerVerified: identity === 'CONFIRMED' && verified,
+      manufacturerVerified: !storeRegistration && identity === 'CONFIRMED' && verified,
       dateMarking: { ...(label !== '' ? { labeledValue: label } : {}), type, precision,
         ...(labelSource ? { provenance: { source: labelSource, ...(labelReference ? { reference: labelReference } : {}) } } : {}) },
     }
   }
-  return <DurableForm title={correction ? 'Review lot correction' : 'Register manufacturer lot'} submitLabel={correction ? 'Save reviewed correction' : 'Save manufacturer lot'}
-    confirmation={correction ? 'I reviewed the replacement evidence and confirm this lot correction.' : undefined}
-    prepare={() => ({ requestId: crypto.randomUUID(), metadata: data(), lotCode: code, expectedVersion: original?.version ?? 0, reason })}
+  return <DurableForm title={correction ? 'Review lot correction' : storeRegistration ? 'Register candidate lot' : 'Register manufacturer lot'} submitLabel={correction ? 'Save reviewed correction' : storeRegistration ? 'Save candidate lot metadata' : 'Save manufacturer lot'}
+    confirmation={storeRegistration ? 'I recorded this manufacturer identity as unverified metadata, not received stock.' : correction ? 'I reviewed the replacement evidence and confirm this lot correction.' : undefined}
+    prepare={() => ({ requestId: crypto.randomUUID(), metadata: data(), lotCode: code, storeId, expectedVersion: original?.version ?? 0, reason })}
     execute={async (body, signal) => original
       ? (await correctLotMetadata(organizationId, original.id, { requestId: body.requestId, ...body.metadata, expectedVersion: body.expectedVersion, reason: body.reason, evidenceReviewed: true }, signal)).lot
-      : registerLot(organizationId, { requestId: body.requestId, ...body.metadata, productId, lotCode: body.lotCode }, signal)}
-    onCancel={onCancel} onRefresh={onRefresh} onSaved={async result => { if (onSaved) await onSaved(); else await navigate({ to: '/organizations/$organizationId/catalog/lots/$lotId', params: { organizationId, lotId: result.id } }) }}>
+      : registerLot(organizationId, { requestId: body.requestId, ...(body.storeId ? { storeId: body.storeId } : {}), ...body.metadata, productId, lotCode: body.lotCode }, signal)}
+    onCancel={onCancel} onRefresh={onRefresh} onLock={onLock} onSaved={async result => { if (onSaved) await onSaved(); else await navigate({ to: '/organizations/$organizationId/catalog/lots/$lotId', params: { organizationId, lotId: result.id } }) }}>
     <Field label="Manufacturer lot code">{id => <input id={id} required maxLength={128} value={code} readOnly={correction} onChange={event => { setCode(event.target.value) }} className={inputClass} />}</Field>
-    <Field label="Manufacturer identity status">{id => <select id={id} value={identity} onChange={event => { setIdentity(event.target.value as RegisterLot['identityState']); setVerified(false) }} className={inputClass}>
+    {storeRegistration ? <p className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-sm"><strong>Manufacturer identity UNVERIFIED.</strong> This records observed lot metadata at the selected store. It does not record goods received or create stock quantity.</p> : <Field label="Manufacturer identity status">{id => <select id={id} value={identity} onChange={event => { setIdentity(event.target.value as RegisterLot['identityState']); setVerified(false) }} className={inputClass}>
       {original?.identityState !== 'CONFIRMED' && <option value="CANDIDATE">Candidate — identity unverified</option>}<option value="CONFIRMED">Confirmed manufacturer identity</option>
-    </select>}</Field>
-    <Field label="Manufacturer identity reference" help="An exact manufacturer reference, not a supplier's display name. Known identity references stay fixed.">{(id, description) => <input id={id} maxLength={200} required={identity === 'CONFIRMED'} readOnly={Boolean(original?.manufacturerIdentityKey) || Boolean(original && identity === 'CANDIDATE')} aria-describedby={description} value={manufacturer} onChange={event => { setManufacturer(event.target.value) }} className={inputClass} />}</Field>
+    </select>}</Field>}
+    {!storeRegistration && <Field label="Manufacturer identity reference" help="An exact manufacturer reference, not a supplier's display name. Known identity references stay fixed.">{(id, description) => <input id={id} maxLength={200} required={identity === 'CONFIRMED'} readOnly={Boolean(original?.manufacturerIdentityKey) || Boolean(original && identity === 'CANDIDATE')} aria-describedby={description} value={manufacturer} onChange={event => { setManufacturer(event.target.value) }} className={inputClass} />}</Field>}
     <Field label="Manufacturer evidence source">{id => <input id={id} required maxLength={256} readOnly={Boolean(original?.manufacturerProvenance && (original.identityState === 'CONFIRMED' || identity === 'CANDIDATE'))} value={manufacturerSource} onChange={event => { setManufacturerSource(event.target.value) }} className={inputClass} />}</Field>
     <Field label="Manufacturer evidence reference">{id => <input id={id} required={identity === 'CONFIRMED'} maxLength={256} value={manufacturerReference} onChange={event => { setManufacturerReference(event.target.value) }} className={inputClass} />}</Field>
     {identity === 'CONFIRMED' && <label className="flex items-start gap-3 text-sm"><input type="checkbox" required checked={verified} onChange={event => { setVerified(event.target.checked) }} />I checked the manufacturer identity against this source. This does not approve food safety.</label>}

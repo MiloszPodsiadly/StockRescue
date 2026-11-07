@@ -1,6 +1,8 @@
 package com.stockrescue.catalog.application;
 
 import java.security.MessageDigest;
+import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -9,6 +11,7 @@ import com.stockrescue.access.application.EffectivePermissions;
 import com.stockrescue.access.application.EffectivePermissions.OrganizationAction;
 import com.stockrescue.access.application.OrganizationUnavailableException;
 import com.stockrescue.catalog.domain.CatalogFailure;
+import com.stockrescue.catalog.domain.Gtin;
 import com.stockrescue.catalog.domain.ProductCategory;
 import com.stockrescue.catalog.persistence.ProductRepository;
 import com.stockrescue.catalog.persistence.ProductRepository.Operation;
@@ -23,6 +26,7 @@ public class ProductService {
     public record View(Product product, List<OrganizationAction> allowedActions) { }
     public record Creation(View view, boolean created) { }
     public record Page(List<View> items, boolean hasMore, boolean canCreate) { }
+    public record GtinReview(String gtin,List<ProductRepository.GtinMatch> matches,int offset,int limit,boolean hasMore,String matchSetRevision) { }
     private final AccessPolicy access;
     private final ProductRepository products;
     private final AuditWriter audit;
@@ -31,10 +35,30 @@ public class ProductService {
     }
 
     @Transactional
-    public Creation create(UUID actor, UUID org, UUID request, ProductData data) {
+    public Creation create(UUID actor, UUID org, UUID request, ProductData data,Boolean gtinReviewAcknowledged,String gtinReviewRevision) {
         access.requireOrganizationAction(actor,org,OrganizationAction.MANAGE_CATALOG,true);
         if (request == null || data == null) invalid();
-        var digest = data.fingerprint();
+        if (data.gtin()==null && (Boolean.TRUE.equals(gtinReviewAcknowledged) || gtinReviewRevision!=null)) invalid();
+        var gtin=data.gtin()==null?null:data.gtin().value();
+        var scopeVersion=gtin==null?null:products.lockGtinReviewScope(org,gtin);
+        var digest=CatalogCommandDigest.of("stockrescue-product-create-v2",HexFormat.of().formatHex(data.fingerprint()),
+                Boolean.toString(Boolean.TRUE.equals(gtinReviewAcknowledged)),gtinReviewRevision);
+        var recorded=products.receiptIfPresent(actor,org,Operation.CREATE,request);
+        if (recorded.isPresent()) {
+            var previous=recorded.orElseThrow();samePayload(previous,digest);
+            return new Creation(view(actor,org,existing(org,previous.productId(),false)),false);
+        }
+        if (gtin!=null) {
+            var hasMatches=products.hasGtinMatch(org,gtin);
+            if (hasMatches) {
+                var currentRevision=gtinReviewRevision(org,gtin,scopeVersion);
+                if (!Boolean.TRUE.equals(gtinReviewAcknowledged) || gtinReviewRevision==null
+                        || !MessageDigest.isEqual(gtinReviewRevision.getBytes(StandardCharsets.US_ASCII),currentRevision.getBytes(StandardCharsets.US_ASCII)))
+                    throw new CatalogFailure(CatalogFailure.Kind.GTIN_REVIEW_REQUIRED);
+            } else if (Boolean.TRUE.equals(gtinReviewAcknowledged) || gtinReviewRevision!=null) {
+                throw new CatalogFailure(CatalogFailure.Kind.GTIN_REVIEW_REQUIRED);
+            }
+        }
         var id = UUID.randomUUID();
         if (!products.reserve(actor,org,Operation.CREATE,request,id,0,digest)) {
             var previous = products.receipt(actor,org,Operation.CREATE,request);
@@ -44,6 +68,22 @@ public class ProductService {
         var created = products.create(org,id,data).orElseThrow(ProductService::conflict);
         audit.securityChange(actor,org,"product",id,"PRODUCT_CREATED",Map.of("outcome","SUCCEEDED","after",created),"Product catalog registration");
         return new Creation(view(actor,org,created),true);
+    }
+
+    @Transactional
+    public GtinReview reviewGtin(UUID actor,UUID org,String rawGtin,int offset,int limit) {
+        access.requireOrganizationAction(actor,org,OrganizationAction.READ_CATALOG,false);
+        if (rawGtin==null || offset<0 || offset>10000 || limit<1 || limit>100) invalid();
+        var gtin=new Gtin(rawGtin).value();
+        if (!products.hasGtinMatch(org,gtin)) return new GtinReview(gtin,List.of(),offset,limit,false,null);
+
+        // Existing products were backfilled into the scope table. The shared row lock keeps the complete-set revision and page coherent with creates/archives.
+        var version=products.shareGtinReviewScope(org,gtin).orElseGet(() -> products.lockGtinReviewScope(org,gtin));
+        if (!products.hasGtinMatch(org,gtin)) return new GtinReview(gtin,List.of(),offset,limit,false,null);
+        var matches=products.gtinMatches(org,gtin,offset,limit+1);
+        var hasMore=matches.size()>limit;
+        var page=matches.stream().limit(limit).toList();
+        return new GtinReview(gtin,page,offset,limit,hasMore,gtinReviewRevision(org,gtin,version));
     }
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
@@ -75,6 +115,8 @@ public class ProductService {
             samePayload(previous,digest);
             return view(actor,org,existing(org,previous.productId(),false));
         }
+        var current=existing(org,id,false);
+        if (current.data().gtin()!=null) products.lockGtinReviewScope(org,current.data().gtin().value());
         var before=existing(org,id,true);
         if (!before.active()) throw new CatalogFailure(CatalogFailure.Kind.INACTIVE);
         if (before.version()!=expectedVersion) throw conflict();
@@ -105,6 +147,9 @@ public class ProductService {
     }
 
     private Product existing(UUID org, UUID id, boolean lock) { return products.detail(org,id,lock).orElseThrow(OrganizationUnavailableException::new); }
+    private String gtinReviewRevision(UUID org,String gtin,long scopeVersion) {
+        return HexFormat.of().formatHex(CatalogCommandDigest.of("stockrescue-gtin-match-set-v1",org.toString(),gtin,Long.toString(scopeVersion)));
+    }
     private View view(UUID actor, UUID org, Product product) { return view(access.permissions(actor,org),product); }
     private View view(EffectivePermissions permissions, Product product) {
         return new View(product,product.active() && permissions.organizationActions().contains(OrganizationAction.MANAGE_CATALOG)

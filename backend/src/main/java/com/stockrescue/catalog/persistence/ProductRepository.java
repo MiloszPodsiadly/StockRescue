@@ -16,6 +16,7 @@ import org.springframework.stereotype.Repository;
 public class ProductRepository {
     public enum Operation { CREATE, ARCHIVE, RECLASSIFY }
     public record Receipt(UUID productId, long resultVersion, byte[] digest) { }
+    public record GtinMatch(UUID productId,String sku,String name,String gtin,boolean active) { }
     private final JdbcClient jdbc;
     public ProductRepository(JdbcClient jdbc) { this.jdbc = jdbc; }
 
@@ -35,6 +36,44 @@ public class ProductRepository {
                 WHERE org_id=:org AND actor_user_id=:actor AND operation=:operation AND request_id=:request
                 """).param("org",org).param("actor",actor).param("operation",operation.name()).param("request",request)
                 .query((row,index) -> new Receipt(row.getObject("product_id",UUID.class),row.getLong("result_version"),row.getBytes("payload_digest"))).single();
+    }
+
+    public Optional<Receipt> receiptIfPresent(UUID actor,UUID org,Operation operation,UUID request) {
+        return jdbc.sql("""
+                SELECT product_id,result_version,payload_digest FROM stockrescue.product_command
+                WHERE org_id=:org AND actor_user_id=:actor AND operation=:operation AND request_id=:request
+                """).param("org",org).param("actor",actor).param("operation",operation.name()).param("request",request)
+                .query((row,index) -> new Receipt(row.getObject("product_id",UUID.class),row.getLong("result_version"),row.getBytes("payload_digest"))).optional();
+    }
+
+    public List<GtinMatch> gtinMatches(UUID org,String gtin,int offset,int limit) {
+        return jdbc.sql("""
+                SELECT id,sku_normalized,name,gtin,active FROM stockrescue.product
+                WHERE org_id=:org AND gtin=:gtin
+                ORDER BY id LIMIT :limit OFFSET :offset
+                """).param("org",org).param("gtin",gtin).param("limit",limit).param("offset",offset)
+                .query((row,index) -> new GtinMatch(row.getObject("id",UUID.class),row.getString("sku_normalized"),
+                        row.getString("name"),row.getString("gtin"),row.getBoolean("active"))).list();
+    }
+
+    public boolean hasGtinMatch(UUID org,String gtin) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM stockrescue.product WHERE org_id=:org AND gtin=:gtin)")
+                .param("org",org).param("gtin",gtin).query(Boolean.class).single();
+    }
+
+    /** Acquire after organization authority, and before product or command writes. */
+    public long lockGtinReviewScope(UUID org,String gtin) {
+        jdbc.sql("""
+                INSERT INTO stockrescue.product_gtin_review_scope(org_id,gtin,version) VALUES (:org,:gtin,0)
+                ON CONFLICT (org_id,gtin) DO NOTHING
+                """).param("org",org).param("gtin",gtin).update();
+        return jdbc.sql("SELECT version FROM stockrescue.product_gtin_review_scope WHERE org_id=:org AND gtin=:gtin FOR UPDATE")
+                .param("org",org).param("gtin",gtin).query(Long.class).single();
+    }
+
+    public Optional<Long> shareGtinReviewScope(UUID org,String gtin) {
+        return jdbc.sql("SELECT version FROM stockrescue.product_gtin_review_scope WHERE org_id=:org AND gtin=:gtin FOR SHARE")
+                .param("org",org).param("gtin",gtin).query(Long.class).optional();
     }
 
     public Optional<Product> create(UUID org, UUID id, ProductData data) {

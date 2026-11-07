@@ -1923,6 +1923,101 @@ paths:
         \ identity"
       tags:
       - lot-controller
+  /api/v1/organizations/{organizationId}/lots/{lotId}/archive:
+    post:
+      operationId: archiveManufacturerLot
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: lotId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchiveLotRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotResponse"
+          description: Recorded archival command replay
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Catalog action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, product or lot unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Known identity, changed retry or inactive parent"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid lot or provenance data
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Archive one expected manufacturer-lot version with durable replay and
+        immutable audit evidence
+      tags:
+      - lot-controller
   /api/v1/organizations/{organizationId}/lots/{lotId}/corrections:
     get:
       operationId: listLotCorrections
@@ -3414,6 +3509,102 @@ paths:
         return its current state
       tags:
       - product-controller
+  /api/v1/organizations/{organizationId}/products/gtin-review:
+    get:
+      operationId: reviewProductGtin
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: gtin
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          pattern: "(?:[0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})"
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GtinReviewResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed fields or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or product unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Reserved SKU, changed retry, stale version or inactive product"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid catalog identity, unit or product data"
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Preview exact organization-scoped active and archived GTIN matches
+        with a complete-set revision
+      tags:
+      - product-controller
   /api/v1/organizations/{organizationId}/products/{productId}:
     get:
       operationId: getProduct
@@ -3668,6 +3859,277 @@ paths:
         audited reason
       tags:
       - product-controller
+  /api/v1/organizations/{organizationId}/products/{productId}/classification-evidence:
+    get:
+      operationId: getProductClassificationEvidence
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: productId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductClassificationEvidenceResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed evidence fields
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or product evidence unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Changed retry, stale product version or existing revocation"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid or unverified classification signature
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Read current independent classification evidence for the exact product
+        revision without exposing its signature
+      tags:
+      - food-safety-product-classification-controller
+    post:
+      operationId: submitProductClassificationEvidence
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: productId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitProductClassificationEvidenceRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductClassificationEvidenceResponse"
+          description: Previously recorded immutable evidence
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductClassificationEvidenceResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed evidence fields
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or product evidence unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Changed retry, stale product version or existing revocation"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid or unverified classification signature
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Submit domain-separated external Ed25519 evidence for the product's
+        current descriptive category and version
+      tags:
+      - food-safety-product-classification-controller
+  /api/v1/organizations/{organizationId}/products/{productId}/classification-evidence/{attestationId}/revocation:
+    post:
+      operationId: revokeProductClassificationEvidence
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: productId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: attestationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeProductClassificationEvidenceRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductClassificationEvidenceResponse"
+          description: Previously recorded revocation
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductClassificationEvidenceResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Malformed evidence fields
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Organization or product evidence unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Changed retry, stale product version or existing revocation"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid or unverified classification signature
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Service unavailable
+      security:
+      - session: []
+      summary: Append an immutable revocation of one product classification attestation
+      tags:
+      - food-safety-product-classification-controller
   /api/v1/organizations/{organizationId}/stores:
     get:
       operationId: listStores
@@ -5808,6 +6270,7 @@ components:
           - CSRF_INVALID
           - CATALOG_CONFLICT
           - CATALOG_INACTIVE
+          - GTIN_REVIEW_REQUIRED
           - CONFIGURATION_CONFLICT
           - CONFIGURATION_INACTIVE
           - INCOMPATIBLE_ZONES
@@ -5868,6 +6331,10 @@ components:
     ApprovalVerificationResponse:
       type: object
       properties:
+        activeRulesetDigest:
+          type: string
+        activeRulesetId:
+          type: string
         allowedOperations:
           type: array
           items:
@@ -5875,6 +6342,11 @@ components:
             enum:
             - SALE
             - TRANSFER
+        attestationVersion:
+          type:
+          - integer
+          - "null"
+          format: int32
         evidenceReference:
           type:
           - string
@@ -5904,6 +6376,8 @@ components:
           - EXPIRED
           - REVOKED
           - POLICY_SCOPE_MISMATCH
+          - LEGACY_ATTESTATION
+          - RULESET_MISMATCH
           - OPERATION_NOT_APPROVED
           - VERIFIED
         policyDigest:
@@ -5932,6 +6406,14 @@ components:
           - string
           - "null"
           format: uuid
+        signedRulesetDigest:
+          type:
+          - string
+          - "null"
+        signedRulesetId:
+          type:
+          - string
+          - "null"
         validFrom:
           type:
           - string
@@ -5943,7 +6425,10 @@ components:
           - "null"
           format: date-time
       required:
+      - activeRulesetDigest
+      - activeRulesetId
       - allowedOperations
+      - attestationVersion
       - evidenceReference
       - issuedAt
       - issuerId
@@ -5956,8 +6441,29 @@ components:
       - revoked
       - revokedAt
       - revokedByMembershipId
+      - signedRulesetDigest
+      - signedRulesetId
       - validFrom
       - validUntil
+    ArchiveLotRequest:
+      type: object
+      properties:
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - expectedVersion
+      - reason
+      - requestId
     ArchiveProductRequest:
       type: object
       properties:
@@ -6258,6 +6764,21 @@ components:
           type: string
           maxLength: 14
           minLength: 0
+        gtinReviewAcknowledged:
+          type:
+          - boolean
+          - "null"
+          description: Explicit operator acknowledgement after reviewing every exact
+            match
+        gtinReviewRevision:
+          type:
+          - string
+          - "null"
+          description: Opaque revision of the complete organization-scoped match set;
+            not authorization
+          maxLength: 64
+          minLength: 64
+          pattern: "[0-9a-f]{64}"
         name:
           type: string
           maxLength: 160
@@ -6483,6 +7004,12 @@ components:
     EligibilityEvidenceResponse:
       type: object
       properties:
+        classification:
+          type: string
+          enum:
+          - MISSING
+          - RECORDED_UNVERIFIED
+          - INDEPENDENTLY_VERIFIED
         damage:
           type: string
           enum:
@@ -6516,6 +7043,7 @@ components:
           - DECLARED_INCOMPATIBLE
           - INACTIVE
       required:
+      - classification
       - damage
       - date
       - policy
@@ -6555,6 +7083,8 @@ components:
           anyOf:
           - $ref: "#/components/schemas/ApprovalVerificationResponse"
           - type: "null"
+        classificationVerification:
+          $ref: "#/components/schemas/ProductClassificationEvidenceResponse"
         decision:
           type: string
           enum:
@@ -6590,6 +7120,7 @@ components:
           - DO_NOT_EXECUTE
           - REVIEW_LOT_EVIDENCE
           - RECORD_STORAGE_CONTEXT
+          - OBTAIN_PRODUCT_CLASSIFICATION_EVIDENCE
           - OBTAIN_INDEPENDENT_POLICY_APPROVAL
           - NO_ADDITIONAL_ACTION
         operation:
@@ -6638,6 +7169,15 @@ components:
             - STORAGE_CONTEXT_MISSING
             - COLD_CHAIN_EVIDENCE_UNVERIFIED
             - PRODUCT_CATEGORY_UNCLASSIFIED
+            - PRODUCT_CLASSIFICATION_MISSING
+            - PRODUCT_CLASSIFICATION_NOT_YET_VALID
+            - PRODUCT_CLASSIFICATION_EXPIRED
+            - PRODUCT_CLASSIFICATION_REVOKED
+            - PRODUCT_CLASSIFICATION_SCOPE_MISMATCH
+            - PRODUCT_CLASSIFICATION_TRUST_DISABLED
+            - PRODUCT_CLASSIFICATION_ISSUER_UNTRUSTED
+            - PRODUCT_CLASSIFICATION_KEY_DISABLED
+            - PRODUCT_CLASSIFICATION_SIGNATURE_INVALID
             - POLICY_MISSING
             - POLICY_SCOPE_MISMATCH
             - POLICY_CLASS_MISMATCH
@@ -6665,6 +7205,7 @@ components:
           format: int64
       required:
       - approvalVerification
+      - classificationVerification
       - decision
       - evaluatedAt
       - evaluatorVersion
@@ -6823,6 +7364,59 @@ components:
       - grantVersion
       - memberVersion
       - reason
+    GtinMatchResponse:
+      type: object
+      properties:
+        gtin:
+          type: string
+        name:
+          type: string
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        status:
+          type: string
+          enum:
+          - ACTIVE
+          - ARCHIVED
+      required:
+      - gtin
+      - name
+      - productId
+      - sku
+      - status
+    GtinReviewResponse:
+      type: object
+      properties:
+        gtin:
+          type: string
+        hasMore:
+          type: boolean
+        limit:
+          type: integer
+          format: int32
+        matchSetRevision:
+          type:
+          - string
+          - "null"
+          description: Opaque revision of the complete organization-scoped match set;
+            not authorization
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/GtinMatchResponse"
+        offset:
+          type: integer
+          format: int32
+      required:
+      - gtin
+      - hasMore
+      - limit
+      - matchSetRevision
+      - matches
+      - offset
     InvitationClaimResponse:
       type: object
       properties:
@@ -7355,6 +7949,7 @@ components:
             - MANAGE_STORAGE_ZONES
             - REGISTER_SOURCE_EVIDENCE
             - MANAGE_STORAGE_LOCATIONS
+            - REGISTER_STORE_LOT
         organization:
           $ref: "#/components/schemas/OrganizationResponse"
         organizationActions:
@@ -7424,6 +8019,121 @@ components:
       required:
       - approvalId
       - verification
+    ProductClassificationEvidenceResponse:
+      type: object
+      properties:
+        attestationId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        currentCategory:
+          type: string
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
+        currentProductVersion:
+          type: integer
+          format: int64
+        currentSku:
+          type: string
+        evidenceReference:
+          type:
+          - string
+          - "null"
+        issuedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        issuerId:
+          type:
+          - string
+          - "null"
+        keyId:
+          type:
+          - string
+          - "null"
+        organizationId:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum:
+          - NOT_SUBMITTED
+          - TRUST_REGISTRY_DISABLED
+          - TRUSTED_ISSUER_UNKNOWN
+          - TRUSTED_KEY_DISABLED
+          - SIGNATURE_INVALID
+          - NOT_YET_VALID
+          - EXPIRED
+          - REVOKED
+          - PRODUCT_SCOPE_MISMATCH
+          - VERIFIED
+        productId:
+          type: string
+          format: uuid
+        recordedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        revocationReason:
+          type:
+          - string
+          - "null"
+        revoked:
+          type: boolean
+        revokedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        signedCategory:
+          type:
+          - string
+          - "null"
+          enum:
+          - UNCLASSIFIED
+          - DAIRY
+          - BAKERY
+          - null
+        signedProductVersion:
+          type:
+          - integer
+          - "null"
+          format: int64
+        validFrom:
+          type:
+          - string
+          - "null"
+          format: date-time
+        validUntil:
+          type:
+          - string
+          - "null"
+          format: date-time
+      required:
+      - attestationId
+      - currentCategory
+      - currentProductVersion
+      - currentSku
+      - evidenceReference
+      - issuedAt
+      - issuerId
+      - keyId
+      - organizationId
+      - outcome
+      - productId
+      - recordedAt
+      - revocationReason
+      - revoked
+      - revokedAt
+      - signedCategory
+      - signedProductVersion
+      - validFrom
+      - validUntil
     ProductPage:
       type: object
       properties:
@@ -7609,6 +8319,12 @@ components:
         requestId:
           type: string
           format: uuid
+        storeId:
+          type:
+          - string
+          - "null"
+          format: uuid
+          description: Optional active store context; required for store personnel
       required:
       - dateMarking
       - identityState
@@ -7802,6 +8518,19 @@ components:
       - temperatureClass
       - validUntil
     RevokePolicyApprovalRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - reason
+      - requestId
+    RevokeProductClassificationEvidenceRequest:
       type: object
       properties:
         reason:
@@ -8079,6 +8808,10 @@ components:
       properties:
         canCreate:
           type: boolean
+        canRegisterCandidateLots:
+          type: boolean
+          description: Whether this session may register candidate lot metadata globally
+            or for an assigned active store
         hasMore:
           type: boolean
         items:
@@ -8087,6 +8820,7 @@ components:
             $ref: "#/components/schemas/StoreResponse"
       required:
       - canCreate
+      - canRegisterCandidateLots
       - hasMore
       - items
     StorePermissionResponse:
@@ -8103,6 +8837,7 @@ components:
             - MANAGE_STORAGE_ZONES
             - REGISTER_SOURCE_EVIDENCE
             - MANAGE_STORAGE_LOCATIONS
+            - REGISTER_STORE_LOT
         role:
           type: string
           enum:
@@ -8136,6 +8871,7 @@ components:
             - MANAGE_STORAGE_ZONES
             - REGISTER_SOURCE_EVIDENCE
             - MANAGE_STORAGE_LOCATIONS
+            - REGISTER_STORE_LOT
         city:
           type:
           - string
@@ -8217,6 +8953,18 @@ components:
         requestId:
           type: string
           format: uuid
+        rulesetDigest:
+          type: string
+          description: SHA-256 of the stable evaluator ruleset manifest included in
+            the external signature
+          minLength: 1
+          pattern: "[0-9a-f]{64}"
+        rulesetId:
+          type: string
+          description: Versioned evaluator ruleset identity included in the external
+            signature
+          maxLength: 96
+          minLength: 0
         signatureBase64:
           type: string
           description: Canonical Base64 Ed25519 signature; never returned by the API
@@ -8235,6 +8983,56 @@ components:
       - issuerId
       - keyId
       - policyDigest
+      - requestId
+      - rulesetDigest
+      - rulesetId
+      - signatureBase64
+      - validFrom
+      - validUntil
+    SubmitProductClassificationEvidenceRequest:
+      type: object
+      properties:
+        evidenceReference:
+          type: string
+          description: External source pointer only; source documents are never submitted
+          maxLength: 256
+          minLength: 0
+        expectedProductVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        issuedAt:
+          type: string
+          format: date-time
+        issuerId:
+          type: string
+          maxLength: 128
+          minLength: 0
+        keyId:
+          type: string
+          maxLength: 128
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        signatureBase64:
+          type: string
+          description: Canonical Base64 Ed25519 signature; never returned by the API
+          maxLength: 88
+          minLength: 88
+        validFrom:
+          type: string
+          format: date-time
+        validUntil:
+          type: string
+          format: date-time
+      required:
+      - evidenceReference
+      - expectedProductVersion
+      - issuedAt
+      - issuerId
+      - keyId
       - requestId
       - signatureBase64
       - validFrom

@@ -16,20 +16,44 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class LotRepository {
-    public record Receipt(UUID lotId,byte[] digest) { }
+    public record Receipt(UUID lotId,byte[] digest,UUID actorUserId,UUID storeId) { }
+    public record ArchiveReceipt(UUID lotId,long resultVersion,byte[] digest) { }
     private final JdbcClient jdbc;
     public LotRepository(JdbcClient jdbc) { this.jdbc=jdbc; }
 
-    public boolean reserve(UUID actor,UUID org,UUID request,UUID lot,byte[] digest) {
+    public boolean reserve(UUID actor,UUID org,UUID request,UUID store,UUID lot,byte[] digest) {
         return jdbc.sql("""
-                INSERT INTO stockrescue.lot_registration(org_id,actor_user_id,request_id,lot_id,payload_digest)
-                VALUES (:org,:actor,:request,:lot,:digest) ON CONFLICT (org_id,actor_user_id,request_id) DO NOTHING
-                """).param("org",org).param("actor",actor).param("request",request).param("lot",lot).param("digest",digest).update()==1;
+                INSERT INTO stockrescue.lot_registration(org_id,actor_user_id,request_id,store_id,lot_id,payload_digest)
+                VALUES (:org,:actor,:request,:store,:lot,:digest) ON CONFLICT (org_id,request_id) DO NOTHING
+                """).param("org",org).param("actor",actor).param("request",request).param("store",store,java.sql.Types.OTHER)
+                .param("lot",lot).param("digest",digest).update()==1;
     }
-    public Receipt receipt(UUID actor,UUID org,UUID request) {
-        return jdbc.sql("SELECT lot_id,payload_digest FROM stockrescue.lot_registration WHERE org_id=:org AND actor_user_id=:actor AND request_id=:request")
-                .param("org",org).param("actor",actor).param("request",request)
-                .query((row,index) -> new Receipt(row.getObject("lot_id",UUID.class),row.getBytes("payload_digest"))).single();
+    public Receipt receipt(UUID org,UUID request) {
+        return jdbc.sql("SELECT lot_id,payload_digest,actor_user_id,store_id FROM stockrescue.lot_registration WHERE org_id=:org AND request_id=:request")
+                .param("org",org).param("request",request)
+                .query((row,index) -> new Receipt(row.getObject("lot_id",UUID.class),row.getBytes("payload_digest"),
+                        row.getObject("actor_user_id",UUID.class),row.getObject("store_id",UUID.class))).single();
+    }
+    public boolean reserveArchive(UUID actor,UUID org,UUID request,UUID lot,long resultVersion,byte[] digest) {
+        return jdbc.sql("""
+                INSERT INTO stockrescue.lot_archive_command(org_id,actor_user_id,request_id,lot_id,result_version,payload_digest)
+                VALUES (:org,:actor,:request,:lot,:version,:digest) ON CONFLICT (org_id,actor_user_id,request_id) DO NOTHING
+                """).param("org",org).param("actor",actor).param("request",request).param("lot",lot)
+                .param("version",resultVersion).param("digest",digest).update()==1;
+    }
+    public Optional<ArchiveReceipt> archiveReceipt(UUID actor,UUID org,UUID request) {
+        return jdbc.sql("""
+                SELECT lot_id,result_version,payload_digest FROM stockrescue.lot_archive_command
+                WHERE org_id=:org AND actor_user_id=:actor AND request_id=:request
+                """).param("org",org).param("actor",actor).param("request",request)
+                .query((row,index) -> new ArchiveReceipt(row.getObject("lot_id",UUID.class),row.getLong("result_version"),row.getBytes("payload_digest"))).optional();
+    }
+    public Optional<ManufacturerLot> archive(UUID org,UUID id,long expectedVersion) {
+        return jdbc.sql("""
+                UPDATE stockrescue.manufacturer_lot SET active=FALSE,version=version+1
+                WHERE org_id=:org AND id=:id AND version=:version AND active RETURNING *
+                """).param("org",org).param("id",id).param("version",expectedVersion)
+                .query((row,index) -> lot(row)).optional();
     }
     public Optional<ManufacturerLot> create(UUID org,UUID id,UUID membership,LotData data) {
         var marking=data.dateMarking();

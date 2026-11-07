@@ -103,7 +103,7 @@ test('owner preserves original labels and independent sources, reviews safety ev
     await page.getByRole('button', { name: 'Assess current evidence' }).click()
     const result = page.getByRole('region', { name: 'Assessment result', exact: true })
     await expect(result.getByRole('heading', { name: 'Requires review', exact: true })).toBeVisible()
-    await expect(result).toContainText('No policy review is recorded for this category and temperature scope.')
+    await expect(result).toContainText('No policy review is recorded for this product category and temperature class.')
 
     await page.getByRole('button', { name: 'Record policy review', exact: true }).click()
     const policyForm = page.getByRole('form', { name: 'Record policy review evidence', exact: true })
@@ -148,6 +148,53 @@ test('owner preserves original labels and independent sources, reviews safety ev
     await expect(notice).toHaveCount(0)
     await expect(result.getByRole('heading', { name: 'Denied', exact: true })).toBeVisible()
     await expect(result.getByRole('listitem').first()).toHaveText('A recall is recorded for this lot.')
+    const archivePath = `${base}/lots/${lotId}/archive`
+    const archiveRequests: object[] = []
+    let lostArchiveAcknowledgement = false
+    await page.route(`**${archivePath}`, async route => {
+      archiveRequests.push(route.request().postDataJSON() as object)
+      if (!lostArchiveAcknowledgement) {
+        lostArchiveAcknowledgement = true
+        const response = await route.fetch()
+        expect(response.status()).toBe(201)
+        await route.abort('connectionreset')
+      } else await route.continue()
+    })
+    await page.getByRole('button', { name: 'Archive manufacturer lot', exact: true }).click()
+    const lotArchive = page.getByRole('form', { name: 'Confirm manufacturer lot archival', exact: true })
+    await lotArchive.getByLabel('Reason for manufacturer lot archival').fill('Supplier discontinued this lot identity after review')
+    await lotArchive.getByLabel('I reviewed the impact and confirm archival of this manufacturer lot identity.').check()
+    await lotArchive.getByRole('button', { name: 'Confirm lot archival' }).click()
+    await expect(lotArchive.getByRole('button', { name: 'Retry same request' })).toBeVisible()
+    await expect(lotArchive.getByLabel('Reason for manufacturer lot archival')).toBeDisabled()
+    await lotArchive.getByRole('button', { name: 'Retry same request' }).click()
+    await expect(page.getByRole('status', { name: 'Archived manufacturer lot' })).toContainText('Its identity and evidence history remain available')
+    await page.unroute(`**${archivePath}`)
+    expect(archiveRequests).toHaveLength(2)
+    expect(archiveRequests[0]).toEqual(archiveRequests[1])
+    const archivedLot = await (await owner.context.request.get(`${base}/lots/${lotId}`)).json() as Lot
+    expect(archivedLot.active).toBe(false)
+    expect(archivedLot.version).toBe(3)
+    expect(archivedLot.recallState).toBe('RECALLED')
+    expect(archivedLot).not.toHaveProperty('quantity')
+    expect(archivedLot).not.toHaveProperty('receivedQuantity')
+    expect(await (await owner.context.request.get(sourcesPath)).json()).toEqual(sources)
+    const archivedHistory = await (await owner.context.request.get(`${base}/lots/${lotId}/corrections`)).json() as components['schemas']['LotCorrectionPage']
+    expect(archivedHistory.items).toHaveLength(2)
+    const rejectedSource = await write<components['schemas']['ApiProblem']>(owner.context, sourcesPath,
+      { requestId: randomUUID(), storeId: store.id, provenance: { source: 'Supplier statement', reference: 'after-archive' } }, 409)
+    expect(rejectedSource.code).toBe('CATALOG_INACTIVE')
+    const rejectedSafety = await write<components['schemas']['ApiProblem']>(owner.context, `${base}/lots/${lotId}/safety-status-evidence`,
+      { requestId: randomUUID(), expectedVersion: 3, reason: 'Attempt to replace retained recall evidence', recallState: 'UNKNOWN', damageState: 'UNKNOWN', provenance: { source: 'Replacement notice', reference: 'after-archive' } }, 409)
+    expect(rejectedSafety.code).toBe('CATALOG_INACTIVE')
+    await expect(page.getByRole('button', { name: 'Review metadata correction' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Record safety notice' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Archive manufacturer lot' })).toHaveCount(0)
+    await expect(page.getByRole('form', { name: 'Record source observation' })).toHaveCount(0)
+    await expect(page.getByText('Choose an assigned store to record source evidence and assess its storage context.')).toHaveCount(0)
+    await expect(page.getByLabel(/quantity|received stock/i)).toHaveCount(0)
+    await expect(result.getByRole('listitem').filter({ hasText: 'The lot is archived.' })).toHaveCount(1)
+    await expect(page.getByRole('region', { name: 'Lot evidence history' })).toContainText('recall-original-notice')
     await accessibility(page)
     await result.screenshot({ path: '../.tools/screenshots/catalog-assessment-mobile.png' })
 
@@ -192,6 +239,115 @@ test('owner preserves original labels and independent sources, reviews safety ev
     await expect(page.getByRole('region', { name: 'Original date marking' })).toContainText('MONTH')
     expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0)
   } finally { await owner.context.close() }
+})
+
+test('owner reviews exact duplicate GTIN matches before product creation', async ({ browser }) => {
+  test.setTimeout(60000)
+  const owner = await account(browser)
+  const organization = await write<{ id: string }>(owner.context, '/api/v1/organizations', { requestId: randomUUID(), name: `GTIN review ${randomUUID().slice(0, 8)}` }, 201)
+  const base = `/api/v1/organizations/${organization.id}`
+  const page = await owner.context.newPage()
+  const requests: { requestId: string, gtinReviewAcknowledged?: boolean, gtinReviewRevision?: string }[] = []
+  let loseNextAcknowledgement = false
+  await page.route(`**${base}/products`, async route => {
+    if (route.request().method() !== 'POST') { await route.continue(); return }
+    requests.push(route.request().postDataJSON() as { requestId: string, gtinReviewAcknowledged?: boolean, gtinReviewRevision?: string })
+    if (loseNextAcknowledgement) {
+      loseNextAcknowledgement = false
+      const response = await route.fetch()
+      expect(response.status()).toBe(201)
+      await route.abort('connectionreset')
+      return
+    }
+    await route.continue()
+  })
+  let secondTab: Page | null = null
+  try {
+    await page.goto(`/organizations/${organization.id}/catalog`)
+    await page.getByRole('button', { name: 'Create product', exact: true }).click()
+    const first = page.getByRole('form', { name: 'Create product', exact: true })
+    await first.getByLabel('SKU', { exact: true }).fill('GTIN-FIRST')
+    await first.getByLabel('Product name', { exact: true }).fill('First catalog product')
+    await first.getByLabel('GTIN (optional)').fill('036000291452')
+    await expect(first.getByText('No active or archived catalog products currently use this GTIN.')).toBeVisible()
+    await first.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
+    await submitCapturedWhenAdmitted(page, first, 'Save product', page.getByRole('heading', { name: 'First catalog product', exact: true }))
+
+    let rejectGtinReview = true
+    await page.route(`**${base}/products/gtin-review**`, async route => {
+      if (!rejectGtinReview) { await route.continue(); return }
+      await route.fulfill({ status: 503, contentType: 'application/problem+json', body: JSON.stringify({ type: 'about:blank', title: 'Catalog unavailable', status: 503, code: 'SERVICE_UNAVAILABLE' }) })
+    })
+    await page.goto(`/organizations/${organization.id}/catalog`)
+    await page.getByRole('button', { name: 'Create product', exact: true }).click()
+    const second = page.getByRole('form', { name: 'Create product', exact: true })
+    await second.getByLabel('SKU', { exact: true }).fill('GTIN-SECOND')
+    await second.getByLabel('Product name', { exact: true }).fill('Second catalog product')
+    await second.getByLabel('GTIN (optional)').fill('036000291452')
+    const warning = second.getByRole('alert', { name: 'Potential GTIN matches', exact: true })
+    const retryReview = second.getByRole('button', { name: 'Retry GTIN check', exact: true })
+    await expect(retryReview).toBeVisible({ timeout: 20000 })
+    await expect(second.getByRole('button', { name: 'Save product', exact: true })).toBeDisabled()
+    rejectGtinReview = false
+    await retryReview.click()
+    await expect(warning.getByText('GTIN-FIRST', { exact: true })).toBeVisible()
+    await expect(warning.getByText('First catalog product', { exact: true })).toBeVisible()
+    await expect(warning).toContainText('Active product')
+    await expect(warning).toContainText('GTIN: 036000291452')
+    await expect(second.getByRole('button', { name: 'Save product', exact: true })).toBeDisabled()
+    await page.unroute(`**${base}/products/gtin-review**`)
+
+    const uniqueGtin = '000000000000'
+    await second.getByLabel('GTIN (optional)').fill(uniqueGtin)
+    await expect(warning).toHaveCount(0)
+    await expect(second.getByText('No active or archived catalog products currently use this GTIN.')).toBeVisible()
+    await second.getByLabel('GTIN (optional)').fill('036000291452')
+    await expect(warning.getByText('GTIN-FIRST', { exact: true })).toBeVisible()
+    const acknowledge = second.getByLabel('I reviewed the current matches and still want to create a separate product with this GTIN.', { exact: true })
+    await expect(acknowledge).not.toBeChecked()
+
+    // A second tab changes the complete match set after this form's review snapshot.
+    secondTab = await owner.context.newPage()
+    await secondTab.goto(`/organizations/${organization.id}/catalog`)
+    await secondTab.getByRole('button', { name: 'Create product', exact: true }).click()
+    const concurrent = secondTab.getByRole('form', { name: 'Create product', exact: true })
+    await concurrent.getByLabel('SKU', { exact: true }).fill('GTIN-THIRD')
+    await concurrent.getByLabel('Product name', { exact: true }).fill('Third catalog product')
+    await concurrent.getByLabel('GTIN (optional)').fill('036000291452')
+    const concurrentWarning = concurrent.getByRole('alert', { name: 'Potential GTIN matches', exact: true })
+    await expect(concurrentWarning.getByText('GTIN-FIRST', { exact: true })).toBeVisible()
+    const concurrentConsent = concurrent.getByLabel('I reviewed the current matches and still want to create a separate product with this GTIN.', { exact: true })
+    await concurrentConsent.focus()
+    await secondTab.keyboard.press('Space')
+    await expect(concurrentConsent).toBeChecked()
+    await concurrent.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
+    await submitCapturedWhenAdmitted(secondTab, concurrent, 'Save product', secondTab.getByRole('heading', { name: 'Third catalog product', exact: true }))
+
+    await acknowledge.check()
+    await second.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
+    await second.getByRole('button', { name: 'Save product', exact: true }).click()
+    await expect(second.getByText('Review the current GTIN matches; submit again to create a new command with the fresh review.', { exact: false })).toBeVisible()
+    await expect(warning.getByText('GTIN-THIRD', { exact: true })).toBeVisible()
+    await expect(acknowledge).not.toBeChecked()
+    await expect(second.getByRole('button', { name: 'Save product', exact: true })).toBeDisabled()
+
+    await acknowledge.check()
+    await second.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
+    loseNextAcknowledgement = true
+    await second.getByRole('button', { name: 'Save product', exact: true }).click()
+    await expect(second.getByRole('button', { name: 'Retry same request' })).toBeVisible()
+    await second.getByRole('button', { name: 'Retry same request' }).click()
+    await expect(page.getByRole('heading', { name: 'Second catalog product', exact: true })).toBeVisible()
+
+    expect(requests).toHaveLength(4)
+    expect(requests[0].gtinReviewAcknowledged).toBeUndefined()
+    expect(requests[1].gtinReviewAcknowledged).toBe(true)
+    expect(requests[1].gtinReviewRevision).toMatch(/^[0-9a-f]{64}$/)
+    expect(requests[2].gtinReviewAcknowledged).toBe(true)
+    expect(requests[2].gtinReviewRevision).not.toBe(requests[1].gtinReviewRevision)
+    expect(requests[2].requestId).not.toBe(requests[1].requestId)
+    expect(requests[3]).toEqual(requests[2])
+  } finally { await secondTab?.close(); await owner.context.close() }
 })
 
 test('catalog respects assigned source visibility, revocation, foreign links and organization switching', async ({ browser }) => {
@@ -245,6 +401,60 @@ test('catalog respects assigned source visibility, revocation, foreign links and
     await expect(page.getByText('NORTH-PRIVATE-REF', { exact: false })).toHaveCount(0)
     expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0)
   } finally { await owner.context.close(); await staff.context.close() }
+})
+
+test('assigned store manager registers unverified lot metadata without recording received stock', async ({ browser }) => {
+  test.setTimeout(60000)
+  const owner = await account(browser)
+  const manager = await account(browser)
+  const page = await manager.context.newPage()
+  const suffix = randomUUID().slice(0, 8).toUpperCase()
+  const originalDate = '2027-08-19'
+  try {
+    const organization = await write<{ id: string }>(owner.context, '/api/v1/organizations', { requestId: randomUUID(), name: `Lot intake cooperative ${suffix}` }, 201)
+    const base = `/api/v1/organizations/${organization.id}`
+    const store = await write<Store>(owner.context, `${base}/stores`, { requestId: randomUUID(), code: 'NORTH', name: 'North receiving store', zoneId: 'Europe/Warsaw' }, 201)
+    const product = await write<Product>(owner.context, `${base}/products`, { requestId: randomUUID(), sku: `INTAKE-${suffix}`, name: `Intake product ${suffix}`, baseUnit: 'EA', category: 'UNCLASSIFIED', temperatureClass: 'AMBIENT' }, 201)
+    const invitation = await write<{ token: string }>(owner.context, `${base}/invitations`, {
+      email: manager.email, reason: 'Assigned store lot intake', storeGrants: [{ storeId: store.id, role: 'STORE_MANAGER' }],
+    }, 201)
+    await write(manager.context, '/api/v1/invitations/accept', { token: invitation.token }, 202)
+    const members = await (await owner.context.request.get(`${base}/members`)).json() as { items: Member[] }
+    const pending = members.items.find(member => member.userId === manager.id)!
+    await write(owner.context, `${base}/members/${pending.id}/approve`, { version: pending.version, verifiedUserId: manager.id, reason: 'Verified intended store manager account' }, 200)
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto(`/organizations/${organization.id}/catalog/products/${product.id}`)
+    await page.getByRole('button', { name: 'Register candidate lot', exact: true }).click()
+    await page.getByLabel('Store context', { exact: true }).selectOption(store.id)
+    const form = page.getByRole('form', { name: 'Register candidate lot', exact: true })
+    await expect(form.getByText(/Manufacturer identity UNVERIFIED/)).toBeVisible()
+    await expect(form.getByText(/does not record goods received or create stock quantity/)).toBeVisible()
+    await expect(form.getByLabel('Manufacturer identity status')).toHaveCount(0)
+    await expect(form.getByLabel('Manufacturer identity reference')).toHaveCount(0)
+    await form.getByLabel('Manufacturer lot code', { exact: true }).fill(`CANDIDATE-${suffix}`)
+    await form.getByLabel('Manufacturer evidence source', { exact: true }).fill('Supplier carton label')
+    await form.getByLabel('Manufacturer evidence reference', { exact: true }).fill('carton-photo-1')
+    await form.getByLabel('Original date label', { exact: true }).fill(originalDate)
+    await form.getByLabel('Date marking type').selectOption('USE_BY')
+    await form.getByLabel('Date precision').selectOption('DAY')
+    await form.getByLabel('Date label source', { exact: true }).fill('Carton photograph')
+    await form.getByLabel('Date label reference', { exact: true }).fill('carton-photo-1')
+    await form.getByLabel('I recorded this manufacturer identity as unverified metadata, not received stock.').check()
+    const registrations: Record<string, unknown>[] = []
+    await page.route(`**${base}/lots`, async route => {
+      if (route.request().method() === 'POST') registrations.push(route.request().postDataJSON() as Record<string, unknown>)
+      await route.continue()
+    })
+    await form.getByRole('button', { name: 'Save candidate lot metadata' }).click()
+    await expect(page.getByRole('heading', { name: `CANDIDATE-${suffix}`, exact: true })).toBeVisible()
+    expect(registrations).toHaveLength(1)
+    expect(registrations[0]).toMatchObject({ storeId: store.id, identityState: 'CANDIDATE', manufacturerVerified: false, lotCode: `CANDIDATE-${suffix}` })
+    expect(registrations[0].manufacturerIdentityKey).toBeUndefined()
+    await expect(page.getByRole('region', { name: 'Original date marking', exact: true }).getByText(originalDate, { exact: true })).toBeVisible()
+    await expect(page.getByLabel(/quantity|received stock/i)).toHaveCount(0)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  } finally { await page.close(); await owner.context.close(); await manager.context.close() }
 })
 
 async function registerLotForm(page: Page, code: string, label: string, type: string, precision: string, confirmed: boolean) {

@@ -57,7 +57,7 @@ public class StoreController {
             @RequestParam(defaultValue = "0") @Min(0) @Max(10000) int offset,
             @RequestParam(defaultValue = "25") @Min(1) @Max(100) int limit) {
         var page = stores.list(actor(actor), organizationId, state, q, offset, limit);
-        return new StorePage(page.items().stream().map(StoreResponse::from).toList(), page.hasMore(), page.canCreate());
+        return new StorePage(page.items().stream().map(StoreResponse::from).toList(), page.hasMore(), page.canCreate(), page.canRegisterCandidateLots());
     }
     @GetMapping("/{storeId}")
     @Operation(operationId = "getStore", summary = "Read an assigned active store; Org Admin can also read archived history")
@@ -94,7 +94,8 @@ public class StoreController {
                                       @NotBlank @Size(max = 500) @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String reason) { }
     public record StorePage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreResponse> items,
                             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean hasMore,
-                            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canCreate) { }
+                            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canCreate,
+                            @Schema(requiredMode = Schema.RequiredMode.REQUIRED,description="Whether this session may register candidate lot metadata globally or for an assigned active store") boolean canRegisterCandidateLots) { }
     public record StoreResponse(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID id,
                                 @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String code,
                                 @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String name,

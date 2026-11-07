@@ -63,7 +63,8 @@ class LotTraceabilityTest extends InfrastructureTestBase {
     @Test
     void unknownManufacturerClaimsStaySeparateAndConfirmedCollisionsRequireExplicitResolution() throws Exception {
         var one=register(lotBody(UUID.randomUUID(),"REUSED-CODE",false));
-        var two=register(lotBody(UUID.randomUUID(),"REUSED-CODE",false));
+        var otherSource=lotBody(UUID.randomUUID(),"REUSED-CODE",false); otherSource.put("manufacturerProvenance",provenance("another-unknown-producer"));
+        var two=register(otherSource);
         assertThat(one).isNotEqualTo(two);
         var confirmed=lotBody(UUID.randomUUID(),"KNOWN",true);
         register(confirmed);
@@ -73,6 +74,125 @@ class LotTraceabilityTest extends InfrastructureTestBase {
         problem(f.ownerA.browser().write(lots(),confirmed),422,"INVALID_REQUEST");
         assertThat(count("manufacturer_lot")).isEqualTo(3);
         assertThat(count("lot_registration")).isEqualTo(3);
+    }
+
+    @Test
+    void assignedStoreManagerRegistersOnlyUnverifiedMetadataAndRetriesCannotCrossStoreOrActor() throws Exception {
+        var manager=f.manager.browser();
+        var command=lotBody(UUID.randomUUID(),"STORE-CANDIDATE",false); command.put("storeId",f.a2);
+        var created=manager.write(lots(),command); assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
+        var id=UUID.fromString(tree(created).path("id").asString());
+        assertThat(tree(created).path("identityState").asString()).isEqualTo("CANDIDATE");
+        assertThat(tree(created).path("manufacturerIdentityKey").isNull()).isTrue();
+        assertThat(jdbc.sql("SELECT store_id=:store AND actor_user_id=:actor AND recorded_at IS NOT NULL FROM stockrescue.lot_registration WHERE org_id=:org AND request_id=:request")
+                .param("store",f.a2).param("actor",f.manager.id).param("org",f.orgA).param("request",command.get("requestId"))
+                .query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lot_registration WHERE org_id=:org AND lot_id=:lot AND actor_user_id=:actor")
+                .param("org",f.orgA).param("lot",id).param("actor",f.manager.id).query(Long.class).single()).isEqualTo(1);
+        assertThat(manager.write(lots(),command).statusCode()).isEqualTo(200);
+
+        var changedPayload=new HashMap<>(command); changedPayload.put("manufacturerProvenance",provenance("different-source"));
+        problem(manager.write(lots(),changedPayload),409,"CATALOG_CONFLICT");
+        var anotherStore=new HashMap<>(command); anotherStore.put("storeId",f.a1);
+        problem(manager.write(lots(),anotherStore),404,"RESOURCE_NOT_FOUND");
+        jdbc.sql("INSERT INTO stockrescue.store_grant(id,org_id,membership_id,store_id,role) VALUES (:id,:org,:member,:store,'STORE_MANAGER')")
+                .param("id",UUID.randomUUID()).param("org",f.orgA).param("member",f.membership(f.manager)).param("store",f.a1).update();
+        problem(manager.write(lots(),anotherStore),409,"CATALOG_CONFLICT");
+        problem(f.ownerA.browser().write(lots(),command),409,"CATALOG_CONFLICT");
+
+        var missingStore=lotBody(UUID.randomUUID(),"NO-STORE",false);
+        problem(manager.write(lots(),missingStore),403,"ACCESS_DENIED");
+        var confirmed=lotBody(UUID.randomUUID(),"NO-CONFIRMATION",true); confirmed.put("storeId",f.a2);
+        problem(manager.write(lots(),confirmed),403,"ACCESS_DENIED");
+        var correction=Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"reason","Attempted manager identity confirmation",
+                "evidenceReviewed",true,"identityState","CONFIRMED","manufacturerIdentityKey","registry:unreviewed",
+                "manufacturerProvenance",provenance("unreviewed-source"),"manufacturerVerified",true,
+                "dateMarking",Map.of("type","USE_BY","precision","UNKNOWN"));
+        problem(manager.write(lot(id)+"/corrections",correction),403,"ACCESS_DENIED");
+        var safetyEvidence=Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"reason","Attempted status change",
+                "recallState","NOT_REPORTED","damageState","NOT_REPORTED","provenance",provenance("unreviewed-notice"));
+        problem(manager.write(lot(id)+"/safety-status-evidence",safetyEvidence),403,"ACCESS_DENIED");
+        var operatorCommand=lotBody(UUID.randomUUID(),"OPERATOR-DENIED",false); operatorCommand.put("storeId",f.a1);
+        problem(f.operator.browser().write(lots(),operatorCommand),403,"ACCESS_DENIED");
+        var analystCommand=lotBody(UUID.randomUUID(),"ANALYST-DENIED",false); analystCommand.put("storeId",f.a1);
+        problem(f.analyst.browser().write(lots(),analystCommand),403,"ACCESS_DENIED");
+        assertThat(count("manufacturer_lot")).isEqualTo(1); assertThat(count("lot_registration")).isEqualTo(1);
+        assertThat(count("lot_correction")).isZero();
+        assertThat(audits("LOT_REGISTERED")).isEqualTo(1);
+    }
+
+    @Test
+    void archivedStoreRejectsNewRegistrationsButPreservesAnExactAdministratorRetry() throws Exception {
+        var owner=f.ownerA.browser();
+        var command=lotBody(UUID.randomUUID(),"ARCHIVED-STORE-RETRY",false); command.put("storeId",f.a2);
+        var first=owner.write(lots(),command); assertThat(first.statusCode()).as(first.body()).isEqualTo(201);
+        var id=tree(first).path("id").asString();
+        assertThat(owner.write("/api/v1/organizations/"+f.orgA+"/stores/"+f.a2+"/archive",Map.of("version",0,"reason","Store closed")).statusCode()).isEqualTo(200);
+        var retry=owner.write(lots(),command);
+        assertThat(retry.statusCode()).isEqualTo(200); assertThat(tree(retry).path("id").asString()).isEqualTo(id);
+        var newCommand=lotBody(UUID.randomUUID(),"NEW-AFTER-ARCHIVE",false); newCommand.put("storeId",f.a2);
+        problem(owner.write(lots(),newCommand),409,"CATALOG_INACTIVE");
+        assertThat(count("manufacturer_lot")).isEqualTo(1); assertThat(count("lot_registration")).isEqualTo(1);
+    }
+
+    @Test void aRevokedStoreGrantRejectsTheWaitingLotRegistration() throws Exception {
+        orderedLotRegistration(false,"STORE_GRANT_REVOKED",() -> f.ownerA.browser().send("DELETE",
+                "/api/v1/organizations/"+f.orgA+"/members/"+f.membership(f.manager)+"/store-grants/"+f.a2,
+                Map.of("memberVersion",0,"grantVersion",0,"reason","Store assignment ended"),f.ownerA.browser().token()));
+    }
+
+    @Test void committedLotRegistrationCompletesBeforeWaitingStoreGrantRevocation() throws Exception {
+        orderedLotRegistration(true,"LOT_REGISTERED",() -> f.ownerA.browser().send("DELETE",
+                "/api/v1/organizations/"+f.orgA+"/members/"+f.membership(f.manager)+"/store-grants/"+f.a2,
+                Map.of("memberVersion",0,"grantVersion",0,"reason","Store assignment ended"),f.ownerA.browser().token()));
+    }
+
+    @Test void storeArchivalRejectsTheWaitingLotRegistration() throws Exception {
+        orderedLotRegistration(false,"STORE_ARCHIVED",() -> f.ownerA.browser().write("/api/v1/organizations/"+f.orgA+"/stores/"+f.a2+"/archive",
+                Map.of("version",0,"reason","Store closed")));
+    }
+
+    @Test void productArchivalRejectsTheWaitingLotRegistration() throws Exception {
+        orderedLotRegistration(false,"PRODUCT_ARCHIVED",() -> f.ownerA.browser().write(products()+"/"+f.productA+"/archive",
+                Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"reason","Product discontinued")));
+    }
+
+    @Test void committedLotRegistrationCompletesBeforeWaitingProductArchival() throws Exception {
+        orderedLotRegistration(true,"LOT_REGISTERED",() -> f.ownerA.browser().write(products()+"/"+f.productA+"/archive",
+                Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"reason","Product discontinued")));
+    }
+
+    private void orderedLotRegistration(boolean registrationFirst,String blockedAction,Callable<HttpResponse<String>> closingCommand) throws Exception {
+        var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+        doAnswer(call -> { entered.countDown(); if (!release.await(15,TimeUnit.SECONDS)) throw new IllegalStateException("Command barrier timed out"); return call.callRealMethod(); })
+                .when(audit).securityChange(any(),eq(f.orgA),anyString(),any(),eq(blockedAction),anyMap(),anyString());
+        var request=lotBody(UUID.randomUUID(),"RACE-"+UUID.randomUUID(),false); request.put("storeId",f.a2);
+        var manager=f.manager.browser();
+        try (var workers=Executors.newFixedThreadPool(2)) {
+            Callable<HttpResponse<String>> registration=() -> manager.write(lots(),request);
+            if (registrationFirst) {
+                var saving=workers.submit(registration);
+                assertThat(entered.await(10,TimeUnit.SECONDS)).isTrue();
+                var waitingClose=workers.submit(closingCommand);
+                awaitLockWait(); release.countDown();
+                assertThat(saving.get(20,TimeUnit.SECONDS).statusCode()).isEqualTo(201);
+                assertThat(waitingClose.get(20,TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+            } else {
+                var closing=workers.submit(closingCommand);
+                assertThat(entered.await(10,TimeUnit.SECONDS)).isTrue();
+                var waitingRegistration=workers.submit(registration);
+                awaitLockWait(); release.countDown();
+                assertThat(closing.get(20,TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+                assertThat(waitingRegistration.get(20,TimeUnit.SECONDS).statusCode()).isIn(404,409);
+            }
+        } finally { release.countDown(); }
+        assertThat(count("manufacturer_lot")).isEqualTo(registrationFirst?1:0);
+        assertThat(count("lot_registration")).isEqualTo(registrationFirst?1:0);
+    }
+
+    private void awaitLockWait() {
+        await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(jdbc.sql("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'")
+                .query(Long.class).single()).isPositive());
     }
 
     @Test
@@ -201,7 +321,9 @@ class LotTraceabilityTest extends InfrastructureTestBase {
     @Test
     void auditFailureRollsBackBothRegistrationRecordsAndTheirDurableOutcomes() throws Exception {
         var body=lotBody(UUID.randomUUID(),"ROLLBACK",false);
+        var storeBody=lotBody(UUID.randomUUID(),"STORE-ROLLBACK",false); storeBody.put("storeId",f.a2);
         doThrow(new IllegalStateException("Audit unavailable")).when(audit).securityChange(any(),eq(f.orgA),eq("manufacturer-lot"),any(),anyString(),anyMap(),anyString());
+        problem(f.manager.browser().write(lots(),storeBody),500,"INTERNAL_ERROR");
         problem(f.ownerA.browser().write(lots(),body),500,"INTERNAL_ERROR");
         assertThat(count("manufacturer_lot")).isZero(); assertThat(count("lot_registration")).isZero();
         doCallRealMethod().when(audit).securityChange(any(),eq(f.orgA),eq("manufacturer-lot"),any(),anyString(),anyMap(),anyString());

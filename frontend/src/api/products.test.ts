@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { clearCsrf } from './client'
-import { archiveProduct, correctProductCategory, createProduct } from './products'
+import { archiveProduct, correctProductCategory, createProduct, isValidGtin, reviewProductGtin } from './products'
 
 afterEach(() => { clearCsrf(); vi.unstubAllGlobals() })
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
@@ -41,4 +41,24 @@ it('sends a reviewed category correction as one captured command', async () => {
   expect(result.category).toBe('BAKERY')
   expect((fetcher.mock.calls[1][0] as Request).url).toContain('/products/product/category-corrections')
   expect(await (fetcher.mock.calls[1][0] as Request).json()).toEqual(body)
+})
+
+it('reviews exact GTINs as text and preserves leading zeroes in the scoped request', async () => {
+  const fetcher = vi.fn().mockResolvedValue(json({ gtin: '036000291452', matches: [], offset: 0, limit: 25, hasMore: false, matchSetRevision: null }))
+  vi.stubGlobal('fetch', fetcher)
+  const result = await reviewProductGtin('organization', '036000291452', 0, new AbortController().signal)
+  expect(result.gtin).toBe('036000291452')
+  const request = fetcher.mock.calls[0][0] as Request
+  const url = new URL(request.url)
+  expect(url.pathname).toContain('/organizations/organization/products/gtin-review')
+  expect(url.searchParams.get('gtin')).toBe('036000291452')
+  expect(url.searchParams.get('offset')).toBe('0')
+  expect(url.searchParams.get('limit')).toBe('25')
+})
+
+it('validates GTIN length and check digit without converting away leading zeroes', () => {
+  expect(isValidGtin('036000291452')).toBe(true)
+  expect(isValidGtin('000000000000')).toBe(true)
+  expect(isValidGtin('036000291453')).toBe(false)
+  expect(isValidGtin('36000291452')).toBe(false)
 })

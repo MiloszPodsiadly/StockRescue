@@ -316,6 +316,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/lots/{lotId}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive one expected manufacturer-lot version with durable replay and immutable audit evidence */
+        post: operations["archiveManufacturerLot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/lots/{lotId}/corrections": {
         parameters: {
             query?: never;
@@ -508,6 +525,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/products/gtin-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview exact organization-scoped active and archived GTIN matches with a complete-set revision */
+        get: operations["reviewProductGtin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/products/{productId}": {
         parameters: {
             query?: never;
@@ -553,6 +587,41 @@ export interface paths {
         put?: never;
         /** Correct a product's descriptive category with an expected version and audited reason */
         post: operations["correctProductCategory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/products/{productId}/classification-evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read current independent classification evidence for the exact product revision without exposing its signature */
+        get: operations["getProductClassificationEvidence"];
+        put?: never;
+        /** Submit domain-separated external Ed25519 evidence for the product's current descriptive category and version */
+        post: operations["submitProductClassificationEvidence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/products/{productId}/classification-evidence/{attestationId}/revocation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Append an immutable revocation of one product classification attestation */
+        post: operations["revokeProductClassificationEvidence"];
         delete?: never;
         options?: never;
         head?: never;
@@ -890,7 +959,7 @@ export interface components {
         };
         ApiProblem: {
             /** @enum {string} */
-            code: "ACCESS_DENIED" | "ACCESS_CONFLICT" | "ACCESS_RATE_LIMITED" | "AUTH_RATE_LIMITED" | "AUTH_REQUIRED" | "CSRF_INVALID" | "CATALOG_CONFLICT" | "CATALOG_INACTIVE" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_INACTIVE" | "INCOMPATIBLE_ZONES" | "INTERNAL_ERROR" | "INVALID_CORRELATION_ID" | "INVALID_CREDENTIALS" | "INVALID_REQUEST" | "INVITATION_UNAVAILABLE" | "NO_FUTURE_REVISIONS" | "ONBOARDING_CONFLICT" | "ORGANIZATION_REQUIRED" | "REQUEST_TOO_LARGE" | "RESOURCE_NOT_FOUND" | "SERVICE_UNAVAILABLE" | "SCHEDULED_REVISIONS_PENDING" | "SESSION_EXPIRED" | "STORE_CONFLICT" | "STORE_INACTIVE" | "ZONE_IMPACT_CHANGED" | "ZONE_HAS_ACTIVE_LOCATIONS";
+            code: "ACCESS_DENIED" | "ACCESS_CONFLICT" | "ACCESS_RATE_LIMITED" | "AUTH_RATE_LIMITED" | "AUTH_REQUIRED" | "CSRF_INVALID" | "CATALOG_CONFLICT" | "CATALOG_INACTIVE" | "GTIN_REVIEW_REQUIRED" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_INACTIVE" | "INCOMPATIBLE_ZONES" | "INTERNAL_ERROR" | "INVALID_CORRELATION_ID" | "INVALID_CREDENTIALS" | "INVALID_REQUEST" | "INVITATION_UNAVAILABLE" | "NO_FUTURE_REVISIONS" | "ONBOARDING_CONFLICT" | "ORGANIZATION_REQUIRED" | "REQUEST_TOO_LARGE" | "RESOURCE_NOT_FOUND" | "SERVICE_UNAVAILABLE" | "SCHEDULED_REVISIONS_PENDING" | "SESSION_EXPIRED" | "STORE_CONFLICT" | "STORE_INACTIVE" | "ZONE_IMPACT_CHANGED" | "ZONE_HAS_ACTIVE_LOCATIONS";
             correlationId: string;
             detail: string;
             /** Format: int32 */
@@ -907,14 +976,18 @@ export interface components {
             version: number;
         };
         ApprovalVerificationResponse: {
+            activeRulesetDigest: string;
+            activeRulesetId: string;
             allowedOperations: ("SALE" | "TRANSFER")[];
+            /** Format: int32 */
+            attestationVersion: number | null;
             evidenceReference: string | null;
             /** Format: date-time */
             issuedAt: string | null;
             issuerId: string | null;
             keyId: string | null;
             /** @enum {string} */
-            outcome: "NOT_SUBMITTED" | "TRUST_REGISTRY_DISABLED" | "TRUSTED_ISSUER_UNKNOWN" | "TRUSTED_KEY_DISABLED" | "SIGNATURE_INVALID" | "NOT_YET_VALID" | "EXPIRED" | "REVOKED" | "POLICY_SCOPE_MISMATCH" | "OPERATION_NOT_APPROVED" | "VERIFIED";
+            outcome: "NOT_SUBMITTED" | "TRUST_REGISTRY_DISABLED" | "TRUSTED_ISSUER_UNKNOWN" | "TRUSTED_KEY_DISABLED" | "SIGNATURE_INVALID" | "NOT_YET_VALID" | "EXPIRED" | "REVOKED" | "POLICY_SCOPE_MISMATCH" | "LEGACY_ATTESTATION" | "RULESET_MISMATCH" | "OPERATION_NOT_APPROVED" | "VERIFIED";
             policyDigest: string;
             /** Format: int64 */
             policyVersion: number;
@@ -926,10 +999,19 @@ export interface components {
             revokedAt: string | null;
             /** Format: uuid */
             revokedByMembershipId: string | null;
+            signedRulesetDigest: string | null;
+            signedRulesetId: string | null;
             /** Format: date-time */
             validFrom: string | null;
             /** Format: date-time */
             validUntil: string | null;
+        };
+        ArchiveLotRequest: {
+            /** Format: int64 */
+            expectedVersion: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
         };
         ArchiveProductRequest: {
             /** Format: int64 */
@@ -1051,6 +1133,10 @@ export interface components {
              */
             category: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
             gtin?: string;
+            /** @description Explicit operator acknowledgement after reviewing every exact match */
+            gtinReviewAcknowledged?: boolean | null;
+            /** @description Opaque revision of the complete organization-scoped match set; not authorization */
+            gtinReviewRevision?: string | null;
             name: string;
             /** Format: uuid */
             requestId: string;
@@ -1118,6 +1204,8 @@ export interface components {
         };
         EligibilityEvidenceResponse: {
             /** @enum {string} */
+            classification: "MISSING" | "RECORDED_UNVERIFIED" | "INDEPENDENTLY_VERIFIED";
+            /** @enum {string} */
             damage: "UNKNOWN" | "REPORTED" | "BLOCK_RECORDED";
             /** @enum {string} */
             date: "COMPLETE_LABEL" | "INCOMPLETE" | "INVALID" | "PARTIAL_REQUIRES_VERIFIED_RULE";
@@ -1141,6 +1229,7 @@ export interface components {
         /** @description Point-in-time evidence, not a reusable permission or physical hold. ALLOWED requires a current signed approval for this exact policy and operation plus every narrow-pilot evidence gate. Recompute before future operative use. */
         EligibilityResponse: {
             approvalVerification: components["schemas"]["ApprovalVerificationResponse"] | null;
+            classificationVerification: components["schemas"]["ProductClassificationEvidenceResponse"];
             /** @enum {string} */
             decision: "ALLOWED" | "DENIED" | "REQUIRES_REVIEW";
             /** Format: date-time */
@@ -1156,7 +1245,7 @@ export interface components {
             /** Format: int64 */
             lotVersion: number;
             /** @enum {string} */
-            nextAction: "DO_NOT_EXECUTE" | "REVIEW_LOT_EVIDENCE" | "RECORD_STORAGE_CONTEXT" | "OBTAIN_INDEPENDENT_POLICY_APPROVAL" | "NO_ADDITIONAL_ACTION";
+            nextAction: "DO_NOT_EXECUTE" | "REVIEW_LOT_EVIDENCE" | "RECORD_STORAGE_CONTEXT" | "OBTAIN_PRODUCT_CLASSIFICATION_EVIDENCE" | "OBTAIN_INDEPENDENT_POLICY_APPROVAL" | "NO_ADDITIONAL_ACTION";
             /** @enum {string} */
             operation: "SALE" | "TRANSFER";
             policy: components["schemas"]["EligibilityPolicyReferenceResponse"] | null;
@@ -1164,7 +1253,7 @@ export interface components {
             productId: string;
             /** Format: int64 */
             productVersion: number;
-            reasonCodes: ("LOT_RECALLED" | "LOT_DAMAGED" | "LOT_ARCHIVED" | "PRODUCT_ARCHIVED" | "STORE_ARCHIVED" | "ZONE_ARCHIVED" | "LOCATION_ARCHIVED" | "TEMPERATURE_CLASS_MISMATCH" | "USE_BY_EXPIRED" | "BEST_BEFORE_EXPIRED" | "LOT_IDENTITY_UNVERIFIED" | "DATE_LABEL_MISSING" | "DATE_TYPE_UNKNOWN" | "DATE_PRECISION_UNKNOWN" | "DATE_LABEL_INVALID" | "USE_BY_DAY_REQUIRED" | "DATE_TYPE_PRECISION_MISMATCH" | "DATE_PROVENANCE_MISSING" | "DATE_REFERENCE_MISSING" | "PARTIAL_DATE_RULE_UNVERIFIED" | "RECALL_STATUS_UNKNOWN" | "DAMAGE_STATUS_UNKNOWN" | "STATUS_REFERENCE_MISSING" | "STORAGE_CONTEXT_MISSING" | "COLD_CHAIN_EVIDENCE_UNVERIFIED" | "PRODUCT_CATEGORY_UNCLASSIFIED" | "POLICY_MISSING" | "POLICY_SCOPE_MISMATCH" | "POLICY_CLASS_MISMATCH" | "POLICY_APPROVAL_UNVERIFIED")[];
+            reasonCodes: ("LOT_RECALLED" | "LOT_DAMAGED" | "LOT_ARCHIVED" | "PRODUCT_ARCHIVED" | "STORE_ARCHIVED" | "ZONE_ARCHIVED" | "LOCATION_ARCHIVED" | "TEMPERATURE_CLASS_MISMATCH" | "USE_BY_EXPIRED" | "BEST_BEFORE_EXPIRED" | "LOT_IDENTITY_UNVERIFIED" | "DATE_LABEL_MISSING" | "DATE_TYPE_UNKNOWN" | "DATE_PRECISION_UNKNOWN" | "DATE_LABEL_INVALID" | "USE_BY_DAY_REQUIRED" | "DATE_TYPE_PRECISION_MISMATCH" | "DATE_PROVENANCE_MISSING" | "DATE_REFERENCE_MISSING" | "PARTIAL_DATE_RULE_UNVERIFIED" | "RECALL_STATUS_UNKNOWN" | "DAMAGE_STATUS_UNKNOWN" | "STATUS_REFERENCE_MISSING" | "STORAGE_CONTEXT_MISSING" | "COLD_CHAIN_EVIDENCE_UNVERIFIED" | "PRODUCT_CATEGORY_UNCLASSIFIED" | "PRODUCT_CLASSIFICATION_MISSING" | "PRODUCT_CLASSIFICATION_NOT_YET_VALID" | "PRODUCT_CLASSIFICATION_EXPIRED" | "PRODUCT_CLASSIFICATION_REVOKED" | "PRODUCT_CLASSIFICATION_SCOPE_MISMATCH" | "PRODUCT_CLASSIFICATION_TRUST_DISABLED" | "PRODUCT_CLASSIFICATION_ISSUER_UNTRUSTED" | "PRODUCT_CLASSIFICATION_KEY_DISABLED" | "PRODUCT_CLASSIFICATION_SIGNATURE_INVALID" | "POLICY_MISSING" | "POLICY_SCOPE_MISMATCH" | "POLICY_CLASS_MISMATCH" | "POLICY_APPROVAL_UNVERIFIED")[];
             /** Format: uuid */
             storeId: string;
             /** Format: date */
@@ -1228,6 +1317,26 @@ export interface components {
             /** Format: int64 */
             memberVersion: number;
             reason: string;
+        };
+        GtinMatchResponse: {
+            gtin: string;
+            name: string;
+            /** Format: uuid */
+            productId: string;
+            sku: string;
+            /** @enum {string} */
+            status: "ACTIVE" | "ARCHIVED";
+        };
+        GtinReviewResponse: {
+            gtin: string;
+            hasMore: boolean;
+            /** Format: int32 */
+            limit: number;
+            /** @description Opaque revision of the complete organization-scoped match set; not authorization */
+            matchSetRevision: string | null;
+            matches: components["schemas"]["GtinMatchResponse"][];
+            /** Format: int32 */
+            offset: number;
         };
         InvitationClaimResponse: {
             /** Format: uuid */
@@ -1424,7 +1533,7 @@ export interface components {
             role: "ORG_ADMIN" | "MEMBER";
         };
         PermissionsResponse: {
-            allStoreActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS")[];
+            allStoreActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT")[];
             organization: components["schemas"]["OrganizationResponse"];
             organizationActions: ("READ_ORGANIZATION" | "MANAGE_ACCESS" | "CREATE_STORE" | "MANAGE_TRANSPORT_LANES" | "READ_CATALOG" | "MANAGE_CATALOG" | "MANAGE_FOOD_SAFETY_POLICY" | "SUBMIT_FOOD_SAFETY_APPROVAL_EVIDENCE" | "REVOKE_FOOD_SAFETY_APPROVAL" | "RECORD_LOT_SAFETY_EVIDENCE")[];
             storeGrants: components["schemas"]["StorePermissionResponse"][];
@@ -1445,6 +1554,40 @@ export interface components {
             /** Format: uuid */
             approvalId: string | null;
             verification: components["schemas"]["ApprovalVerificationResponse"];
+        };
+        ProductClassificationEvidenceResponse: {
+            /** Format: uuid */
+            attestationId: string | null;
+            /** @enum {string} */
+            currentCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
+            /** Format: int64 */
+            currentProductVersion: number;
+            currentSku: string;
+            evidenceReference: string | null;
+            /** Format: date-time */
+            issuedAt: string | null;
+            issuerId: string | null;
+            keyId: string | null;
+            /** Format: uuid */
+            organizationId: string;
+            /** @enum {string} */
+            outcome: "NOT_SUBMITTED" | "TRUST_REGISTRY_DISABLED" | "TRUSTED_ISSUER_UNKNOWN" | "TRUSTED_KEY_DISABLED" | "SIGNATURE_INVALID" | "NOT_YET_VALID" | "EXPIRED" | "REVOKED" | "PRODUCT_SCOPE_MISMATCH" | "VERIFIED";
+            /** Format: uuid */
+            productId: string;
+            /** Format: date-time */
+            recordedAt: string | null;
+            revocationReason: string | null;
+            revoked: boolean;
+            /** Format: date-time */
+            revokedAt: string | null;
+            /** @enum {string|null} */
+            signedCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY" | null;
+            /** Format: int64 */
+            signedProductVersion: number | null;
+            /** Format: date-time */
+            validFrom: string | null;
+            /** Format: date-time */
+            validUntil: string | null;
         };
         ProductPage: {
             canCreate: boolean;
@@ -1512,6 +1655,11 @@ export interface components {
             productId: string;
             /** Format: uuid */
             requestId: string;
+            /**
+             * Format: uuid
+             * @description Optional active store context; required for store personnel
+             */
+            storeId?: string | null;
         };
         RegisterSourceEvidenceRequest: {
             provenance: components["schemas"]["CatalogProvenanceRequest"];
@@ -1592,6 +1740,11 @@ export interface components {
             validUntil: string | null;
         };
         RevokePolicyApprovalRequest: {
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        RevokeProductClassificationEvidenceRequest: {
             reason: string;
             /** Format: uuid */
             requestId: string;
@@ -1695,11 +1848,13 @@ export interface components {
         };
         StorePage: {
             canCreate: boolean;
+            /** @description Whether this session may register candidate lot metadata globally or for an assigned active store */
+            canRegisterCandidateLots: boolean;
             hasMore: boolean;
             items: components["schemas"]["StoreResponse"][];
         };
         StorePermissionResponse: {
-            actions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS")[];
+            actions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT")[];
             /** @enum {string} */
             role: "STORE_MANAGER" | "INVENTORY_OPERATOR" | "READ_ONLY_ANALYST";
             /** Format: uuid */
@@ -1708,7 +1863,7 @@ export interface components {
         StoreResponse: {
             active: boolean;
             addressLine1: string | null;
-            allowedActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS")[];
+            allowedActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT")[];
             city: string | null;
             code: string;
             countryCode: string | null;
@@ -1734,6 +1889,28 @@ export interface components {
             keyId: string;
             /** @description SHA-256 digest of the exact immutable policy rules and scope */
             policyDigest: string;
+            /** Format: uuid */
+            requestId: string;
+            /** @description SHA-256 of the stable evaluator ruleset manifest included in the external signature */
+            rulesetDigest: string;
+            /** @description Versioned evaluator ruleset identity included in the external signature */
+            rulesetId: string;
+            /** @description Canonical Base64 Ed25519 signature; never returned by the API */
+            signatureBase64: string;
+            /** Format: date-time */
+            validFrom: string;
+            /** Format: date-time */
+            validUntil: string;
+        };
+        SubmitProductClassificationEvidenceRequest: {
+            /** @description External source pointer only; source documents are never submitted */
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedProductVersion: number;
+            /** Format: date-time */
+            issuedAt: string;
+            issuerId: string;
+            keyId: string;
             /** Format: uuid */
             requestId: string;
             /** @description Canonical Base64 Ed25519 signature; never returned by the API */
@@ -4116,6 +4293,117 @@ export interface operations {
             };
         };
     };
+    archiveManufacturerLot: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                lotId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArchiveLotRequest"];
+            };
+        };
+        responses: {
+            /** @description Recorded archival command replay */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LotResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LotResponse"];
+                };
+            };
+            /** @description Malformed fields or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Catalog action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, product or lot unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Known identity, changed retry or inactive parent */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid lot or provenance data */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
     listLotCorrections: {
         parameters: {
             query?: {
@@ -5755,6 +6043,104 @@ export interface operations {
             };
         };
     };
+    reviewProductGtin: {
+        parameters: {
+            query: {
+                gtin: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GtinReviewResponse"];
+                };
+            };
+            /** @description Malformed fields or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization or product unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Reserved SKU, changed retry, stale version or inactive product */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid catalog identity, unit or product data */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
     getProduct: {
         parameters: {
             query?: never;
@@ -6026,6 +6412,324 @@ export interface operations {
                 };
             };
             /** @description Invalid catalog identity, unit or product data */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    getProductClassificationEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                productId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductClassificationEvidenceResponse"];
+                };
+            };
+            /** @description Malformed evidence fields */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization or product evidence unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Changed retry, stale product version or existing revocation */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid or unverified classification signature */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    submitProductClassificationEvidence: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                productId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitProductClassificationEvidenceRequest"];
+            };
+        };
+        responses: {
+            /** @description Previously recorded immutable evidence */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductClassificationEvidenceResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductClassificationEvidenceResponse"];
+                };
+            };
+            /** @description Malformed evidence fields */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization or product evidence unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Changed retry, stale product version or existing revocation */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid or unverified classification signature */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    revokeProductClassificationEvidence: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                productId: string;
+                attestationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokeProductClassificationEvidenceRequest"];
+            };
+        };
+        responses: {
+            /** @description Previously recorded revocation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductClassificationEvidenceResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductClassificationEvidenceResponse"];
+                };
+            };
+            /** @description Malformed evidence fields */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization or product evidence unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Changed retry, stale product version or existing revocation */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid or unverified classification signature */
             422: {
                 headers: {
                     [name: string]: unknown;

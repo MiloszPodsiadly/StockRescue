@@ -62,6 +62,11 @@ are rejected rather than Unicode-normalized. GTIN remains text, preserving
 leading zeroes, and its 8, 12, 13 or 14 digits include a validated check digit.
 The initial unit is `EA`.
 
+Duplicate GTINs remain separate product identities. Creation previews active and
+archived organization matches and requires explicit operator confirmation against
+the complete match-set revision; a per-organization/GTIN transaction lock rejects
+stale reviews. The revision guards freshness and does not grant authorization.
+
 Active organization members can read catalog metadata through `READ_CATALOG`;
 Org Admins manage it through `MANAGE_CATALOG`. Product creation and archival use
 actor/organization/operation-scoped request identifiers and canonical payload
@@ -275,6 +280,11 @@ reuses its request identifier and reviewed values; confirmed changes refresh the
 saved result without a second write. Lot pages preserve original date labels and
 show source observations separately from manufacturer identity. Safety assessments
 show their evidence, reasons, policy version and store-local assessment date.
+Policy approvals bind the signed policy version to an immutable evaluator ruleset.
+Separate product-classification evidence binds organization, product, SKU, category
+and product revision; each assessment rechecks both signatures against deployment
+trust and current scope. Historical policy signatures without ruleset identity stay
+visible but cannot authorize an assessment.
 
 Business HTTP routes use `/api/v1`; service health uses `/api/health`. Backend
 models generate `contracts/http/openapi.yaml`, which generates the frontend's

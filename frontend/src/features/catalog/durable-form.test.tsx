@@ -3,14 +3,22 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
+import type { components } from '@/api/schema'
 import { TenantBoundary } from '../organizations/tenant-boundary'
 import { DurableForm } from './durable-form'
 
 afterEach(cleanup)
-const problem = (status: number) => new ApiError(new Response(null, { status }), { status, code: status === 409 ? 'CATALOG_CONFLICT' : 'INVALID_REQUEST', type: 'about:blank', title: 'Review required', detail: 'Review fields.', correlationId: 'test-correlation' })
+const problem = (status: number, code: components['schemas']['ApiProblem']['code'] = status === 409 ? 'CATALOG_CONFLICT' : 'INVALID_REQUEST') => new ApiError(new Response(null, { status }), { status, code, type: 'about:blank', title: 'Review required', detail: 'Review fields.', correlationId: 'test-correlation' })
 function Form({ execute, saved, refresh, version = 1 }: { execute: (body: { requestId: string, name: string, version: number }, signal: AbortSignal) => Promise<{ id: string }>, saved: () => Promise<void>, refresh?: () => Promise<void>, version?: number }) {
   const [name, setName] = useState('Original')
   return <DurableForm title="Reviewed change" submitLabel="Save reviewed change" confirmation="I reviewed the evidence." prepare={() => ({ requestId: crypto.randomUUID(), name, version })} execute={execute} onSaved={saved} onRefresh={refresh ?? (async () => {})}>
+    <label>Name<input value={name} onChange={event => { setName(event.target.value) }} /></label>
+  </DurableForm>
+}
+function GtinForm({ execute, precondition }: { execute: (body: { requestId: string, name: string }, signal: AbortSignal) => Promise<{ id: string }>, precondition: (code: string) => void }) {
+  const [name, setName] = useState('Separate product')
+  return <DurableForm title="Create product" submitLabel="Save product" confirmation="I reviewed this product." prepare={() => ({ requestId: crypto.randomUUID(), name })}
+    execute={execute} onSaved={async () => {}} onRefresh={async () => {}} onPreconditionConflict={precondition}>
     <label>Name<input value={name} onChange={event => { setName(event.target.value) }} /></label>
   </DurableForm>
 }
@@ -74,6 +82,24 @@ it('requires a successful conflict refresh before another reviewed command', asy
   await waitFor(() => expect(screen.getByLabelText('Name')).toBeEnabled())
   expect(screen.getByLabelText('I reviewed the evidence.')).not.toBeChecked()
   expect(execute).toHaveBeenCalledTimes(1)
+})
+
+it('releases only a proven GTIN precondition conflict for a new reviewed command', async () => {
+  const execute = vi.fn().mockRejectedValueOnce(problem(409, 'GTIN_REVIEW_REQUIRED')).mockResolvedValueOnce({ id: 'created' })
+  const precondition = vi.fn()
+  render(scope(<GtinForm execute={execute} precondition={precondition} />))
+  const user = userEvent.setup()
+  await user.click(screen.getByLabelText('I reviewed this product.'))
+  await user.click(screen.getByRole('button', { name: 'Save product' }))
+  await screen.findByRole('alert')
+  await waitFor(() => expect(precondition).toHaveBeenCalledWith('GTIN_REVIEW_REQUIRED'))
+  expect(screen.getByLabelText('Name')).toBeEnabled()
+  expect(screen.queryByRole('button', { name: 'Retry same request' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Refresh saved values' })).not.toBeInTheDocument()
+  await user.click(screen.getByLabelText('I reviewed this product.'))
+  await user.click(screen.getByRole('button', { name: 'Save product' }))
+  await waitFor(() => expect(execute).toHaveBeenCalledTimes(2))
+  expect(execute.mock.calls[0][0].requestId).not.toBe(execute.mock.calls[1][0].requestId)
 })
 
 it('aborts a departing tenant command and ignores a late private result', async () => {

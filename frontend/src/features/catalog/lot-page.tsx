@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
-import { getLot, listLotCorrections } from '@/api/lots'
-import type { ManufacturerLot } from '@/api/lots'
+import { archiveLot, getLot, listLotCorrections } from '@/api/lots'
+import type { ArchiveLot as ArchiveLotCommand, ManufacturerLot } from '@/api/lots'
 import { getProduct } from '@/api/products'
 import { getStore } from '@/api/stores'
 import { AppLink } from '@/components/app-link'
@@ -17,6 +17,8 @@ import { StorePicker } from './store-picker'
 import { LocationsPanel } from './locations-panel'
 import { PolicyPanel, SafetyEvidenceForm } from './policy-panel'
 import { EligibilityPanel } from './eligibility-panel'
+import { DurableForm } from './durable-form'
+import { Field, inputClass } from '@/components/form-field'
 
 export function LotPage() {
   const { organizationId, lotId } = useParams({ strict: false })
@@ -28,6 +30,7 @@ function LotDetail({ organizationId, lotId }: { organizationId: string, lotId: s
   const organization = useOrganization()
   const [editing, setEditing] = useState<ManufacturerLot | null>(null)
   const [safetyEditing, setSafetyEditing] = useState<ManufacturerLot | null>(null)
+  const [archiving, setArchiving] = useState<ManufacturerLot | null>(null)
   const [storeId, setStoreId] = useState('')
   const [sourceFrozen, setSourceFrozen] = useState(false)
   const [locationFrozen, setLocationFrozen] = useState(false)
@@ -39,7 +42,7 @@ function LotDetail({ organizationId, lotId }: { organizationId: string, lotId: s
     await client.invalidateQueries({ queryKey: [...scope, 'product', productId] }, { throwOnError: true })
     await client.invalidateQueries({ queryKey: [...scope, 'corrections', lotId] }, { throwOnError: true })
     await client.invalidateQueries({ queryKey: [...scope, 'eligibility'] })
-    setEditing(null); setSafetyEditing(null)
+    setEditing(null); setSafetyEditing(null); setArchiving(null)
   }
   if (!lot.data || accessFailed(lot.error) || !product.data || accessFailed(product.error)) return <QueryNotice title={lot.isPending || product.isPending ? 'Loading lot context…' : 'Lot unavailable'} error={lot.error ?? product.error} reload={() => { void lot.refetch(); if (productId) void product.refetch() }} />
   const current = lot.data
@@ -50,16 +53,37 @@ function LotDetail({ organizationId, lotId }: { organizationId: string, lotId: s
     <Facts values={[["Manufacturer identity", current.identityState === 'CONFIRMED' ? 'Confirmed' : 'Candidate — unverified'], ['Manufacturer reference', current.manufacturerIdentityKey ?? 'Unknown'], ['Manufacturer evidence', <Provenance value={current.manufacturerProvenance} />], ['Lot status', current.active ? 'Active' : 'Archived'], ['Lot version', current.version], ['Recall evidence', current.recallState], ['Damage evidence', current.damageState], ['Safety-status source', <Provenance value={current.statusProvenance} />]]} />
     <DateMarking value={current.dateMarking} />
     <Button variant="outline" onClick={() => { void client.invalidateQueries({ queryKey: scope }) }}>Reload lot evidence</Button>
-    {editable && <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={editing !== null || safetyEditing !== null} onClick={() => { setEditing(current) }}>Review metadata correction</Button><Button variant="outline" disabled={editing !== null || safetyEditing !== null} onClick={() => { setSafetyEditing(current) }}>Record safety notice</Button></div>}
+    {!current.active && <p role="status" aria-label="Archived manufacturer lot">This manufacturer lot is archived. Its identity and evidence history remain available; new observations are closed and eligibility checks return denied.</p>}
+    {editable && <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={editing !== null || safetyEditing !== null || archiving !== null || sourceFrozen || locationFrozen} onClick={() => { setEditing(current) }}>Review metadata correction</Button><Button variant="outline" disabled={editing !== null || safetyEditing !== null || archiving !== null || sourceFrozen || locationFrozen} onClick={() => { setSafetyEditing(current) }}>Record safety notice</Button><Button variant="outline" disabled={editing !== null || safetyEditing !== null || archiving !== null || sourceFrozen || locationFrozen} onClick={() => { setArchiving(current) }}>Archive manufacturer lot</Button></div>}
     {editing && <LotForm organizationId={organizationId} productId={productId} lot={editing} onRefresh={reload} onSaved={reload} onCancel={() => { setEditing(null) }} />}
     {safetyEditing && <SafetyEvidenceForm organizationId={organizationId} lot={safetyEditing} onRefresh={reload} onSaved={reload} />}
+    {archiving && <LotArchive key={archiving.version} organizationId={organizationId} lot={archiving} onCancel={() => { setArchiving(null) }} onRefresh={reload} onSaved={async result => {
+      client.setQueryData([...scope, 'lot', lotId], result)
+      await client.invalidateQueries({ queryKey: [...scope, 'lots'] })
+      await client.invalidateQueries({ queryKey: [...scope, 'eligibility'] })
+      setArchiving(null)
+    }} />}
     <CorrectionHistory organizationId={organizationId} lotId={lotId} />
     <SourcePanel organizationId={organizationId} lotId={lotId} />
     <StorePicker organizationId={organizationId} value={storeId} onChange={setStoreId} disabled={sourceFrozen || locationFrozen} />
     {storeId ? <StoreEvidence key={storeId} organizationId={organizationId} storeId={storeId} lot={current} productActive={product.data.active} sourceFrozen={sourceFrozen} onSourceLock={setSourceFrozen} onLocationLock={setLocationFrozen} />
-      : administrator && ((current.active && product.data.active) || sourceFrozen) ? <SourceForm key="organization-source" organizationId={organizationId} lotId={lotId} onLock={setSourceFrozen} /> : <p className="text-sm text-muted-foreground">Choose an assigned store to record source evidence and assess its storage context.</p>}
+      : administrator && ((current.active && product.data.active) || sourceFrozen) ? <SourceForm key="organization-source" organizationId={organizationId} lotId={lotId} onLock={setSourceFrozen} />
+        : !current.active || !product.data.active ? <p className="text-sm text-muted-foreground">Saved source observations and identity history remain readable. This archived catalog record cannot accept new source evidence.</p>
+          : <p className="text-sm text-muted-foreground">Choose an assigned store to record source evidence and assess its storage context.</p>}
     <PolicyPanel organizationId={organizationId} category={product.data.category} temperature={product.data.temperatureClass} />
   </section>
+}
+function LotArchive({ organizationId, lot, onSaved, onRefresh, onCancel }: {
+  organizationId: string, lot: ManufacturerLot, onSaved: (lot: ManufacturerLot) => Promise<void>, onRefresh: () => Promise<void>, onCancel: () => void,
+}) {
+  const [reason, setReason] = useState('')
+  return <DurableForm title="Confirm manufacturer lot archival" submitLabel="Confirm lot archival"
+    confirmation="I reviewed the impact and confirm archival of this manufacturer lot identity."
+    prepare={() => ({ requestId: crypto.randomUUID(), expectedVersion: lot.version, reason }) satisfies ArchiveLotCommand}
+    execute={(body, signal) => archiveLot(organizationId, lot.id, body, signal)} onSaved={onSaved} onRefresh={onRefresh} onCancel={onCancel}>
+    <p className="text-sm text-muted-foreground">Archival preserves the manufacturer identity, source observations, safety evidence and correction history. New corrections, safety notices and source observations will be blocked; eligibility checks will return denied. It does not remove physical stock or withdraw a recall.</p>
+    <Field label="Reason for manufacturer lot archival">{id => <textarea id={id} required maxLength={500} value={reason} onChange={event => { setReason(event.target.value) }} className={inputClass} />}</Field>
+  </DurableForm>
 }
 function StoreEvidence({ organizationId, storeId, lot, productActive, sourceFrozen, onSourceLock, onLocationLock }: {
   organizationId: string, storeId: string, lot: ManufacturerLot, productActive: boolean, sourceFrozen: boolean,

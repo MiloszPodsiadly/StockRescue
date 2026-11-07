@@ -112,13 +112,20 @@ class ProductManagementTest extends InfrastructureTestBase {
         assertThat(tree(replay)).isEqualTo(expected);
         body.put("name","Altered intent");
         problem(owner.write("POST",base(f.orgA),body),409,"CATALOG_CONFLICT");
-        problem(owner.write("POST",base(f.orgA),body(UUID.randomUUID(),"MILK-1")),409,"CATALOG_CONFLICT");
+        problem(owner.write("POST",base(f.orgA),bodyWithoutGtin(UUID.randomUUID(),"MILK-1")),409,"CATALOG_CONFLICT");
         assertThat(count("product")).isEqualTo(1);
         assertThat(count("product_command")).isEqualTo(1);
         assertThat(audits("PRODUCT_CREATED")).isEqualTo(1);
+        var secondOrganizationPreview=tree(f.ownerB.browser().get(gtinReview(f.orgB,"036000291452")));
+        assertThat(secondOrganizationPreview.path("matches")).isEmpty();
+        assertThat(secondOrganizationPreview.path("matchSetRevision").isNull()).isTrue();
         assertThat(f.ownerB.browser().write("POST",base(f.orgB),body(request,"MILK-1")).statusCode()).isEqualTo(201);
         f.member(f.ownerB,f.orgA,"ORG_ADMIN",null);
-        assertThat(f.ownerB.browser().write("POST",base(f.orgA),body(request,"OTHER-ACTOR")).statusCode()).isEqualTo(201);
+        var duplicateOwner=f.ownerB.browser();var duplicate=body(UUID.randomUUID(),"OTHER-ACTOR");
+        var duplicateReview=tree(duplicateOwner.get(gtinReview(f.orgA,"036000291452")));
+        duplicate.put("gtinReviewAcknowledged",true);
+        duplicate.put("gtinReviewRevision",duplicateReview.path("matchSetRevision").asString());
+        assertThat(duplicateOwner.write("POST",base(f.orgA),duplicate).statusCode()).isEqualTo(201);
     }
 
     @Test
@@ -132,8 +139,8 @@ class ProductManagementTest extends InfrastructureTestBase {
         assertThat(count("product")).isEqualTo(1);
         assertThat(count("product_command")).isEqualTo(1);
         assertThat(audits("PRODUCT_CREATED")).isEqualTo(1);
-        var collisions=concurrent(() -> first.write("POST",base(f.orgA),body(UUID.randomUUID(),"SKU-RACE")),
-                () -> second.write("POST",base(f.orgA),body(UUID.randomUUID(),"sku-race")));
+        var collisions=concurrent(() -> first.write("POST",base(f.orgA),bodyWithoutGtin(UUID.randomUUID(),"SKU-RACE")),
+                () -> second.write("POST",base(f.orgA),bodyWithoutGtin(UUID.randomUUID(),"sku-race")));
         assertThat(collisions.stream().map(HttpResponse::statusCode).toList()).containsExactlyInAnyOrder(201,409);
         assertThat(count("product")).isEqualTo(2);
         assertThat(count("product_command")).isEqualTo(2);
@@ -155,7 +162,7 @@ class ProductManagementTest extends InfrastructureTestBase {
         archive.put("reason","Changed intent");
         problem(owner.write("POST",path(f.orgA,product)+"/archive",archive),409,"CATALOG_CONFLICT");
         problem(owner.write("POST",path(f.orgA,product)+"/archive",archive(UUID.randomUUID(),0)),409,"CATALOG_INACTIVE");
-        problem(owner.write("POST",base(f.orgA),body(UUID.randomUUID(),"ARCHIVE")),409,"CATALOG_CONFLICT");
+        problem(owner.write("POST",base(f.orgA),bodyWithoutGtin(UUID.randomUUID(),"ARCHIVE")),409,"CATALOG_CONFLICT");
         assertThat(tree(owner.write("POST",base(f.orgA),create))).isEqualTo(tree(result));
         assertThat(tree(owner.get(path(f.orgA,product)))).isEqualTo(tree(result));
         assertThat(audits("PRODUCT_ARCHIVED")).isEqualTo(1);
@@ -202,6 +209,112 @@ class ProductManagementTest extends InfrastructureTestBase {
     }
 
     @Test
+    void duplicateGtinNeedsARecentServerSnapshotAndArchivedMatchesRemainVisible() throws Exception {
+        var owner=f.ownerA.browser();
+        var original=body(UUID.randomUUID(),"GTIN-ORIGINAL");
+        assertThat(owner.write("POST",base(f.orgA),original).statusCode()).isEqualTo(201);
+        var preview=owner.get(gtinReview(f.orgA,"036000291452"));
+        assertThat(preview.statusCode()).as(preview.body()).isEqualTo(200);
+        var initial=tree(preview);
+        assertThat(initial.path("matches")).hasSize(1);
+        var candidate=initial.path("matches").get(0);
+        assertThat(candidate.path("sku").asString()).isEqualTo("GTIN-ORIGINAL");
+        assertThat(candidate.path("name").asString()).isEqualTo("Fresh milk");
+        assertThat(candidate.path("status").asString()).isEqualTo("ACTIVE");
+        assertThat(candidate.path("gtin").asString()).isEqualTo("036000291452");
+        assertThat(initial.path("matchSetRevision").asString()).matches("[0-9a-f]{64}");
+        problem(owner.write("POST",base(f.orgA),body(UUID.randomUUID(),"GTIN-BYPASS")),409,"GTIN_REVIEW_REQUIRED");
+        assertThat(count("product")).isEqualTo(1);
+        assertThat(count("product_command")).isEqualTo(1);
+        assertThat(audits("PRODUCT_CREATED")).isEqualTo(1);
+
+        var confirmed=body(UUID.randomUUID(),"GTIN-CONFIRMED");
+        confirmed.put("gtinReviewAcknowledged",true);
+        confirmed.put("gtinReviewRevision",initial.path("matchSetRevision").asString());
+        var created=owner.write("POST",base(f.orgA),confirmed);
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
+        assertThat(tree(owner.write("POST",base(f.orgA),confirmed))).isEqualTo(tree(created));
+        var changed=new HashMap<>(confirmed);changed.put("name","Different operator intent");
+        problem(owner.write("POST",base(f.orgA),changed),409,"CATALOG_CONFLICT");
+        var changedAcknowledgement=new HashMap<>(confirmed);changedAcknowledgement.put("gtinReviewAcknowledged",false);
+        problem(owner.write("POST",base(f.orgA),changedAcknowledgement),409,"CATALOG_CONFLICT");
+        var stale=body(UUID.randomUUID(),"GTIN-STALE");
+        stale.put("gtinReviewAcknowledged",true);
+        stale.put("gtinReviewRevision",initial.path("matchSetRevision").asString());
+        problem(owner.write("POST",base(f.orgA),stale),409,"GTIN_REVIEW_REQUIRED");
+        assertThat(count("product")).isEqualTo(2);
+        assertThat(count("product_command")).isEqualTo(2);
+        assertThat(audits("PRODUCT_CREATED")).isEqualTo(2);
+
+        var beforeArchive=tree(owner.get(gtinReview(f.orgA,"036000291452"))).path("matchSetRevision").asString();
+        var productId=UUID.fromString(tree(created).path("id").asString());
+        assertThat(owner.write("POST",path(f.orgA,productId)+"/archive",archive(UUID.randomUUID(),0)).statusCode()).isEqualTo(200);
+        var archived=tree(owner.get(gtinReview(f.orgA,"036000291452")));
+        assertThat(archived.path("matchSetRevision").asString()).isNotEqualTo(beforeArchive);
+        assertThat(archived.path("matches")).hasSize(2);
+        assertThat(java.util.stream.StreamSupport.stream(archived.path("matches").spliterator(),false)
+                .map(match -> match.path("status").asString()).toList()).containsExactlyInAnyOrder("ACTIVE","ARCHIVED");
+        assertThat(archived.path("matches").toString()).contains("GTIN-ORIGINAL","GTIN-CONFIRMED");
+        problem(owner.write("POST",base(f.orgA),body(UUID.randomUUID(),"GTIN-ARCHIVED-BYPASS")),409,"GTIN_REVIEW_REQUIRED");
+    }
+
+    @Test
+    void emptyMatchesNeedNoConsentAndBoundedPagesShareTheCompleteSetRevision() throws Exception {
+        var owner=f.ownerA.browser();
+        var empty=tree(owner.get(gtinReviewPage(f.orgA,"036000291452",0,1)));
+        assertThat(empty.path("matches")).isEmpty();
+        assertThat(empty.path("matchSetRevision").isNull()).isTrue();
+        var invalidAcknowledgement=body(UUID.randomUUID(),"GTIN-EMPTY-ACK");
+        invalidAcknowledgement.put("gtinReviewAcknowledged",true);
+        invalidAcknowledgement.put("gtinReviewRevision","0".repeat(64));
+        problem(owner.write("POST",base(f.orgA),invalidAcknowledgement),409,"GTIN_REVIEW_REQUIRED");
+        assertThat(count("product")).isZero();
+        assertThat(count("product_command")).isZero();
+
+        assertThat(owner.write("POST",base(f.orgA),body(UUID.randomUUID(),"GTIN-PAGE-1")).statusCode()).isEqualTo(201);
+        assertThat(createWithGtin(owner,f.orgA,"GTIN-PAGE-2")).isNotNull();
+        assertThat(createWithGtin(owner,f.orgA,"GTIN-PAGE-3")).isNotNull();
+        var first=tree(owner.get(gtinReviewPage(f.orgA,"036000291452",0,1)));
+        var second=tree(owner.get(gtinReviewPage(f.orgA,"036000291452",1,1)));
+        var third=tree(owner.get(gtinReviewPage(f.orgA,"036000291452",2,1)));
+        assertThat(first.path("matches")).hasSize(1);
+        assertThat(first.path("hasMore").asBoolean()).isTrue();
+        assertThat(second.path("matches")).hasSize(1);
+        assertThat(second.path("hasMore").asBoolean()).isTrue();
+        assertThat(third.path("matches")).hasSize(1);
+        assertThat(third.path("hasMore").asBoolean()).isFalse();
+        assertThat(first.path("matchSetRevision").asString()).matches("[0-9a-f]{64}");
+        assertThat(second.path("matchSetRevision").asString()).isEqualTo(first.path("matchSetRevision").asString());
+        assertThat(third.path("matchSetRevision").asString()).isEqualTo(first.path("matchSetRevision").asString());
+        assertThat(first.path("matches").get(0).path("gtin").asString()).isEqualTo("036000291452");
+    }
+
+    @Test
+    void concurrentNewProductsWithOneGtinRequireTheSecondOperatorToReview() throws Exception {
+        var first=f.ownerA.browser();var second=new Browser(f.ownerA);
+        var responses=concurrent(() -> first.write("POST",base(f.orgA),body(UUID.randomUUID(),"GTIN-RACE-A")),
+                () -> second.write("POST",base(f.orgA),body(UUID.randomUUID(),"GTIN-RACE-B")));
+        assertThat(responses.stream().map(HttpResponse::statusCode).toList()).containsExactlyInAnyOrder(201,409);
+        var rejected=responses.stream().filter(response -> response.statusCode()==409).findFirst().orElseThrow();
+        assertThat(tree(rejected).path("code").asString()).isEqualTo("GTIN_REVIEW_REQUIRED");
+        assertThat(count("product")).isEqualTo(1);
+        assertThat(count("product_command")).isEqualTo(1);
+        assertThat(audits("PRODUCT_CREATED")).isEqualTo(1);
+    }
+
+    @Test
+    void gtinPreviewPreservesLeadingZeroesAndRejectsMalformedValues() throws Exception {
+        var owner=f.ownerA.browser();
+        var created=owner.write("POST",base(f.orgA),body(UUID.randomUUID(),"GTIN-LEADING-ZERO"));
+        assertThat(created.statusCode()).isEqualTo(201);
+        var preview=tree(owner.get(gtinReview(f.orgA,"036000291452")));
+        assertThat(preview.path("gtin").asString()).isEqualTo("036000291452");
+        assertThat(preview.path("matches").get(0).path("productId").asString()).isEqualTo(tree(created).path("id").asString());
+        problem(owner.get(gtinReview(f.orgA,"036000291453")),422,"INVALID_REQUEST");
+        assertThat(count("product")).isEqualTo(1);
+    }
+
+    @Test
     void categoryCorrectionAuditFailureRollsBackTheProductVersionAndRetryReceipt() throws Exception {
         var owner=f.ownerA.browser();
         var product=create(owner,"CATEGORY-ROLLBACK");
@@ -222,9 +335,9 @@ class ProductManagementTest extends InfrastructureTestBase {
     @Test
     void searchAndPaginationUseLiteralFiltersAndStableOrganizationScopedOrdering() throws Exception {
         var owner=f.ownerA.browser();
-        create(owner,"C-THIRD"); create(owner,"A-FIRST");
+        createWithGtin(owner,f.orgA,"C-THIRD"); createWithGtin(owner,f.orgA,"A-FIRST");
         var middle=body(UUID.randomUUID(),"B-SECOND"); middle.put("name","Offer 100%_fresh");
-        var id=UUID.fromString(tree(owner.write("POST",base(f.orgA),middle)).path("id").asString());
+        var id=UUID.fromString(tree(createWithGtin(owner,f.orgA,middle)).path("id").asString());
         create(f.ownerB.browser(),f.orgB,"FOREIGN");
         var one=tree(owner.get(base(f.orgA)+"?limit=1"));
         assertThat(one.path("items").get(0).path("sku").asString()).isEqualTo("A-FIRST");
@@ -268,6 +381,8 @@ class ProductManagementTest extends InfrastructureTestBase {
         doThrow(new IllegalStateException("audit unavailable")).when(audit).securityChange(any(),eq(f.orgA),eq("product"),any(),anyString(),anyMap(),anyString());
         problem(owner.write("POST",base(f.orgA),body),500,"INTERNAL_ERROR");
         assertThat(count("product")).isZero(); assertThat(count("product_command")).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.product_gtin_review_scope WHERE org_id=:org")
+                .param("org",f.orgA).query(Long.class).single()).isZero();
         doCallRealMethod().when(audit).securityChange(any(),eq(f.orgA),eq("product"),any(),anyString(),anyMap(),anyString());
         var created=owner.write("POST",base(f.orgA),body);
         assertThat(created.statusCode()).isEqualTo(201);
@@ -329,10 +444,28 @@ class ProductManagementTest extends InfrastructureTestBase {
     private long count(String table) { return jdbc.sql("SELECT count(*) FROM stockrescue."+table+" WHERE org_id=:org").param("org",f.orgA).query(Long.class).single(); }
     private long audits(String action) { return jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND action=:action").param("org",f.orgA).param("action",action).query(Long.class).single(); }
     private Map<String,Object> body(UUID request,String sku) { return new HashMap<>(Map.of("requestId",request,"sku",sku,"name","Fresh milk","gtin","036000291452","baseUnit","EA","category","DAIRY","temperatureClass","CHILLED")); }
+    private Map<String,Object> bodyWithoutGtin(UUID request,String sku) { var body=body(request,sku);body.remove("gtin");return body; }
     private Map<String,Object> archive(UUID request,long version) { return new HashMap<>(Map.of("requestId",request,"expectedVersion",version,"reason","Discontinued product reviewed")); }
     private Map<String,Object> categoryCorrection(UUID request,long version,String category) { return new HashMap<>(Map.of("requestId",request,"expectedVersion",version,"category",category,"reason","Corrected from the package label")); }
     private UUID create(Browser browser,String sku) throws Exception { return create(browser,f.orgA,sku); }
-    private UUID create(Browser browser,UUID org,String sku) throws Exception { var result=browser.write("POST",base(org),body(UUID.randomUUID(),sku)); assertThat(result.statusCode()).as(result.body()).isEqualTo(201); return UUID.fromString(tree(result).path("id").asString()); }
+    private UUID create(Browser browser,UUID org,String sku) throws Exception { var result=browser.write("POST",base(org),bodyWithoutGtin(UUID.randomUUID(),sku)); assertThat(result.statusCode()).as(result.body()).isEqualTo(201); return UUID.fromString(tree(result).path("id").asString()); }
+    private UUID createWithGtin(Browser browser,UUID org,String sku) throws Exception {
+        var result=createWithGtin(browser,org,body(UUID.randomUUID(),sku));assertThat(result.statusCode()).as(result.body()).isEqualTo(201);
+        return UUID.fromString(tree(result).path("id").asString());
+    }
+    private HttpResponse<String> createWithGtin(Browser browser,UUID org,Map<String,Object> command) throws Exception {
+        var result=browser.write("POST",base(org),command);
+        if (result.statusCode()==409 && "GTIN_REVIEW_REQUIRED".equals(tree(result).path("code").asString())) {
+            var review=tree(browser.get(gtinReview(org,(String)command.get("gtin"))));
+            command.put("requestId",UUID.randomUUID());
+            command.put("gtinReviewAcknowledged",true);
+            command.put("gtinReviewRevision",review.path("matchSetRevision").asString());
+            result=browser.write("POST",base(org),command);
+        }
+        return result;
+    }
+    private String gtinReview(UUID org,String gtin) { return base(org)+"/gtin-review?gtin="+gtin+"&offset=0&limit=25"; }
+    private String gtinReviewPage(UUID org,String gtin,int offset,int limit) { return base(org)+"/gtin-review?gtin="+gtin+"&offset="+offset+"&limit="+limit; }
     private String base(UUID org) { return "/api/v1/organizations/"+org+"/products"; }
     private String path(UUID org,UUID product) { return base(org)+"/"+product; }
     private JsonNode tree(HttpResponse<String> result) { return json.readTree(result.body()); }

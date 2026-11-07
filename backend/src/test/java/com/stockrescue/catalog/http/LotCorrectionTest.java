@@ -73,7 +73,7 @@ class LotCorrectionTest extends InfrastructureTestBase {
     }
 
     @Test
-    void replayRecoversOriginalCorrectionAlongsideCurrentVersionEvenAfterParentArchival() throws Exception {
+    void correctionAndArchiveCommandsReplayTheirCommittedOutcomesAfterParentArchival() throws Exception {
         var id=register("RECOVERY"); var browser=f.owner.browser(); var command=correction(0,"2027-05");
         var first=browser.write(corrections(id),command); assertThat(first.statusCode()).as(first.body()).isEqualTo(201);
         var second=browser.write(corrections(id),correction(1,"2027-06")); assertThat(second.statusCode()).as(second.body()).isEqualTo(201);
@@ -87,13 +87,160 @@ class LotCorrectionTest extends InfrastructureTestBase {
         assertThat(tree(browser.get(corrections(id)+"?offset=1&limit=1")).path("items").get(0)).isEqualTo(tree(first).path("correction"));
         var changed=new HashMap<>(command); changed.put("reason","Changed retry");
         problem(browser.write(corrections(id),changed),409,"CATALOG_CONFLICT");
-        jdbc.sql("UPDATE stockrescue.product SET active=FALSE,version=version+1 WHERE org_id=:org AND id=:id").param("org",f.org).param("id",f.product).update();
-        problem(browser.write(corrections(id),correction(2,"2027-07")),409,"CATALOG_INACTIVE");
-        assertThat(browser.write(corrections(id),command).statusCode()).isEqualTo(200);
-        jdbc.sql("UPDATE stockrescue.manufacturer_lot SET active=FALSE,version=version+1 WHERE org_id=:org AND id=:id").param("org",f.org).param("id",id).update();
+        var archive=archive(UUID.randomUUID(),2,"Reviewed lot no longer offered");
+        var archived=browser.write(lot(id)+"/archive",archive);
+        assertThat(archived.statusCode()).as(archived.body()).isEqualTo(201);
+        assertThat(tree(archived).path("version").asLong()).isEqualTo(3);
+        assertThat(tree(archived).path("active").asBoolean()).isFalse();
+        assertThat(tree(archived).path("archivedAt").isNull()).isFalse();
+        assertThat(tree(browser.write(lot(id)+"/archive",archive))).isEqualTo(tree(archived));
+        var changedArchive=new HashMap<>(archive); changedArchive.put("reason","Changed archival intent");
+        problem(browser.write(lot(id)+"/archive",changedArchive),409,"CATALOG_CONFLICT");
+        problem(browser.write(lot(id)+"/archive",archive(UUID.randomUUID(),2,"Stale lot version")),409,"CATALOG_INACTIVE");
+        assertThat(tree(browser.write(corrections(id),command)).path("lot")).isEqualTo(tree(archived));
+        var productArchive=browser.write("/api/v1/organizations/"+f.org+"/products/"+f.product+"/archive",
+                Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"reason","Catalog discontinued"));
+        assertThat(productArchive.statusCode()).isEqualTo(200);
+        problem(browser.write(corrections(id),correction(3,"2027-07")),409,"CATALOG_INACTIVE");
         assertThat(tree(browser.write(corrections(id),command)).path("lot").path("active").asBoolean()).isFalse();
         problem(browser.write(corrections(id),correction(3,"2027-07")),409,"CATALOG_INACTIVE");
         assertThat(count("lot_correction")).isEqualTo(2); assertThat(audits()).isEqualTo(2);
+        assertThat(count("lot_archive_command")).isEqualTo(1); assertThat(lotAudits()).isEqualTo(1);
+    }
+
+    @Test
+    void auditedArchivalPreservesSourceAndCorrectionHistoryAndRejectsNewEvidence() throws Exception {
+        var id=register("ARCHIVE-EVIDENCE"); var owner=f.owner.browser();
+        var original=tree(owner.get(lot(id)));
+        var source=owner.write(lot(id)+"/source-evidence",Map.of("requestId",UUID.randomUUID(),"provenance",provenance("supplier-original")));
+        assertThat(source.statusCode()).as(source.body()).isEqualTo(201);
+        var correction=owner.write(corrections(id),correction(0,"2027-05"));
+        assertThat(correction.statusCode()).isEqualTo(201);
+        var before=tree(correction).path("lot");
+        var safety=owner.write("/api/v1/organizations/"+f.org+"/lots/"+id+"/safety-status-evidence",Map.of(
+                "requestId",UUID.randomUUID(),"expectedVersion",1,"reason","Reviewed the manufacturer's safety notice",
+                "recallState","RECALLED","damageState","UNKNOWN","provenance",provenance("recall-document")));
+        assertThat(safety.statusCode()).as(safety.body()).isEqualTo(201);
+        var payload=archive(UUID.randomUUID(),2,"Supplier discontinued this lot identity");
+        var result=owner.write(lot(id)+"/archive",payload);
+        assertThat(result.statusCode()).as(result.body()).isEqualTo(201);
+        var archived=tree(result);
+        assertThat(archived.path("active").asBoolean()).isFalse();
+        assertThat(archived.path("version").asLong()).isEqualTo(3);
+        assertThat(archived.path("archivedAt").isNull()).isFalse();
+        assertThat(archived.path("lotCode")).isEqualTo(before.path("lotCode"));
+        assertThat(archived.path("manufacturerProvenance")).isEqualTo(before.path("manufacturerProvenance"));
+        assertThat(archived.path("recallState").asString()).isEqualTo("RECALLED");
+        assertThat(archived.path("statusProvenance").path("reference").asString()).isEqualTo("recall-document");
+        assertThat(tree(owner.get(lot(id)+"/source-evidence")).path("items").get(0)).isEqualTo(tree(source));
+        var history=tree(owner.get(corrections(id)));
+        assertThat(history.path("items")).hasSize(2);
+        assertThat(history.path("items").get(0)).isEqualTo(tree(safety).path("correction"));
+        assertThat(history.path("items").get(1)).isEqualTo(tree(correction).path("correction"));
+        assertThat(history.path("currentVersion").asLong()).isEqualTo(3);
+        problem(owner.write(corrections(id),correction(3,"2027-06")),409,"CATALOG_INACTIVE");
+        problem(owner.write(lot(id)+"/source-evidence",Map.of("requestId",UUID.randomUUID(),"provenance",provenance("new-source"))),409,"CATALOG_INACTIVE");
+        problem(owner.write("/api/v1/organizations/"+f.org+"/lots/"+id+"/safety-status-evidence",Map.of(
+                "requestId",UUID.randomUUID(),"expectedVersion",3,"reason","Attempt to change archived safety metadata",
+                "recallState","UNKNOWN","damageState","UNKNOWN","provenance",provenance("replacement"))),409,"CATALOG_INACTIVE");
+        assertThat(count("consignment_evidence")).isEqualTo(1);
+        assertThat(count("lot_correction")).isEqualTo(2);
+        assertThat(lotAudits()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT changes#>>'{before,active}'='true' AND changes#>>'{after,active}'='false' AND reason=:reason FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:id AND action='LOT_ARCHIVED'")
+                .param("reason",payload.get("reason")).param("org",f.org).param("id",id).query(Boolean.class).single()).isTrue();
+        assertThat(original.path("active").asBoolean()).isTrue();
+        var confirmedRequest=registration("ARCHIVE-CONFIRMED");
+        confirmedRequest.put("identityState","CONFIRMED"); confirmedRequest.put("manufacturerIdentityKey","producer:verified");
+        confirmedRequest.put("manufacturerVerified",true);
+        var confirmedId=register(confirmedRequest);
+        var confirmedArchive=owner.write(lot(confirmedId)+"/archive",archive(UUID.randomUUID(),0,"Confirmed identity discontinued"));
+        assertThat(confirmedArchive.statusCode()).as(confirmedArchive.body()).isEqualTo(201);
+        assertThat(tree(confirmedArchive).path("identityState").asString()).isEqualTo("CONFIRMED");
+        assertThat(tree(confirmedArchive).path("manufacturerIdentityKey").asString()).isEqualTo("producer:verified");
+        assertThat(count("lot_archive_command")).isEqualTo(2);
+        assertThat(lotAudits()).isEqualTo(2);
+    }
+
+    @Test
+    void archivalIsAdminOnlyAndHidesForeignAndAnonymousLots() throws Exception {
+        var id=register("ARCHIVE-ACCESS");
+        jdbc.sql("UPDATE stockrescue.store_grant SET role='STORE_MANAGER' WHERE org_id=:org AND membership_id=:member")
+                .param("org",f.org).param("member",f.membership(f.operator)).update();
+        var command=archive(UUID.randomUUID(),0,"Reviewed shared manufacturer identity");
+        problem(f.operator.browser().write(lot(id)+"/archive",command),403,"ACCESS_DENIED");
+        problem(f.foreign.browser().write("/api/v1/organizations/"+f.otherOrg+"/lots/"+id+"/archive",command),404,"RESOURCE_NOT_FOUND");
+        problem(new Browser().write(lot(id)+"/archive",command),401,"AUTH_REQUIRED");
+        problem(f.owner.browser().write(lot(id)+"/archive",archive(UUID.randomUUID(),1,"Stale version")),409,"CATALOG_CONFLICT");
+        assertThat(tree(f.owner.browser().get(lot(id))).path("active").asBoolean()).isTrue();
+        assertThat(count("lot_archive_command")).isZero();
+    }
+
+    @Test
+    void auditAndDatabaseFailuresRollBackLotStateAndArchiveReceiptTogether() throws Exception {
+        var id=register("ARCHIVE-ROLLBACK"); var owner=f.owner.browser();
+        var original=tree(owner.get(lot(id))); var command=archive(UUID.randomUUID(),0,"Reviewed archive rollback");
+        doThrow(new IllegalStateException("Audit unavailable")).when(audit).securityChange(any(),eq(f.org),eq("manufacturer-lot"),eq(id),eq("LOT_ARCHIVED"),anyMap(),anyString());
+        problem(owner.write(lot(id)+"/archive",command),500,"INTERNAL_ERROR");
+        assertThat(tree(owner.get(lot(id)))).isEqualTo(original);
+        assertThat(count("lot_archive_command")).isZero(); assertThat(lotAudits()).isZero();
+        doCallRealMethod().when(audit).securityChange(any(),eq(f.org),eq("manufacturer-lot"),eq(id),eq("LOT_ARCHIVED"),anyMap(),anyString());
+        jdbc.sql("ALTER TABLE stockrescue.manufacturer_lot ADD CONSTRAINT lot_archive_failure_probe CHECK (org_id<>'"+f.org+"'::uuid OR lot_code<>'ARCHIVE-ROLLBACK') NOT VALID").update();
+        try {
+            problem(owner.write(lot(id)+"/archive",command),409,"CATALOG_CONFLICT");
+            assertThat(tree(owner.get(lot(id)))).isEqualTo(original);
+            assertThat(count("lot_archive_command")).isZero(); assertThat(lotAudits()).isZero();
+        } finally { jdbc.sql("ALTER TABLE stockrescue.manufacturer_lot DROP CONSTRAINT lot_archive_failure_probe").update(); }
+        assertThat(owner.write(lot(id)+"/archive",command).statusCode()).isEqualTo(201);
+        assertThat(count("lot_archive_command")).isEqualTo(1); assertThat(lotAudits()).isEqualTo(1);
+    }
+
+    @Test
+    void databaseRequiresArchiveCommandAndPreventsLotRevivalDeletionAndTruncation() throws Exception {
+        var id=register("ARCHIVE-GUARD");
+        assertThatThrownBy(() -> jdbc.sql("UPDATE stockrescue.manufacturer_lot SET active=FALSE,version=version+1 WHERE org_id=:org AND id=:id")
+                .param("org",f.org).param("id",id).update()).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        var owner=f.owner.browser();
+        assertThat(owner.write(lot(id)+"/archive",archive(UUID.randomUUID(),0,"Reviewed archive guard")).statusCode()).isEqualTo(201);
+        for (var sql:List.of(
+                "UPDATE stockrescue.manufacturer_lot SET active=TRUE,archived_at=NULL,version=version+1 WHERE org_id=:org AND id=:id",
+                "DELETE FROM stockrescue.manufacturer_lot WHERE org_id=:org AND id=:id",
+                "TRUNCATE stockrescue.manufacturer_lot",
+                "DELETE FROM stockrescue.lot_archive_command WHERE org_id=:org",
+                "TRUNCATE stockrescue.lot_archive_command")) {
+            assertThatThrownBy(() -> jdbc.sql(sql).param("org",f.org).param("id",id).update()).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        }
+        assertThat(tree(owner.get(lot(id))).path("active").asBoolean()).isFalse();
+        assertThat(count("lot_archive_command")).isEqualTo(1);
+    }
+
+    @Test
+    void archivalWinsAgainstWaitingCorrectionAndSourceRegistrationWithoutPartialEvidence() throws Exception {
+        var correctionId=register("ARCHIVE-CORRECTION-RACE");
+        orderedArchiveRace(correctionId,true);
+        var sourceId=register("ARCHIVE-SOURCE-RACE");
+        orderedArchiveRace(sourceId,false);
+    }
+
+    private void orderedArchiveRace(UUID id,boolean correctionFirst) throws Exception {
+        var owner=f.owner.browser(); var other=f.coowner.browser(); var release=new CountDownLatch(1); var entered=new CountDownLatch(1);
+        doAnswer(call -> { entered.countDown(); if (!release.await(15,TimeUnit.SECONDS)) throw new IllegalStateException("Command barrier timed out"); return call.callRealMethod(); })
+                .when(audit).securityChange(any(),eq(f.org),anyString(),any(),eq("LOT_ARCHIVED"),anyMap(),anyString());
+        try (var workers=Executors.newFixedThreadPool(2)) {
+            var archive=workers.submit(() -> owner.write(lot(id)+"/archive",archive(UUID.randomUUID(),0,"Archive after review")));
+            assertThat(entered.await(10,TimeUnit.SECONDS)).isTrue();
+            var competing=workers.submit(() -> correctionFirst
+                    ? other.write(corrections(id),correction(0,"2027-05"))
+                    : other.write(lot(id)+"/source-evidence",Map.of("requestId",UUID.randomUUID(),"provenance",provenance("concurrent-source"))));
+            await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(jdbc.sql("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%manufacturer_lot%'").query(Long.class).single()).isPositive());
+            release.countDown();
+            assertThat(archive.get(15,TimeUnit.SECONDS).statusCode()).isEqualTo(201);
+            problem(competing.get(15,TimeUnit.SECONDS),409,"CATALOG_INACTIVE");
+        } finally { release.countDown(); }
+        assertThat(tree(owner.get(lot(id))).path("active").asBoolean()).isFalse();
+        assertThat(countForLot("lot_archive_command",id)).isEqualTo(1);
+        assertThat(countForLot(correctionFirst?"lot_correction":"consignment_evidence",id)).isZero();
+        assertThat(lotAudits(id)).isEqualTo(1);
+        reset(audit);
     }
 
     @Test
@@ -276,6 +423,9 @@ class LotCorrectionTest extends InfrastructureTestBase {
                 "evidenceReviewed",true,"identityState","CANDIDATE","manufacturerVerified",false,"manufacturerProvenance",provenance("producer-reviewed"),
                 "dateMarking",marking(label,"BEST_BEFORE_END","MONTH",true)));
     }
+    private Map<String,Object> archive(UUID request,long version,String reason) {
+        return new HashMap<>(Map.of("requestId",request,"expectedVersion",version,"reason",reason));
+    }
     private Map<String,Object> marking(String label,String type,String precision,boolean source) {
         var result=new HashMap<String,Object>(Map.of("labeledValue",label,"type",type,"precision",precision));
         if (source) result.put("provenance",provenance("label-photo")); return result;
@@ -286,8 +436,11 @@ class LotCorrectionTest extends InfrastructureTestBase {
     private String base() { return "/api/v1/organizations/"+f.org+"/lots"; }
     private String lot(UUID id) { return base()+"/"+id; }
     private String corrections(UUID id) { return lot(id)+"/corrections"; }
+    private long lotAudits() { return jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND action='LOT_ARCHIVED'").param("org",f.org).query(Long.class).single(); }
+    private long lotAudits(UUID id) { return jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:id AND action='LOT_ARCHIVED'").param("org",f.org).param("id",id).query(Long.class).single(); }
     private JsonNode tree(HttpResponse<String> response) { return json.readTree(response.body()); }
     private long count(String table) { return jdbc.sql("SELECT count(*) FROM stockrescue."+table+" WHERE org_id=:org").param("org",f.org).query(Long.class).single(); }
+    private long countForLot(String table,UUID id) { return jdbc.sql("SELECT count(*) FROM stockrescue."+table+" WHERE org_id=:org AND lot_id=:id").param("org",f.org).param("id",id).query(Long.class).single(); }
     private long audits() { return jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND action='LOT_METADATA_CORRECTED'").param("org",f.org).query(Long.class).single(); }
     private void problem(HttpResponse<String> response,int status,String code) { assertThat(response.statusCode()).as(response.body()).isEqualTo(status); assertThat(tree(response).path("code").asString()).isEqualTo(code); }
     private List<HttpResponse<String>> concurrent(Callable<HttpResponse<String>> one,Callable<HttpResponse<String>> two) throws Exception {

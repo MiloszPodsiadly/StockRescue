@@ -50,7 +50,7 @@ public class LotController {
     public ResponseEntity<LotResponse> register(Authentication actor,@PathVariable UUID organizationId,@Valid @RequestBody RegisterLotRequest request) {
         var data=new LotData(request.productId(),request.lotCode(),request.identityState(),request.manufacturerIdentityKey(),
                 request.manufacturerProvenance().value(),request.manufacturerVerified(),request.dateMarking().value());
-        var result=lots.register(actor(actor),organizationId,request.requestId(),data);
+        var result=lots.register(actor(actor),organizationId,request.requestId(),request.storeId(),data);
         return ResponseEntity.status(result.created()?HttpStatus.CREATED:HttpStatus.OK).body(LotResponse.from(result.lot()));
     }
     @GetMapping
@@ -66,6 +66,15 @@ public class LotController {
     @Operation(operationId="getManufacturerLot",summary="Read exact date marking and manufacturer evidence, including archived identity")
     @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=LotResponse.class)))
     public LotResponse detail(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID lotId) { return LotResponse.from(lots.detail(actor(actor),organizationId,lotId)); }
+    @PostMapping(value="/{lotId}/archive",consumes=MediaType.APPLICATION_JSON_VALUE)
+    @Operation(operationId="archiveManufacturerLot",summary="Archive one expected manufacturer-lot version with durable replay and immutable audit evidence")
+    @ApiResponses({@ApiResponse(responseCode="201",content=@Content(schema=@Schema(implementation=LotResponse.class))),
+            @ApiResponse(responseCode="200",description="Recorded archival command replay",content=@Content(schema=@Schema(implementation=LotResponse.class)))})
+    public ResponseEntity<LotResponse> archive(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID lotId,
+            @Valid @RequestBody ArchiveLotRequest request) {
+        var result=lots.archive(actor(actor),organizationId,lotId,request.requestId(),request.expectedVersion(),request.reason());
+        return ResponseEntity.status(result.created()?HttpStatus.CREATED:HttpStatus.OK).body(LotResponse.from(result.lot()));
+    }
     @PostMapping(value="/{lotId}/corrections",consumes=MediaType.APPLICATION_JSON_VALUE)
     @Operation(operationId="correctLotMetadata",summary="Review and correct one expected metadata version with immutable evidence and a durable request outcome")
     @ApiResponses({@ApiResponse(responseCode="201",content=@Content(schema=@Schema(implementation=LotCorrectionResult.class))),
@@ -87,6 +96,10 @@ public class LotController {
         return new LotCorrectionPage(page.currentVersion(),page.items().stream().map(LotCorrectionResponse::from).toList(),page.hasMore());
     }
     private UUID actor(Authentication actor) { return UUID.fromString(actor.getName()); }
+    public record ArchiveLotRequest(
+            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
+            @NotNull @Min(0) @Max(Long.MAX_VALUE-1) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedVersion,
+            @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
     public record CorrectLotMetadataRequest(
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
             @NotNull @Min(0) @Max(Long.MAX_VALUE-1) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedVersion,
@@ -122,6 +135,7 @@ public class LotController {
     }
     public record RegisterLotRequest(
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
+            @Schema(types={"string","null"},format="uuid",description="Optional active store context; required for store personnel") UUID storeId,
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID productId,
             @NotBlank @Size(max=128) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String lotCode,
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) LotIdentityState identityState,

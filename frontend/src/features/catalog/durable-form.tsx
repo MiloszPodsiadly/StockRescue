@@ -6,10 +6,10 @@ import { Button } from '@/components/ui/button'
 import { useTenantKey, useTenantRequests } from '../organizations/tenant-requests'
 
 /** One captured command stays recoverable until its durable outcome is confirmed. */
-export function DurableForm<Body, Result>({ title, submitLabel, prepare, execute, onSaved, onRefresh, confirmation, onLock, onCancel, canSubmit = true, children }: {
+export function DurableForm<Body, Result>({ title, submitLabel, prepare, execute, onSaved, onRefresh, confirmation, onLock, onCancel, onPreconditionConflict, canSubmit = true, children }: {
   title: string, submitLabel: string, prepare: () => Body, execute: (body: Body, signal: AbortSignal) => Promise<Result>,
   onSaved: (result: Result) => Promise<void>, onRefresh: () => Promise<void>, confirmation?: string,
-  onLock?: (locked: boolean) => void, onCancel?: () => void, canSubmit?: boolean, children: ReactNode,
+  onLock?: (locked: boolean) => void, onCancel?: () => void, onPreconditionConflict?: (code: string) => void, canSubmit?: boolean, children: ReactNode,
 }) {
   const scope = useTenantKey()
   const tenant = useTenantRequests()
@@ -40,9 +40,13 @@ export function DurableForm<Body, Result>({ title, submitLabel, prepare, execute
     onError: error => {
       setReviewed(false)
       if (error instanceof ApiError && (error.status === 400 || error.status === 422)) { setSubmitted(null); onLock?.(false) }
+      if (error instanceof ApiError && error.status === 409 && error.code === 'GTIN_REVIEW_REQUIRED') {
+        setSubmitted(null);onLock?.(false);onPreconditionConflict?.(error.code)
+      }
     },
   })
-  const conflict = action.error instanceof ApiError && action.error.status === 409
+  const gtinReviewRequired = action.error instanceof ApiError && action.error.status === 409 && action.error.code === 'GTIN_REVIEW_REQUIRED'
+  const conflict = action.error instanceof ApiError && action.error.status === 409 && !gtinReviewRequired
   const denied = action.error instanceof ApiError && (action.error.status === 401 || action.error.status === 403 || action.error.status === 404)
     && action.error.code !== 'CSRF_INVALID'
   const frozen = submitted !== null || action.isPending || refreshing || confirmed !== null
@@ -64,7 +68,7 @@ export function DurableForm<Body, Result>({ title, submitLabel, prepare, execute
     <h3 className="text-xl font-semibold">{title}</h3>
     <fieldset disabled={frozen} className="min-w-0 space-y-5" onChange={() => { setReviewed(false) }}>{children}</fieldset>
     {confirmation && <label className="flex items-start gap-3 text-sm"><input type="checkbox" required checked={reviewed} disabled={frozen} onChange={event => { setReviewed(event.target.checked) }} />{confirmation}</label>}
-    {action.isError && !confirmed && <p role="alert" className="break-words rounded-xl border border-destructive/30 p-4 text-sm">{errorMessage(action.error)} {conflict ? 'Refresh the saved values and review them before submitting a new command.' : submitted && !denied ? 'The outcome is unconfirmed. Retry this captured request to recover its recorded result.' : ''}</p>}
+    {action.isError && !confirmed && <p role="alert" className="break-words rounded-xl border border-destructive/30 p-4 text-sm">{errorMessage(action.error)} {gtinReviewRequired ? 'Review the current GTIN matches; submit again to create a new command with the fresh review.' : conflict ? 'Refresh the saved values and review them before submitting a new command.' : submitted && !denied ? 'The outcome is unconfirmed. Retry this captured request to recover its recorded result.' : ''}</p>}
     {confirmed && <p role="status">The server confirmed this change.{refreshFailed && ' The view could not refresh. Refresh the confirmed result without submitting again.'}</p>}
     {refreshError !== null && <p role="alert">{errorMessage(refreshError)}</p>}
     <div className="flex flex-wrap gap-3">

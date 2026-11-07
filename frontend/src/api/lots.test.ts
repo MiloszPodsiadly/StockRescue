@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { clearCsrf } from './client'
-import { correctLotMetadata, registerLot, registerSourceEvidence } from './lots'
+import { archiveLot, correctLotMetadata, registerLot, registerSourceEvidence } from './lots'
 
 afterEach(() => { clearCsrf(); vi.unstubAllGlobals() })
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
@@ -43,6 +43,21 @@ it('recovers a lost correction response with the same reviewed evidence and dist
   await expect(correctLotMetadata('organization', 'lot', body, signal)).rejects.toThrow('Lost response')
   expect(fetcher).toHaveBeenCalledTimes(2)
   expect(await correctLotMetadata('organization', 'lot', body, signal)).toEqual(recovered)
+  expect(await (fetcher.mock.calls[1][0] as Request).json()).toEqual(body)
+  expect(await (fetcher.mock.calls[2][0] as Request).json()).toEqual(body)
+})
+
+it('recovers a lost archival acknowledgement with the same request, version and reason', async () => {
+  const archived = { id: 'lot', active: false, version: 3 }
+  const fetcher = vi.fn().mockResolvedValueOnce(json({ token: 'csrf' })).mockRejectedValueOnce(new TypeError('Lost response'))
+    .mockResolvedValueOnce(json(archived))
+  vi.stubGlobal('fetch', fetcher)
+  const body = { requestId: 'request', expectedVersion: 2, reason: 'Supplier discontinued this lot identity' } as const
+  const signal = new AbortController().signal
+  await expect(archiveLot('organization', 'lot', body, signal)).rejects.toThrow('Lost response')
+  expect(fetcher).toHaveBeenCalledTimes(2)
+  expect(await archiveLot('organization', 'lot', body, signal)).toEqual(archived)
+  expect((fetcher.mock.calls[1][0] as Request).url).toContain('/lots/lot/archive')
   expect(await (fetcher.mock.calls[1][0] as Request).json()).toEqual(body)
   expect(await (fetcher.mock.calls[2][0] as Request).json()).toEqual(body)
 })

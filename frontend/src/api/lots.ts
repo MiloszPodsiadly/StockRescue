@@ -6,6 +6,14 @@ export type RegisterLot = components['schemas']['RegisterLotRequest']
 export type SourceEvidence = components['schemas']['SourceEvidenceResponse']
 export type RegisterSourceEvidence = components['schemas']['RegisterSourceEvidenceRequest']
 export type CorrectLotMetadata = components['schemas']['CorrectLotMetadataRequest']
+export type ArchiveLot = components['schemas']['ArchiveLotRequest']
+
+export async function archiveLot(organizationId: string, lotId: string, body: ArchiveLot, signal: AbortSignal) {
+  const { data, error, response } = await api.POST('/api/v1/organizations/{organizationId}/lots/{lotId}/archive', { params: { path: { organizationId, lotId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
+  signal.throwIfAborted()
+  if (!data) throw new ApiError(response, error)
+  return data
+}
 
 export async function correctLotMetadata(organizationId: string, lotId: string, body: CorrectLotMetadata, signal: AbortSignal) {
   const { data, error, response } = await api.POST('/api/v1/organizations/{organizationId}/lots/{lotId}/corrections', { params: { path: { organizationId, lotId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
