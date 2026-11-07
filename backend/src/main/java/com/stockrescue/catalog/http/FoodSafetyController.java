@@ -129,6 +129,8 @@ public class FoodSafetyController {
             @NotBlank @Size(max=128) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String issuerId,
             @NotBlank @Size(max=128) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String keyId,
             @NotBlank @Pattern(regexp="[0-9a-f]{64}") @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="SHA-256 digest of the exact immutable policy rules and scope") String policyDigest,
+            @NotBlank @Size(max=96) @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Versioned evaluator ruleset identity included in the external signature") String rulesetId,
+            @NotBlank @Pattern(regexp="[0-9a-f]{64}") @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="SHA-256 of the stable evaluator ruleset manifest included in the external signature") String rulesetDigest,
             @NotEmpty @Schema(requiredMode=Schema.RequiredMode.REQUIRED) java.util.Set<FoodSafetyEvaluation.Operation> allowedOperations,
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant issuedAt,
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant validFrom,
@@ -136,7 +138,8 @@ public class FoodSafetyController {
             @NotBlank @Size(max=256) @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Evidence pointer only; raw source documents are not submitted or logged") String evidenceReference,
             @NotBlank @Size(min=88,max=88) @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Canonical Base64 Ed25519 signature; never returned by the API") String signatureBase64) {
         FoodSafetyPolicyApprovalSubmission value() {
-            return new FoodSafetyPolicyApprovalSubmission(requestId,issuerId,keyId,policyDigest,allowedOperations,issuedAt,validFrom,validUntil,evidenceReference,signatureBase64);
+            return new FoodSafetyPolicyApprovalSubmission(requestId,issuerId,keyId,policyDigest,rulesetId,rulesetDigest,
+                    allowedOperations,issuedAt,validFrom,validUntil,evidenceReference,signatureBase64);
         }
     }
     public record RevokePolicyApprovalRequest(@NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
@@ -190,11 +193,17 @@ public class FoodSafetyController {
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) boolean revoked,
             @Schema(types={"string","null"},format="date-time",requiredMode=Schema.RequiredMode.REQUIRED) Instant revokedAt,
             @Schema(types={"string","null"},format="uuid",requiredMode=Schema.RequiredMode.REQUIRED) UUID revokedByMembershipId,
-            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String revocationReason) {
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String revocationReason,
+            @Schema(types={"integer","null"},requiredMode=Schema.RequiredMode.REQUIRED) Integer attestationVersion,
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String signedRulesetId,
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String signedRulesetDigest,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String activeRulesetId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String activeRulesetDigest) {
         static ApprovalVerificationResponse from(FoodSafetyPolicyApprovalVerification value) {
             return new ApprovalVerificationResponse(value.outcome(),value.policyVersion(),value.policyDigest(),value.issuerId(),value.keyId(),
                     value.allowedOperations(),value.issuedAt(),value.validFrom(),value.validUntil(),value.evidenceReference(),value.recordedAt(),
-                    value.revoked(),value.revokedAt(),value.revokedByMembershipId(),value.revocationReason());
+                    value.revoked(),value.revokedAt(),value.revokedByMembershipId(),value.revocationReason(),value.attestationVersion(),
+                    value.signedRulesetId(),value.signedRulesetDigest(),value.activeRulesetId(),value.activeRulesetDigest());
         }
     }
     public record EligibilityPolicyReferenceResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,
@@ -203,7 +212,8 @@ public class FoodSafetyController {
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long version) { }
     public record EligibilityEvidenceResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) DateEvidenceStatus date,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) StatusEvidenceStatus recall,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) StatusEvidenceStatus damage,
-            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) StorageEvidenceStatus storage,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) PolicyEvidenceStatus policy) { }
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) StorageEvidenceStatus storage,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) PolicyEvidenceStatus policy,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyEvaluation.ProductClassificationEvidenceStatus classification) { }
     @Schema(description="Point-in-time evidence, not a reusable permission or physical hold. ALLOWED requires a current signed approval for this exact policy and operation plus every narrow-pilot evidence gate. Recompute before future operative use.")
     public record EligibilityResponse(
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Decision decision,
@@ -221,6 +231,7 @@ public class FoodSafetyController {
             @Schema(types={"integer","null"},format="int64",requiredMode=Schema.RequiredMode.REQUIRED) Long locationVersion,
             @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) EligibilityPolicyReferenceResponse policy,
             @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) ApprovalVerificationResponse approvalVerification,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyProductClassificationController.ProductClassificationEvidenceResponse classificationVerification,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant evaluatedAt,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) LocalDate storeLocalDate,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String storeTimeZone,
@@ -232,7 +243,8 @@ public class FoodSafetyController {
             return new EligibilityResponse(value.decision(),value.reasonCodes(),value.operation(),value.lotId(),value.lotVersion(),value.productId(),value.productVersion(),
                     value.storeId(),value.storeVersion(),value.zoneId(),value.zoneVersion(),value.locationId(),value.locationVersion(),policy==null?null:new EligibilityPolicyReferenceResponse(policy.id(),policy.profileId(),policy.productCategory(),policy.version()),
                     value.approvalVerification()==null?null:ApprovalVerificationResponse.from(value.approvalVerification()),
-                    value.evaluatedAt(),value.storeLocalDate(),value.storeTimeZone(),new EligibilityEvidenceResponse(evidence.date(),evidence.recall(),evidence.damage(),evidence.storage(),evidence.policy()),value.nextAction(),value.evaluatorVersion());
+                    FoodSafetyProductClassificationController.ProductClassificationEvidenceResponse.from(value.classificationVerification()),
+                    value.evaluatedAt(),value.storeLocalDate(),value.storeTimeZone(),new EligibilityEvidenceResponse(evidence.date(),evidence.recall(),evidence.damage(),evidence.storage(),evidence.policy(),evidence.classification()),value.nextAction(),value.evaluatorVersion());
         }
     }
 }

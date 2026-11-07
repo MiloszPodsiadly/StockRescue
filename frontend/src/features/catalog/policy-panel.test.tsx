@@ -20,7 +20,8 @@ const policy: FoodSafetyPolicyVersion = { id: 'policy-v1', profileId: 'profile',
   partialDateRule: 'NO_NORMALIZATION', approvalStatus: 'UNVERIFIED', reviewProvenance: { source: 'Review', reference: 'policy-doc' }, recordedByMembershipId: 'membership',
   recordedAt: '2026-11-06T10:00:00Z', reason: 'Initial policy review' }
 const notSubmitted: PolicyApprovalEvidence = { approvalId: null, verification: { outcome: 'NOT_SUBMITTED', policyVersion: 1, policyDigest: '0'.repeat(64), issuerId: null, keyId: null,
-  allowedOperations: [], issuedAt: null, validFrom: null, validUntil: null, evidenceReference: null, recordedAt: null, revoked: false, revokedAt: null, revokedByMembershipId: null, revocationReason: null } }
+  allowedOperations: [], issuedAt: null, validFrom: null, validUntil: null, evidenceReference: null, recordedAt: null, revoked: false, revokedAt: null, revokedByMembershipId: null, revocationReason: null,
+  attestationVersion: null, signedRulesetId: null, signedRulesetDigest: null, activeRulesetId: 'food-safety-conservative-pilot-v1', activeRulesetDigest: '1'.repeat(64) } }
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -47,4 +48,13 @@ it('labels evidence as independently verified only when the backend verification
   panel()
   expect(await screen.findByText(/Cryptographic approval evidence is verified for this exact policy version/)).toBeVisible()
   expect(screen.getByText('test-issuer')).toBeVisible()
+})
+
+it('explains a ruleset mismatch as blocking approval evidence', async () => {
+  api.approval.mockResolvedValueOnce({ approvalId: 'approval', verification: { ...notSubmitted.verification, outcome: 'RULESET_MISMATCH',
+    attestationVersion: 2, signedRulesetId: 'food-safety-conservative-pilot-v0', signedRulesetDigest: '0'.repeat(64) } })
+  panel()
+  expect(await screen.findByText(/This signature verifies for a different evaluator ruleset/)).toBeVisible()
+  expect(screen.getByText('food-safety-conservative-pilot-v0')).toBeVisible()
+  expect(screen.getByText(/food-safety-conservative-pilot-v1/)).toBeVisible()
 })

@@ -17,8 +17,18 @@ import com.stockrescue.platform.audit.AuditWriter;
 import com.stockrescue.catalog.application.FoodSafetyApprovalProperties;
 import com.stockrescue.catalog.application.FoodSafetyEvaluation.Operation;
 import com.stockrescue.catalog.application.FoodSafetyPolicyAttestation;
+import com.stockrescue.catalog.application.FoodSafetyPolicyApprovalVerifier;
 import com.stockrescue.catalog.application.FoodSafetyPolicyDigest;
+import com.stockrescue.catalog.application.FoodSafetyRuleset;
+import com.stockrescue.catalog.application.FoodSafetyPolicyApproval;
+import com.stockrescue.catalog.application.FoodSafetyPolicyApprovalVerification;
+import com.stockrescue.catalog.application.FoodSafetySignatureVerifier;
+import com.stockrescue.catalog.application.FoodSafetyProductClassificationAttestation;
+import com.stockrescue.catalog.application.FoodSafetyEvaluation;
+import com.stockrescue.catalog.persistence.FoodSafetyPolicyApprovalRepository;
 import com.stockrescue.catalog.persistence.FoodSafetyPolicyRepository;
+import com.stockrescue.catalog.persistence.FoodSafetyProductClassificationRepository;
+import com.stockrescue.catalog.persistence.ProductRepository;
 import com.stockrescue.catalog.domain.ProductCategory;
 import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
 import com.stockrescue.support.InfrastructureTestBase;
@@ -50,6 +60,11 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
     @Autowired private ObjectMapper json;
     @Autowired private FoodSafetyApprovalProperties approvalProperties;
     @Autowired private FoodSafetyPolicyRepository policyRepository;
+    @Autowired private ProductRepository productRepository;
+    @Autowired private FoodSafetyPolicyApprovalRepository approvalRepository;
+    @MockitoSpyBean private FoodSafetyProductClassificationRepository classifications;
+    @Autowired private FoodSafetyRuleset ruleset;
+    @Autowired private FoodSafetySignatureVerifier signatures;
     @MockitoBean private Clock clock;
     @MockitoSpyBean private AuditWriter audit;
     private String hash;
@@ -66,6 +81,9 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
         assertThat(owner.write(statusPath(lotId),status(0,"NOT_REPORTED","NOT_REPORTED")).statusCode()).isEqualTo(201);
         var policyResponse=owner.write(policies(),review(0,"NO_NORMALIZATION"));assertThat(policyResponse.statusCode()).isEqualTo(201);
         var policyId=UUID.fromString(tree(policyResponse).path("id").asString());var signer=signer();var trusted=trust(signer);
+        var categoryEvidence=owner.write(classificationPath(f.product),signedClassification(f.org,f.product,ProductCategory.BAKERY,signer,"external-case:bread-classification"));
+        assertThat(categoryEvidence.statusCode()).as(categoryEvidence.body()).isEqualTo(201);
+        assertThat(tree(categoryEvidence).path("outcome").asString()).isEqualTo("VERIFIED");
         var approvalPath=approvalPath(policyId);var submission=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:ambient-pilot-1");
         var before=tree(owner.get(eligibility(lotId,f.store,f.zone)));
         assertThat(before.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
@@ -126,6 +144,251 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
         assertThat(count("food_safety_policy_approval_revocation")).isEqualTo(1);
         assertThat(audits("FOOD_SAFETY_POLICY_APPROVAL_SUBMITTED")).isEqualTo(1);
         assertThat(audits("FOOD_SAFETY_POLICY_APPROVAL_REVOKED")).isEqualTo(1);
+        assertThat(count("food_safety_product_classification")).isEqualTo(1);
+        assertThat(audits("PRODUCT_CLASSIFICATION_ATTESTED")).isEqualTo(1);
+    }
+
+    @Test
+    void signedTimestampPrecisionSurvivesPostgresRoundTripAndReadTimeVerification() throws Exception {
+        var owner=f.owner.browser();var policy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policy.statusCode()).as(policy.body()).isEqualTo(201);
+        var policyId=UUID.fromString(tree(policy).path("id").asString());var signer=signer();trust(signer);
+        var issuedAt=NOW.minusSeconds(30);
+        var validFrom=NOW.minusSeconds(20).plusNanos(123_000_000);
+        var validUntil=NOW.plus(Duration.ofDays(1)).plusNanos(123_456_000);
+        var submission=signedApproval(f.org,policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:timestamp-precision",
+                null,issuedAt,validFrom,validUntil);
+        var posted=owner.write(approvalPath(policyId),submission);
+        assertThat(posted.statusCode()).as(posted.body()).isEqualTo(201);
+        assertThat(tree(posted).path("verification").path("outcome").asString()).isEqualTo("VERIFIED");
+
+        var stored=jdbc.sql("SELECT issued_at,valid_from,valid_until FROM stockrescue.food_safety_policy_approval WHERE org_id=:org AND policy_version_id=:policy")
+                .param("org",f.org).param("policy",policyId).query((row,index) -> List.of(row.getTimestamp(1).toInstant(),
+                        row.getTimestamp(2).toInstant(),row.getTimestamp(3).toInstant())).single();
+        assertThat(stored).containsExactly(issuedAt,validFrom,validUntil);
+        var read=owner.get(approvalPath(policyId));
+        assertThat(read.statusCode()).isEqualTo(200);
+        assertThat(tree(read).path("verification").path("outcome").asString()).isEqualTo("VERIFIED");
+        var replay=owner.write(approvalPath(policyId),submission);
+        assertThat(replay.statusCode()).isEqualTo(200);
+        assertThat(tree(replay).path("verification").path("outcome").asString()).isEqualTo("VERIFIED");
+        var changed=new HashMap<>(submission);changed.put("evidenceReference","external-case:changed");
+        problem(owner.write(approvalPath(policyId),changed),409,"CATALOG_CONFLICT");
+        assertThat(count("food_safety_policy_approval")).isEqualTo(1);
+        assertThat(audits("FOOD_SAFETY_POLICY_APPROVAL_SUBMITTED")).isEqualTo(1);
+    }
+
+    @Test
+    void signedTimestampsWithPrecisionBeyondPostgresMicrosecondsAreRejectedBeforePersistence() throws Exception {
+        var owner=f.owner.browser();var policy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policy.statusCode()).as(policy.body()).isEqualTo(201);
+        var policyId=UUID.fromString(tree(policy).path("id").asString());var signer=signer();trust(signer);
+        var exactIssuedAt=NOW.minusSeconds(30);var exactValidFrom=NOW.minusSeconds(20);var exactValidUntil=NOW.plus(Duration.ofDays(1));
+        for (var field:List.of("issuedAt","validFrom","validUntil")) {
+            var issuedAt=field.equals("issuedAt")?exactIssuedAt.plusNanos(123_456_789):exactIssuedAt;
+            var validFrom=field.equals("validFrom")?exactValidFrom.plusNanos(123_456_789):exactValidFrom;
+            var validUntil=field.equals("validUntil")?exactValidUntil.plusNanos(123_456_789):exactValidUntil;
+            var submission=signedApproval(f.org,policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:overprecision-"+field,
+                    null,issuedAt,validFrom,validUntil);
+            problem(owner.write(approvalPath(policyId),submission),422,"INVALID_REQUEST");
+            assertThat(count("food_safety_policy_approval")).isZero();
+            assertThat(audits("FOOD_SAFETY_POLICY_APPROVAL_SUBMITTED")).isZero();
+        }
+    }
+
+    @Test
+    void persistedApprovalIsBoundToTheExactRulesetAndLegacySignaturesStayUntrusted() throws Exception {
+        var owner=f.owner.browser();var policyResponse=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policyResponse.statusCode()).as(policyResponse.body()).isEqualTo(201);
+        var policyId=UUID.fromString(tree(policyResponse).path("id").asString());var signer=signer();trust(signer);
+        var submission=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:ruleset-bound");
+        var posted=owner.write(approvalPath(policyId),submission);
+        assertThat(posted.statusCode()).as(posted.body()).isEqualTo(201);
+        var approvalId=UUID.fromString(tree(posted).path("approvalId").asString());
+        var stored=approvalRepository.byId(f.org,approvalId).orElseThrow();
+        var policy=policyRepository.byId(f.org,policyId).orElseThrow();
+        assertThat(stored.attestationVersion()).isEqualTo(2);
+        assertThat(stored.rulesetId()).isEqualTo(ruleset.id());
+        assertThat(HexFormat.of().formatHex(stored.rulesetDigest())).isEqualTo(ruleset.digestHex());
+
+        var matching=new FoodSafetyPolicyApprovalVerifier(approvalProperties,ruleset,signatures)
+                .verify(policy,f.org,stored,null,Operation.SALE,NOW);
+        assertThat(matching.outcome()).isEqualTo(FoodSafetyPolicyApprovalVerification.Outcome.VERIFIED);
+        var replacement=new FoodSafetyRuleset(ruleset.id()+"-replacement",ruleset.manifest()+"\nrevision=changed");
+        var mismatch=new FoodSafetyPolicyApprovalVerifier(approvalProperties,replacement,signatures)
+                .verify(policy,f.org,stored,null,Operation.SALE,NOW);
+        assertThat(mismatch.outcome()).isEqualTo(FoodSafetyPolicyApprovalVerification.Outcome.RULESET_MISMATCH);
+        assertThat(mismatch.authorizes(Operation.SALE)).isFalse();
+        assertThat(mismatch.signedRulesetId()).isEqualTo(ruleset.id());
+        assertThat(mismatch.activeRulesetId()).isEqualTo(replacement.id());
+
+        var legacy=new FoodSafetyPolicyApproval(UUID.randomUUID(),f.org,policy.id(),policy.profileId(),policy.productCategory(),policy.temperatureClass(),
+                Set.of(Operation.SALE),FoodSafetyPolicyDigest.of(policy),1,null,null,"test-issuer","test-key",NOW.minusSeconds(30),NOW.minusSeconds(20),
+                NOW.plus(Duration.ofDays(1)),"external-case:legacy",new byte[64],f.owner.id,f.membership(f.owner),UUID.randomUUID(),new byte[32],NOW);
+        var legacyResult=new FoodSafetyPolicyApprovalVerifier(approvalProperties,ruleset,signatures)
+                .verify(policy,f.org,legacy,null,Operation.SALE,NOW);
+        assertThat(legacyResult.outcome()).isEqualTo(FoodSafetyPolicyApprovalVerification.Outcome.LEGACY_ATTESTATION);
+        assertThat(legacyResult.authorizes(Operation.SALE)).isFalse();
+    }
+
+    @Test
+    void productClassificationEvidenceIsBoundToOneProductRevisionAndCanBeRevoked() throws Exception {
+        var owner=f.owner.browser();var signer=signer();var trusted=trust(signer);var path=classificationPath(f.product);
+        var missing=owner.get(path);
+        assertThat(tree(missing).path("outcome").asString()).isEqualTo("NOT_SUBMITTED");
+        var first=signedClassification(f.org,f.product,ProductCategory.BAKERY,signer,"external-case:bread-classification");
+        var submitted=owner.write(path,first);
+        assertThat(submitted.statusCode()).as(submitted.body()).isEqualTo(201);
+        var proof=tree(submitted);var firstId=UUID.fromString(proof.path("attestationId").asString());
+        assertThat(proof.path("outcome").asString()).isEqualTo("VERIFIED");
+        assertThat(proof.path("currentSku").asString()).isEqualTo("BREAD");
+        assertThat(proof.path("currentCategory").asString()).isEqualTo("BAKERY");
+        assertThat(proof.path("currentProductVersion").asLong()).isEqualTo(0);
+        assertThat(submitted.body()).doesNotContain("signature","publicKey","privateKey");
+        trusted.setEnabled(false);
+        assertThat(tree(owner.get(path)).path("outcome").asString()).isEqualTo("TRUSTED_KEY_DISABLED");
+        trusted.setEnabled(true);
+        when(clock.instant()).thenReturn(NOW.plus(Duration.ofDays(2)));
+        assertThat(tree(owner.get(path)).path("outcome").asString()).isEqualTo("EXPIRED");
+        when(clock.instant()).thenReturn(NOW);
+        var stored=jdbc.sql("SELECT sku,product_category,product_version FROM stockrescue.food_safety_product_classification WHERE org_id=:org AND id=:id")
+                .param("org",f.org).param("id",firstId).query((row,index) -> List.of(row.getString(1),row.getString(2),row.getLong(3))).single();
+        assertThat(stored).containsExactly("BREAD","BAKERY",0L);
+
+        var replay=owner.write(path,first);
+        assertThat(replay.statusCode()).isEqualTo(200);
+        assertThat(tree(replay).path("attestationId").asString()).isEqualTo(firstId.toString());
+        var changed=new HashMap<>(first);changed.put("evidenceReference","external-case:changed");
+        problem(owner.write(path,changed),409,"CATALOG_CONFLICT");
+        assertThat(count("food_safety_product_classification")).isEqualTo(1);
+        for (var sql:List.of("UPDATE stockrescue.food_safety_product_classification SET evidence_reference='rewritten' WHERE org_id=:org AND id=:id",
+                "DELETE FROM stockrescue.food_safety_product_classification WHERE org_id=:org AND id=:id"))
+            assertThatThrownBy(() -> jdbc.sql(sql).param("org",f.org).param("id",firstId).update()).isInstanceOf(org.springframework.dao.DataAccessException.class);
+
+        var correction=Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"category","DAIRY","reason","Supplier classification reviewed");
+        var corrected=owner.write("/api/v1/organizations/"+f.org+"/products/"+f.product+"/category-corrections",correction);
+        assertThat(corrected.statusCode()).as(corrected.body()).isEqualTo(200);
+        var stale=tree(owner.get(path));
+        assertThat(stale.path("outcome").asString()).isEqualTo("PRODUCT_SCOPE_MISMATCH");
+        assertThat(stale.path("signedCategory").asString()).isEqualTo("BAKERY");
+        assertThat(stale.path("signedProductVersion").asLong()).isZero();
+        assertThat(stale.path("currentCategory").asString()).isEqualTo("DAIRY");
+        assertThat(stale.path("currentProductVersion").asLong()).isEqualTo(1);
+        var lotId=register("2027-04-30","USE_BY","DAY");
+        assertThat(owner.write(statusPath(lotId),status(0,"NOT_REPORTED","NOT_REPORTED")).statusCode()).isEqualTo(201);
+        var afterCorrection=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(afterCorrection.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(afterCorrection.path("reasonCodes").toString()).contains("PRODUCT_CLASSIFICATION_SCOPE_MISMATCH");
+        assertThat(afterCorrection.path("classificationVerification").path("outcome").asString()).isEqualTo("PRODUCT_SCOPE_MISMATCH");
+
+        var staleBody=signedClassification(f.org,f.product,ProductCategory.DAIRY,signer,"external-case:stale-version");
+        staleBody.put("expectedProductVersion",0);
+        problem(owner.write(path,staleBody),409,"CATALOG_CONFLICT");
+        var renewed=signedClassification(f.org,f.product,ProductCategory.DAIRY,signer,"external-case:dairy-classification");
+        var renewedResult=owner.write(path,renewed);
+        assertThat(renewedResult.statusCode()).as(renewedResult.body()).isEqualTo(201);
+        assertThat(tree(renewedResult).path("outcome").asString()).isEqualTo("VERIFIED");
+        var renewedId=UUID.fromString(tree(renewedResult).path("attestationId").asString());
+        var revokePath=classificationRevocationPath(f.product,renewedId);
+        var revocation=Map.of("requestId",UUID.randomUUID(),"reason","Issuer withdrew the product classification source");
+        var revoked=owner.write(revokePath,revocation);
+        assertThat(revoked.statusCode()).as(revoked.body()).isEqualTo(201);
+        assertThat(tree(revoked).path("outcome").asString()).isEqualTo("REVOKED");
+        assertThat(tree(owner.get(path)).path("outcome").asString()).isEqualTo("REVOKED");
+        var afterRevocation=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(afterRevocation.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(afterRevocation.path("reasonCodes").toString()).contains("PRODUCT_CLASSIFICATION_REVOKED");
+        assertThat(owner.write(revokePath,revocation).statusCode()).isEqualTo(200);
+        assertThat(count("food_safety_product_classification")).isEqualTo(2);
+        assertThat(count("food_safety_product_classification_revocation")).isEqualTo(1);
+        assertThat(audits("PRODUCT_CLASSIFICATION_ATTESTED")).isEqualTo(2);
+        assertThat(audits("PRODUCT_CLASSIFICATION_REVOKED")).isEqualTo(1);
+    }
+
+    @Test
+    void independentlyVerifiedPolicyCannotAuthorizeAProductWithoutClassificationEvidence() throws Exception {
+        var owner=f.owner.browser();var lotId=register("2027-04-30","USE_BY","DAY");
+        assertThat(owner.write(statusPath(lotId),status(0,"NOT_REPORTED","NOT_REPORTED")).statusCode()).isEqualTo(201);
+        var policy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policy.statusCode()).as(policy.body()).isEqualTo(201);
+        var signer=signer();trust(signer);var policyId=UUID.fromString(tree(policy).path("id").asString());
+        var approval=owner.write(approvalPath(policyId),signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:policy-only"));
+        assertThat(approval.statusCode()).as(approval.body()).isEqualTo(201);
+
+        var result=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(result.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(result.path("approvalVerification").path("outcome").asString()).isEqualTo("VERIFIED");
+        assertThat(result.path("classificationVerification").path("outcome").asString()).isEqualTo("NOT_SUBMITTED");
+        assertThat(result.path("evidence").path("classification").asString()).isEqualTo("MISSING");
+        assertThat(result.path("reasonCodes").toString()).contains("PRODUCT_CLASSIFICATION_MISSING");
+    }
+
+    @Test
+    void categoryCorrectionAndEligibilityUseOneConsistentProductClassificationSnapshot() throws Exception {
+        var owner=f.owner.browser();var signer=signer();trust(signer);var path=classificationPath(f.product);
+        var attested=owner.write(path,signedClassification(f.org,f.product,ProductCategory.BAKERY,signer,"external-case:concurrent-correction"));
+        assertThat(attested.statusCode()).as(attested.body()).isEqualTo(201);
+        var lotId=register("2027-04-30","USE_BY","DAY");
+        assertThat(owner.write(statusPath(lotId),status(0,"NOT_REPORTED","NOT_REPORTED")).statusCode()).isEqualTo(201);
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+        doAnswer(call -> {
+            entered.countDown();
+            if (!release.await(15,TimeUnit.SECONDS)) throw new IllegalStateException("Evaluation barrier timed out");
+            return call.callRealMethod();
+        }).when(classifications).latest(f.org,f.product);
+        try (var workers=Executors.newFixedThreadPool(2)) {
+            var evaluation=workers.submit(() -> owner.get(eligibility(lotId,f.store,f.zone)));
+            assertThat(entered.await(10,TimeUnit.SECONDS)).isTrue();
+            var correction=owner.write("/api/v1/organizations/"+f.org+"/products/"+f.product+"/category-corrections",
+                    Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"category","DAIRY","reason","Supplier classification reviewed"));
+            assertThat(correction.statusCode()).as(correction.body()).isEqualTo(200);
+            release.countDown();
+            var beforeCorrection=tree(evaluation.get(15,TimeUnit.SECONDS));
+            assertThat(beforeCorrection.path("classificationVerification").path("outcome").asString()).isEqualTo("VERIFIED");
+            assertThat(beforeCorrection.path("classificationVerification").path("currentCategory").asString()).isEqualTo("BAKERY");
+            assertThat(beforeCorrection.path("classificationVerification").path("currentProductVersion").asLong()).isZero();
+        } finally { release.countDown(); }
+
+        var afterCorrection=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(afterCorrection.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(afterCorrection.path("classificationVerification").path("outcome").asString()).isEqualTo("PRODUCT_SCOPE_MISMATCH");
+        assertThat(afterCorrection.path("reasonCodes").toString()).contains("PRODUCT_CLASSIFICATION_SCOPE_MISMATCH");
+    }
+
+    @Test
+    void policySignaturesAndOtherProductCategoriesCannotBeReplayedAsClassificationEvidence() throws Exception {
+        var owner=f.owner.browser();var signer=signer();trust(signer);var path=classificationPath(f.product);
+        var policy=owner.write(policies(),review(0,"NO_NORMALIZATION"));
+        assertThat(policy.statusCode()).isEqualTo(201);
+        var policyId=UUID.fromString(tree(policy).path("id").asString());
+        var policySignature=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:policy-signature");
+        var policyBytes=(String)policySignature.get("signatureBase64");
+        var replayed=new HashMap<>(signedClassification(f.org,f.product,ProductCategory.BAKERY,signer,"external-case:classification"));
+        replayed.put("signatureBase64",policyBytes);
+        problem(owner.write(path,replayed),422,"INVALID_REQUEST");
+
+        var wrongCategory=signedClassification(f.org,f.product,ProductCategory.DAIRY,signer,"external-case:wrong-category");
+        problem(owner.write(path,wrongCategory),422,"INVALID_REQUEST");
+        var wrongOrganization=signedClassification(f.otherOrg,f.product,ProductCategory.BAKERY,signer,"external-case:wrong-organization");
+        problem(owner.write(path,wrongOrganization),422,"INVALID_REQUEST");
+        problem(owner.get(classificationPath(UUID.randomUUID())),404,"RESOURCE_NOT_FOUND");
+        assertThat(count("food_safety_product_classification")).isZero();
+        assertThat(audits("PRODUCT_CLASSIFICATION_ATTESTED")).isZero();
+    }
+
+    @Test
+    void failedClassificationAuditRollsBackAttestationAndAllowsExactRetry() throws Exception {
+        var owner=f.owner.browser();var signer=signer();trust(signer);var path=classificationPath(f.product);
+        var submission=signedClassification(f.org,f.product,ProductCategory.BAKERY,signer,"external-case:audit-rollback");
+        doThrow(new IllegalStateException("Audit unavailable")).when(audit).securityChange(any(),eq(f.org),eq("product-classification"),any(),
+                eq("PRODUCT_CLASSIFICATION_ATTESTED"),anyMap(),anyString());
+        problem(owner.write(path,submission),500,"INTERNAL_ERROR");
+        assertThat(count("food_safety_product_classification")).isZero();
+        doCallRealMethod().when(audit).securityChange(any(),eq(f.org),eq("product-classification"),any(),
+                eq("PRODUCT_CLASSIFICATION_ATTESTED"),anyMap(),anyString());
+        assertThat(owner.write(path,submission).statusCode()).isEqualTo(201);
+        assertThat(count("food_safety_product_classification")).isEqualTo(1);
+        assertThat(audits("PRODUCT_CLASSIFICATION_ATTESTED")).isEqualTo(1);
     }
 
     @Test
@@ -524,12 +787,26 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
             String evidenceReference,String digestOverride,Instant issuedAt,Instant validFrom,Instant validUntil) throws Exception {
         var policy=policyRepository.byId(f.org,policyId).orElseThrow();var digest=digestOverride==null?FoodSafetyPolicyDigest.hex(policy):digestOverride;
         var issuer="test-issuer";var key="test-key";
-        var payload=FoodSafetyPolicyAttestation.canonicalPayload(signingOrganization,policy,HexFormat.of().parseHex(digest),operations,issuer,key,
+        var payload=FoodSafetyPolicyAttestation.canonicalPayload(signingOrganization,policy,HexFormat.of().parseHex(digest),ruleset.id(),ruleset.digest(),operations,issuer,key,
                 issuedAt,validFrom,validUntil,evidenceReference);
         var signature=Signature.getInstance("Ed25519");signature.initSign(signer.getPrivate());signature.update(payload);
-        return new HashMap<>(Map.of("requestId",requestId,"issuerId",issuer,"keyId",key,"policyDigest",digest,
-                "allowedOperations",operations.stream().map(Enum::name).sorted().toList(),"issuedAt",issuedAt,"validFrom",validFrom,
-                "validUntil",validUntil,"evidenceReference",evidenceReference,"signatureBase64",Base64.getEncoder().encodeToString(signature.sign())));
+        var body=new HashMap<String,Object>();body.put("requestId",requestId);body.put("issuerId",issuer);body.put("keyId",key);body.put("policyDigest",digest);
+        body.put("rulesetId",ruleset.id());body.put("rulesetDigest",ruleset.digestHex());
+        body.put("allowedOperations",operations.stream().map(Enum::name).sorted().toList());body.put("issuedAt",issuedAt);body.put("validFrom",validFrom);
+        body.put("validUntil",validUntil);body.put("evidenceReference",evidenceReference);body.put("signatureBase64",Base64.getEncoder().encodeToString(signature.sign()));
+        return body;
+    }
+    private Map<String,Object> signedClassification(UUID signingOrganization,UUID productId,ProductCategory category,KeyPair signer,
+            String evidenceReference) throws Exception {
+        var product=productRepository.detail(f.org,productId,false).orElseThrow();
+        var issuedAt=NOW.minusSeconds(30);var validFrom=NOW.minusSeconds(20);var validUntil=NOW.plus(Duration.ofDays(1));
+        var issuer="test-issuer";var key="test-key";
+        var payload=FoodSafetyProductClassificationAttestation.canonicalPayload(signingOrganization,product,category,issuer,key,
+                issuedAt,validFrom,validUntil,evidenceReference);
+        var signature=Signature.getInstance("Ed25519");signature.initSign(signer.getPrivate());signature.update(payload);
+        return new HashMap<>(Map.of("requestId",UUID.randomUUID(),"expectedProductVersion",product.version(),"issuerId",issuer,"keyId",key,
+                "issuedAt",issuedAt,"validFrom",validFrom,"validUntil",validUntil,"evidenceReference",evidenceReference,
+                "signatureBase64",Base64.getEncoder().encodeToString(signature.sign())));
     }
     private Map<String,Object> review(long version,String rule) { return new HashMap<>(Map.of("requestId",UUID.randomUUID(),"expectedVersion",version,"reason","Review of class-specific source evidence","partialDateRule",rule,"reviewProvenance",provenance("policy-document"))); }
     private Map<String,Object> status(long version,String recall,String damage) { return new HashMap<>(Map.of("requestId",UUID.randomUUID(),"expectedVersion",version,"reason","Reviewed supplier safety notice","recallState",recall,"damageState",damage,"provenance",provenance("supplier-notice"))); }
@@ -546,6 +823,8 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
     private String lot(UUID id) { return "/api/v1/organizations/"+f.org+"/lots/"+id; }
     private String policies() { return "/api/v1/organizations/"+f.org+"/food-safety-profiles/BAKERY/AMBIENT/versions"; }
     private String approvalPath(UUID policyId) { return policies()+"/"+policyId+"/approval-evidence"; }
+    private String classificationPath(UUID productId) { return "/api/v1/organizations/"+f.org+"/products/"+productId+"/classification-evidence"; }
+    private String classificationRevocationPath(UUID productId,UUID attestationId) { return classificationPath(productId)+"/"+attestationId+"/revocation"; }
     private String policyPath(String category) { return "/api/v1/organizations/"+f.org+"/food-safety-profiles/"+category+"/AMBIENT/versions"; }
     private String policyPath(String category,String temperature) { return "/api/v1/organizations/"+f.org+"/food-safety-profiles/"+category+"/"+temperature+"/versions"; }
     private String statusPath(UUID id) { return lot(id)+"/safety-status-evidence"; }

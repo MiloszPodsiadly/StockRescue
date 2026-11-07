@@ -63,7 +63,8 @@ public class FoodSafetyPolicyApprovalService {
         if (approvals.forPolicy(org,policyId).isPresent()) throw new CatalogFailure(CatalogFailure.Kind.CONFLICT);
 
         var candidate=new FoodSafetyPolicyApproval(UUID.randomUUID(),org,policy.id(),policy.profileId(),category,temperature,
-                submission.allowedOperations(),HexFormat.of().parseHex(submission.policyDigest()),submission.issuerId(),submission.keyId(),
+                submission.allowedOperations(),HexFormat.of().parseHex(submission.policyDigest()),2,submission.rulesetId(),
+                HexFormat.of().parseHex(submission.rulesetDigest()),submission.issuerId(),submission.keyId(),
                 submission.issuedAt(),submission.validFrom(),submission.validUntil(),submission.evidenceReference(),submission.signature(),
                 actor,membership.membershipId(),submission.requestId(),fingerprint,null);
         var verification=verifier.verify(policy,org,candidate,null,null,clock.instant());
@@ -74,6 +75,7 @@ public class FoodSafetyPolicyApprovalService {
         audit.securityChange(actor,org,"food-safety-policy-approval",stored.id(),"FOOD_SAFETY_POLICY_APPROVAL_SUBMITTED",
                 Map.ofEntries(Map.entry("outcome","SUCCEEDED"),Map.entry("policyVersionId",policy.id()),Map.entry("policyVersion",policy.version()),
                         Map.entry("productCategory",category),Map.entry("temperatureClass",temperature),Map.entry("policyDigest",submission.policyDigest()),
+                        Map.entry("rulesetId",stored.rulesetId()),Map.entry("rulesetDigest",HexFormat.of().formatHex(stored.rulesetDigest())),
                         Map.entry("issuerId",stored.issuerId()),Map.entry("keyId",stored.keyId()),
                         Map.entry("allowedOperations",stored.allowedOperations().stream().sorted().toList()),Map.entry("issuedAt",stored.issuedAt()),
                         Map.entry("validFrom",stored.validFrom()),Map.entry("validUntil",stored.validUntil()),

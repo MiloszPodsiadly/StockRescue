@@ -10,6 +10,7 @@ public record FoodSafetyEvaluation(Decision decision,List<ReasonCode> reasonCode
                                    UUID productId,long productVersion,UUID storeId,long storeVersion,UUID zoneId,Long zoneVersion,
                                    UUID locationId,Long locationVersion,
                                    PolicyReference policy,FoodSafetyPolicyApprovalVerification approvalVerification,
+                                   FoodSafetyProductClassificationVerification classificationVerification,
                                    Instant evaluatedAt,LocalDate storeLocalDate,String storeTimeZone,
                                    EvidenceAssessment evidence,NextAction nextAction,String evaluatorVersion) {
     public FoodSafetyEvaluation { reasonCodes=List.copyOf(reasonCodes); }
@@ -22,7 +23,10 @@ public record FoodSafetyEvaluation(Decision decision,List<ReasonCode> reasonCode
         LOT_IDENTITY_UNVERIFIED, DATE_LABEL_MISSING, DATE_TYPE_UNKNOWN, DATE_PRECISION_UNKNOWN, DATE_LABEL_INVALID,
         USE_BY_DAY_REQUIRED, DATE_TYPE_PRECISION_MISMATCH, DATE_PROVENANCE_MISSING, DATE_REFERENCE_MISSING, PARTIAL_DATE_RULE_UNVERIFIED,
         RECALL_STATUS_UNKNOWN, DAMAGE_STATUS_UNKNOWN, STATUS_REFERENCE_MISSING, STORAGE_CONTEXT_MISSING, COLD_CHAIN_EVIDENCE_UNVERIFIED,
-        PRODUCT_CATEGORY_UNCLASSIFIED, POLICY_MISSING, POLICY_SCOPE_MISMATCH, POLICY_CLASS_MISMATCH, POLICY_APPROVAL_UNVERIFIED;
+        PRODUCT_CATEGORY_UNCLASSIFIED, PRODUCT_CLASSIFICATION_MISSING, PRODUCT_CLASSIFICATION_NOT_YET_VALID,
+        PRODUCT_CLASSIFICATION_EXPIRED, PRODUCT_CLASSIFICATION_REVOKED, PRODUCT_CLASSIFICATION_SCOPE_MISMATCH,
+        PRODUCT_CLASSIFICATION_TRUST_DISABLED, PRODUCT_CLASSIFICATION_ISSUER_UNTRUSTED, PRODUCT_CLASSIFICATION_KEY_DISABLED,
+        PRODUCT_CLASSIFICATION_SIGNATURE_INVALID, POLICY_MISSING, POLICY_SCOPE_MISMATCH, POLICY_CLASS_MISMATCH, POLICY_APPROVAL_UNVERIFIED;
         private final boolean hardDenial;
         ReasonCode() { this(false); }
         ReasonCode(boolean hardDenial) { this.hardDenial=hardDenial; }
@@ -32,8 +36,10 @@ public record FoodSafetyEvaluation(Decision decision,List<ReasonCode> reasonCode
     public enum StatusEvidenceStatus { UNKNOWN, REPORTED, BLOCK_RECORDED }
     public enum StorageEvidenceStatus { MISSING, DECLARED_COMPATIBLE, DECLARED_INCOMPATIBLE, INACTIVE }
     public enum PolicyEvidenceStatus { MISSING, RECORDED_UNVERIFIED, INDEPENDENTLY_VERIFIED }
-    public enum NextAction { DO_NOT_EXECUTE, REVIEW_LOT_EVIDENCE, RECORD_STORAGE_CONTEXT, OBTAIN_INDEPENDENT_POLICY_APPROVAL, NO_ADDITIONAL_ACTION }
+    public enum ProductClassificationEvidenceStatus { MISSING, RECORDED_UNVERIFIED, INDEPENDENTLY_VERIFIED }
+    public enum NextAction { DO_NOT_EXECUTE, REVIEW_LOT_EVIDENCE, RECORD_STORAGE_CONTEXT, OBTAIN_PRODUCT_CLASSIFICATION_EVIDENCE,
+        OBTAIN_INDEPENDENT_POLICY_APPROVAL, NO_ADDITIONAL_ACTION }
     public record PolicyReference(UUID id,UUID profileId,ProductCategory productCategory,long version) { }
     public record EvidenceAssessment(DateEvidenceStatus date,StatusEvidenceStatus recall,StatusEvidenceStatus damage,
-                                     StorageEvidenceStatus storage,PolicyEvidenceStatus policy) { }
+                                     StorageEvidenceStatus storage,PolicyEvidenceStatus policy,ProductClassificationEvidenceStatus classification) { }
 }

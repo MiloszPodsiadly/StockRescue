@@ -83,21 +83,22 @@ public class AccessPolicy {
         throw new AccessFailure(AccessFailure.Kind.CONFLICT);
     }
 
-    public void requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
-        requireStore(actor, organization, store, action, write, false);
+    public OrganizationAccess requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
+        return requireStore(actor, organization, store, action, write, false);
     }
 
-    public void requireStoreIncludingArchived(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
-        requireStore(actor, organization, store, action, write, true);
+    public OrganizationAccess requireStoreIncludingArchived(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
+        return requireStore(actor, organization, store, action, write, true);
     }
 
-    private void requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write, boolean includeArchived) {
+    private OrganizationAccess requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write, boolean includeArchived) {
         var membership = write ? lock(actor, organization, false) : organization(actor, organization);
         if (!access.store(organization, store, write, includeArchived && membership.role() == OrganizationRole.ORG_ADMIN)) throw new OrganizationUnavailableException();
-        if (membership.role() == OrganizationRole.ORG_ADMIN) return;
+        if (membership.role() == OrganizationRole.ORG_ADMIN) return membership;
         var role = access.storeRole(organization, membership.membershipId(), store, write)
                 .orElseThrow(OrganizationUnavailableException::new);
         if (!storeActions(role).contains(action)) throw new AccessDeniedException("Action unavailable");
+        return membership;
     }
 
     public List<StoreAction> storeActions(EffectivePermissions permissions, UUID store, boolean active) {
@@ -131,7 +132,7 @@ public class AccessPolicy {
 
     private List<StoreAction> storeActions(StoreRole role) {
         return switch(role) {
-            case STORE_MANAGER -> List.of(StoreAction.READ_STORE,StoreAction.EDIT_STORE,StoreAction.MANAGE_STORAGE_ZONES,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.MANAGE_STORAGE_LOCATIONS);
+            case STORE_MANAGER -> List.of(StoreAction.READ_STORE,StoreAction.EDIT_STORE,StoreAction.MANAGE_STORAGE_ZONES,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.MANAGE_STORAGE_LOCATIONS,StoreAction.REGISTER_STORE_LOT);
             case INVENTORY_OPERATOR -> List.of(StoreAction.READ_STORE,StoreAction.REGISTER_SOURCE_EVIDENCE);
             case READ_ONLY_ANALYST -> List.of(StoreAction.READ_STORE);
         };

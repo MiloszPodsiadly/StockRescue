@@ -31,6 +31,10 @@ export function PolicyPanel({ organizationId, category, temperature }: { organiz
           <p role={approval.data.verification.outcome === 'VERIFIED' ? 'status' : 'note'}>{verificationMessage(approval.data.verification.outcome)}</p>
           <Facts values={[
             ['Verification outcome', approval.data.verification.outcome], ['Issuer', approval.data.verification.issuerId ?? 'Not submitted'], ['Signing key', approval.data.verification.keyId ?? 'Not submitted'],
+            ['Attestation version', approval.data.verification.attestationVersion ?? 'Legacy or not submitted'],
+            ['Signed ruleset', approval.data.verification.signedRulesetId ?? 'Not present in this attestation'],
+            ['Signed ruleset digest', approval.data.verification.signedRulesetDigest ?? 'Not available'],
+            ['Active ruleset', `${approval.data.verification.activeRulesetId} · ${approval.data.verification.activeRulesetDigest}`],
             ['Allowed operations', approval.data.verification.allowedOperations?.join(', ') || 'None'], ['Validity', approval.data.verification.validFrom && approval.data.verification.validUntil ? `${approval.data.verification.validFrom} – ${approval.data.verification.validUntil}` : 'Not available'],
             ['Evidence reference', approval.data.verification.evidenceReference ?? 'Not submitted'], ['Revocation', approval.data.verification.revoked ? `${approval.data.verification.revokedAt ?? 'Recorded'} · ${approval.data.verification.revocationReason ?? ''}` : 'Not revoked'],
           ]} />
@@ -55,6 +59,8 @@ function verificationMessage(outcome: string | undefined) {
     case 'EXPIRED': return 'This evidence has expired.'
     case 'REVOKED': return 'This evidence has been revoked.'
     case 'POLICY_SCOPE_MISMATCH': return 'This evidence does not match the exact policy scope.'
+    case 'RULESET_MISMATCH': return 'This signature verifies for a different evaluator ruleset. It cannot authorize an assessment until renewed for the active ruleset.'
+    case 'LEGACY_ATTESTATION': return 'This legacy signature does not identify an evaluator ruleset and cannot authorize an operation.'
     case 'OPERATION_NOT_APPROVED': return 'This evidence does not approve the requested operation.'
     default: return 'Approval verification is not available. Do not execute an operation from this evidence.'
   }

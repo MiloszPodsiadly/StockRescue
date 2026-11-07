@@ -1,7 +1,6 @@
 package com.stockrescue.catalog.application;
 
 import java.nio.charset.StandardCharsets;
-import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
 import java.util.Set;
 import java.util.UUID;
@@ -13,13 +12,15 @@ public final class FoodSafetyPolicyAttestation {
     private FoodSafetyPolicyAttestation() { }
 
     public static byte[] canonicalPayload(UUID organizationId,FoodSafetyPolicyVersion policy,byte[] policyDigest,
+            String rulesetId,byte[] rulesetDigest,
             Set<Operation> allowedOperations,String issuerId,String keyId,java.time.Instant issuedAt,
             java.time.Instant validFrom,java.time.Instant validUntil,String evidenceReference) {
         var operations=allowedOperations.stream().map(Enum::name).sorted().collect(Collectors.joining(","));
-        return String.join("\n","stockrescue-food-safety-approval-v1",organizationId.toString(),policy.id().toString(),
+        return String.join("\n","stockrescue-food-safety-approval-v2",organizationId.toString(),policy.id().toString(),
                 policy.profileId().toString(),Long.toString(policy.version()),policy.productCategory().name(),
-                policy.temperatureClass().name(),operations,HexFormat.of().formatHex(policyDigest),issuerId,keyId,
-                DateTimeFormatter.ISO_INSTANT.format(issuedAt),DateTimeFormatter.ISO_INSTANT.format(validFrom),
-                DateTimeFormatter.ISO_INSTANT.format(validUntil),evidenceReference).getBytes(StandardCharsets.UTF_8);
+                policy.temperatureClass().name(),operations,HexFormat.of().formatHex(policyDigest),rulesetId,
+                HexFormat.of().formatHex(rulesetDigest),issuerId,keyId,
+                CanonicalAttestationTimestamp.format(issuedAt),CanonicalAttestationTimestamp.format(validFrom),
+                CanonicalAttestationTimestamp.format(validUntil),evidenceReference).getBytes(StandardCharsets.UTF_8);
     }
 }

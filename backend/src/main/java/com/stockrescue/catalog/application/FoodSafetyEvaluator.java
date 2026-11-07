@@ -17,7 +17,7 @@ import com.stockrescue.stores.application.StorageLocation;
 
 /** Pure evaluation of one immutable input snapshot. Hard rules cannot be weakened by a policy review. */
 public final class FoodSafetyEvaluator {
-    public static final String VERSION="conservative-pilot-5";
+    public static final String VERSION=FoodSafetyRuleset.CURRENT_ID;
     private static final EnumSet<ReasonCode> LOT_REVIEW_REASONS=EnumSet.of(ReasonCode.LOT_IDENTITY_UNVERIFIED,ReasonCode.DATE_LABEL_MISSING,
             ReasonCode.DATE_TYPE_UNKNOWN,ReasonCode.DATE_PRECISION_UNKNOWN,ReasonCode.DATE_LABEL_INVALID,ReasonCode.USE_BY_DAY_REQUIRED,
             ReasonCode.DATE_TYPE_PRECISION_MISMATCH,
@@ -28,9 +28,13 @@ public final class FoodSafetyEvaluator {
         public Context(ManufacturerLot lot,Product product,Store store,Zone zone,FoodSafetyPolicyVersion policy) { this(lot,product,store,zone,policy,null); }
     }
     public FoodSafetyEvaluation evaluate(Context context,Operation operation,Instant evaluatedAt) {
-        return evaluate(context,operation,evaluatedAt,null);
+        return evaluate(context,operation,evaluatedAt,null,null);
     }
     public FoodSafetyEvaluation evaluate(Context context,Operation operation,Instant evaluatedAt,FoodSafetyPolicyApprovalVerification approvalVerification) {
+        return evaluate(context,operation,evaluatedAt,approvalVerification,null);
+    }
+    public FoodSafetyEvaluation evaluate(Context context,Operation operation,Instant evaluatedAt,
+            FoodSafetyPolicyApprovalVerification approvalVerification,FoodSafetyProductClassificationVerification classificationVerification) {
         Objects.requireNonNull(operation);Objects.requireNonNull(evaluatedAt);
         var lot=context.lot(); var product=context.product(); var store=context.store(); var zone=context.zone();
         var localDate=evaluatedAt.atZone(ZoneId.of(store.data().zoneId())).toLocalDate();
@@ -43,6 +47,8 @@ public final class FoodSafetyEvaluator {
         if (zone!=null && !zone.active()) reasons.add(ReasonCode.ZONE_ARCHIVED);
         if (context.location()!=null && !context.location().active()) reasons.add(ReasonCode.LOCATION_ARCHIVED);
         if (product.data().category()==ProductCategory.UNCLASSIFIED) reasons.add(ReasonCode.PRODUCT_CATEGORY_UNCLASSIFIED);
+        boolean classificationVerified=classificationVerification!=null && classificationVerification.authorizes(product);
+        if (!classificationVerified) reasons.add(classificationReason(classificationVerification));
         if (zone!=null && zone.temperatureClass()!=product.data().temperatureClass()) reasons.add(ReasonCode.TEMPERATURE_CLASS_MISMATCH);
         var date=assessDate(lot.data().dateMarking(),localDate,reasons);
         if (lot.data().identityState()!=LotIdentityState.CONFIRMED) reasons.add(ReasonCode.LOT_IDENTITY_UNVERIFIED);
@@ -63,17 +69,38 @@ public final class FoodSafetyEvaluator {
             if (approvalVerification==null || !approvalVerification.authorizes(operation)) reasons.add(ReasonCode.POLICY_APPROVAL_UNVERIFIED);
         }
         boolean denied=reasons.stream().anyMatch(ReasonCode::hardDenial);
-        boolean allowed=!denied && reasons.isEmpty() && approvalVerification!=null && approvalVerification.authorizes(operation);
+        boolean allowed=!denied && reasons.isEmpty() && approvalVerification!=null && approvalVerification.authorizes(operation)
+                && classificationVerified;
+        boolean classificationReview=reasons.stream().anyMatch(reason -> reason.name().startsWith("PRODUCT_CLASSIFICATION_"));
         var next=denied?NextAction.DO_NOT_EXECUTE
                 :reasons.stream().anyMatch(LOT_REVIEW_REASONS::contains)
-                    ?NextAction.REVIEW_LOT_EVIDENCE:zone==null?NextAction.RECORD_STORAGE_CONTEXT:allowed?NextAction.NO_ADDITIONAL_ACTION:NextAction.OBTAIN_INDEPENDENT_POLICY_APPROVAL;
+                    ?NextAction.REVIEW_LOT_EVIDENCE:classificationReview?NextAction.OBTAIN_PRODUCT_CLASSIFICATION_EVIDENCE
+                    :zone==null?NextAction.RECORD_STORAGE_CONTEXT:allowed?NextAction.NO_ADDITIONAL_ACTION:NextAction.OBTAIN_INDEPENDENT_POLICY_APPROVAL;
         return new FoodSafetyEvaluation(denied?Decision.DENIED:allowed?Decision.ALLOWED:Decision.REQUIRES_REVIEW,reasons.stream().toList(),operation,lot.id(),lot.version(),
                 product.id(),product.version(),store.id(),store.version(),zone==null?null:zone.id(),zone==null?null:zone.version(),
                 context.location()==null?null:context.location().id(),context.location()==null?null:context.location().version(),
-                policy==null?null:new PolicyReference(policy.id(),policy.profileId(),policy.productCategory(),policy.version()),approvalVerification,
+                policy==null?null:new PolicyReference(policy.id(),policy.profileId(),policy.productCategory(),policy.version()),approvalVerification,classificationVerification,
                 evaluatedAt,localDate,store.data().zoneId(),new EvidenceAssessment(date,recall(lot.recallState()),damage(lot.damageState()),storage,
                         policy==null?PolicyEvidenceStatus.MISSING:approvalVerification!=null && approvalVerification.authorizes(operation)
-                                ?PolicyEvidenceStatus.INDEPENDENTLY_VERIFIED:PolicyEvidenceStatus.RECORDED_UNVERIFIED),next,VERSION);
+                                ?PolicyEvidenceStatus.INDEPENDENTLY_VERIFIED:PolicyEvidenceStatus.RECORDED_UNVERIFIED,
+                        classificationVerified?ProductClassificationEvidenceStatus.INDEPENDENTLY_VERIFIED
+                                :classificationVerification==null || classificationVerification.outcome()==FoodSafetyProductClassificationVerification.Outcome.NOT_SUBMITTED
+                                    ?ProductClassificationEvidenceStatus.MISSING:ProductClassificationEvidenceStatus.RECORDED_UNVERIFIED),next,VERSION);
+    }
+    private ReasonCode classificationReason(FoodSafetyProductClassificationVerification verification) {
+        if (verification==null) return ReasonCode.PRODUCT_CLASSIFICATION_MISSING;
+        return switch (verification.outcome()) {
+            case NOT_SUBMITTED -> ReasonCode.PRODUCT_CLASSIFICATION_MISSING;
+            case TRUST_REGISTRY_DISABLED -> ReasonCode.PRODUCT_CLASSIFICATION_TRUST_DISABLED;
+            case TRUSTED_ISSUER_UNKNOWN -> ReasonCode.PRODUCT_CLASSIFICATION_ISSUER_UNTRUSTED;
+            case TRUSTED_KEY_DISABLED -> ReasonCode.PRODUCT_CLASSIFICATION_KEY_DISABLED;
+            case SIGNATURE_INVALID -> ReasonCode.PRODUCT_CLASSIFICATION_SIGNATURE_INVALID;
+            case NOT_YET_VALID -> ReasonCode.PRODUCT_CLASSIFICATION_NOT_YET_VALID;
+            case EXPIRED -> ReasonCode.PRODUCT_CLASSIFICATION_EXPIRED;
+            case REVOKED -> ReasonCode.PRODUCT_CLASSIFICATION_REVOKED;
+            case PRODUCT_SCOPE_MISMATCH -> ReasonCode.PRODUCT_CLASSIFICATION_SCOPE_MISMATCH;
+            case VERIFIED -> ReasonCode.PRODUCT_CLASSIFICATION_SCOPE_MISMATCH;
+        };
     }
     private DateEvidenceStatus assessDate(DateMarking marking,LocalDate localDate,EnumSet<ReasonCode> reasons) {
         var assessment=DateLabelAssessment.assess(marking);

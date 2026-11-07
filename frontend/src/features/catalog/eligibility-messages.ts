@@ -14,11 +14,22 @@ export const reasonMessages: Record<Eligibility['reasonCodes'][number], string> 
   RECALL_STATUS_UNKNOWN: 'Recall status is unknown.', DAMAGE_STATUS_UNKNOWN: 'Damage status is unknown.', STATUS_REFERENCE_MISSING: 'Safety-status evidence has no document reference.',
   STORAGE_CONTEXT_MISSING: 'No declared storage context was supplied.', COLD_CHAIN_EVIDENCE_UNVERIFIED: 'Declared cold storage does not verify continuous cold-chain conditions.',
   PRODUCT_CATEGORY_UNCLASSIFIED: 'The product category is unclassified, so no scoped policy can authorize this operation.',
+  PRODUCT_CLASSIFICATION_MISSING: 'No independent classification evidence is recorded for this product revision.',
+  PRODUCT_CLASSIFICATION_NOT_YET_VALID: 'The product classification attestation is not yet valid.',
+  PRODUCT_CLASSIFICATION_EXPIRED: 'The product classification attestation has expired.',
+  PRODUCT_CLASSIFICATION_REVOKED: 'The product classification attestation has been revoked.',
+  PRODUCT_CLASSIFICATION_SCOPE_MISMATCH: 'The signed product classification does not match this organization, SKU, category and product revision.',
+  PRODUCT_CLASSIFICATION_TRUST_DISABLED: 'The deployment trust registry is disabled, so product classification evidence cannot be verified.',
+  PRODUCT_CLASSIFICATION_ISSUER_UNTRUSTED: 'The product classification issuer is not currently trusted by the deployment registry.',
+  PRODUCT_CLASSIFICATION_KEY_DISABLED: 'The product classification signing key is disabled by the deployment registry.',
+  PRODUCT_CLASSIFICATION_SIGNATURE_INVALID: 'The product classification signature did not verify.',
   POLICY_MISSING: 'No policy review is recorded for this product category and temperature class.', POLICY_SCOPE_MISMATCH: 'The policy scope does not match this product category.', POLICY_CLASS_MISMATCH: 'The policy does not match this product’s temperature class.',
   POLICY_APPROVAL_UNVERIFIED: 'Independent approval for this category and temperature scope has not been verified.',
 }
 export const nextActions: Record<Eligibility['nextAction'], string> = {
   DO_NOT_EXECUTE: 'Do not sell or transfer this lot using this assessment.', REVIEW_LOT_EVIDENCE: 'Review the original label, manufacturer identity and source documents.',
-  RECORD_STORAGE_CONTEXT: 'Select or record the declared storage configuration.', OBTAIN_INDEPENDENT_POLICY_APPROVAL: 'Obtain independent policy approval for this category and temperature scope and resolve the listed evidence gaps.',
+  RECORD_STORAGE_CONTEXT: 'Select or record the declared storage configuration.',
+  OBTAIN_PRODUCT_CLASSIFICATION_EVIDENCE: 'Obtain independent classification evidence for this exact product revision and resolve the listed evidence gaps.',
+  OBTAIN_INDEPENDENT_POLICY_APPROVAL: 'Obtain independent policy approval for this category and temperature scope and resolve the listed evidence gaps.',
   NO_ADDITIONAL_ACTION: 'The listed evidence gates are satisfied for this operation at the assessment time.',
 }

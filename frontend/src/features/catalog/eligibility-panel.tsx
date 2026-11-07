@@ -43,13 +43,21 @@ export function EligibilityResult({ value }: { value: Eligibility }) {
   const verifiedForOperation = value.approvalVerification?.outcome === 'VERIFIED'
     && (value.approvalVerification.allowedOperations ?? []).includes(value.operation)
     && value.evidence.policy === 'INDEPENDENTLY_VERIFIED'
+    && value.classificationVerification?.outcome === 'VERIFIED'
+    && value.evidence.classification === 'INDEPENDENTLY_VERIFIED'
   const allowed = value.decision === 'ALLOWED' && verifiedForOperation && value.reasonCodes.length === 0
   const unexpectedApproval = value.decision === 'ALLOWED' && !allowed
   return <section aria-label="Assessment result" className={`space-y-4 rounded-2xl border p-5 ${value.decision === 'DENIED' ? 'border-destructive/50' : 'border-border'}`}>
     <h4 className="text-xl font-semibold">{value.decision === 'DENIED' ? 'Denied' : allowed ? 'Allowed' : 'Requires review'}</h4>
     {unexpectedApproval && <p role="alert">The returned allowed decision does not satisfy every approval and evidence check. Do not execute an operation from this result.</p>}
+    {value.approvalVerification?.outcome === 'RULESET_MISMATCH' && <p role="alert">The signed approval matches a different food-safety ruleset. This assessment requires renewed approval for the active ruleset.</p>}
+    {value.approvalVerification?.outcome === 'LEGACY_ATTESTATION' && <p role="alert">This approval predates ruleset binding and cannot authorize this assessment.</p>}
+    {value.classificationVerification?.outcome === 'PRODUCT_SCOPE_MISMATCH' && <p role="alert">This classification was signed for a different product revision. A category correction requires new external evidence.</p>}
+    {value.classificationVerification?.outcome === 'REVOKED' && <p role="alert">The product classification attestation has been revoked and cannot authorize this assessment.</p>}
+    {value.classificationVerification?.outcome === 'EXPIRED' && <p role="alert">The product classification attestation has expired and cannot authorize this assessment.</p>}
+    <p className="text-sm text-muted-foreground">Product category is descriptive. Only current, externally signed evidence for this exact product revision verifies its classification.</p>
     <p className="font-medium">{nextActions[value.nextAction]}</p><ul className="list-inside list-disc space-y-2 text-sm">{value.reasonCodes.map(reason => <li key={reason}>{reasonMessages[reason]}</li>)}</ul>
-    <Facts values={[["Assessment time", value.evaluatedAt], ['Store local date', value.storeLocalDate], ['Store time zone', value.storeTimeZone], ['Lot version assessed', value.lotVersion], ['Policy version', value.policy ? `${value.policy.version} · ${value.policy.id}` : 'No recorded policy'], ['Policy evidence', value.evidence.policy === 'MISSING' ? 'Missing' : value.evidence.policy === 'INDEPENDENTLY_VERIFIED' ? 'Cryptographically verified' : 'Recorded, unverified'], ['Approval verification', value.approvalVerification?.outcome ?? 'Not available'], ['Date evidence', value.evidence.date.replaceAll('_', ' ').toLowerCase()], ['Storage evidence', value.evidence.storage.replaceAll('_', ' ').toLowerCase()]]} />
+    <Facts values={[["Assessment time", value.evaluatedAt], ['Store local date', value.storeLocalDate], ['Store time zone', value.storeTimeZone], ['Lot version assessed', value.lotVersion], ['Policy version', value.policy ? `${value.policy.version} · ${value.policy.id}` : 'No recorded policy'], ['Policy evidence', value.evidence.policy === 'MISSING' ? 'Missing' : value.evidence.policy === 'INDEPENDENTLY_VERIFIED' ? 'Cryptographically verified' : 'Recorded, unverified'], ['Approval verification', value.approvalVerification?.outcome ?? 'Not available'], ['Product classification', value.evidence.classification.replaceAll('_', ' ').toLowerCase()], ['Classification verification', value.classificationVerification?.outcome ?? 'Not available'], ['Signed category and version', value.classificationVerification?.signedCategory && value.classificationVerification.signedProductVersion !== null ? `${value.classificationVerification.signedCategory} · ${value.classificationVerification.signedProductVersion}` : 'Not available'], ['Date evidence', value.evidence.date.replaceAll('_', ' ').toLowerCase()], ['Storage evidence', value.evidence.storage.replaceAll('_', ' ').toLowerCase()]]} />
     <p className="text-sm text-muted-foreground">This is evidence at the displayed time, not a reusable permission or a physical stock hold.</p>
   </section>
 }

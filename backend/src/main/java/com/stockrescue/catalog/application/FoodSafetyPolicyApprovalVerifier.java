@@ -1,11 +1,6 @@
 package com.stockrescue.catalog.application;
 
-import java.security.GeneralSecurityException;
-import java.security.KeyFactory;
-import java.security.Signature;
-import java.security.spec.X509EncodedKeySpec;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
@@ -17,8 +12,13 @@ import org.springframework.stereotype.Component;
 @Component
 public final class FoodSafetyPolicyApprovalVerifier {
     private final FoodSafetyApprovalProperties properties;
+    private final FoodSafetyRuleset ruleset;
+    private final FoodSafetySignatureVerifier signatures;
 
-    public FoodSafetyPolicyApprovalVerifier(FoodSafetyApprovalProperties properties) { this.properties=properties; }
+    public FoodSafetyPolicyApprovalVerifier(FoodSafetyApprovalProperties properties,FoodSafetyRuleset ruleset,
+            FoodSafetySignatureVerifier signatures) {
+        this.properties=properties;this.ruleset=ruleset;this.signatures=signatures;
+    }
 
     public FoodSafetyPolicyApprovalVerification verify(FoodSafetyPolicyVersion policy,UUID organizationId,
             FoodSafetyPolicyApproval approval,FoodSafetyPolicyApprovalRevocation revocation,Operation operation,Instant now) {
@@ -31,12 +31,16 @@ public final class FoodSafetyPolicyApprovalVerifier {
         if (!scopeMatches(policy,organizationId,approval)) return explanation(policy,approval,revocation,
                 FoodSafetyPolicyApprovalVerification.Outcome.POLICY_SCOPE_MISMATCH);
         if (revoked) return explanation(policy,approval,revocation,FoodSafetyPolicyApprovalVerification.Outcome.REVOKED);
-        var signatureOutcome=verifySignature(approval.issuerId(),approval.keyId(),
+        if (approval.attestationVersion()!=2 || approval.rulesetId()==null || approval.rulesetDigest()==null)
+            return explanation(policy,approval,null,FoodSafetyPolicyApprovalVerification.Outcome.LEGACY_ATTESTATION);
+        var signatureOutcome=signatures.verify(approval.issuerId(),approval.keyId(),
                 FoodSafetyPolicyAttestation.canonicalPayload(approval.organizationId(),policy,approval.policyDigest(),
-                        approval.allowedOperations(),approval.issuerId(),approval.keyId(),approval.issuedAt(),approval.validFrom(),
+                        approval.rulesetId(),approval.rulesetDigest(),approval.allowedOperations(),approval.issuerId(),approval.keyId(),approval.issuedAt(),approval.validFrom(),
                         approval.validUntil(),approval.evidenceReference()),approval.signature());
-        if (signatureOutcome!=FoodSafetyPolicyApprovalVerification.Outcome.VERIFIED)
-            return explanation(policy,approval,null,signatureOutcome);
+        if (signatureOutcome!=FoodSafetySignatureVerifier.Outcome.VERIFIED)
+            return explanation(policy,approval,null,FoodSafetyPolicyApprovalVerification.Outcome.valueOf(signatureOutcome.name()));
+        if (!ruleset.matches(approval.rulesetId(),approval.rulesetDigest()))
+            return explanation(policy,approval,null,FoodSafetyPolicyApprovalVerification.Outcome.RULESET_MISMATCH);
         if (approval.issuedAt().isAfter(now) || now.isBefore(approval.validFrom())) {
             return explanation(policy,approval,null,FoodSafetyPolicyApprovalVerification.Outcome.NOT_YET_VALID);
         }
@@ -49,31 +53,6 @@ public final class FoodSafetyPolicyApprovalVerifier {
         return explanation(policy,approval,null,FoodSafetyPolicyApprovalVerification.Outcome.VERIFIED);
     }
 
-    public FoodSafetyPolicyApprovalVerification.Outcome verifySignature(String issuerId,String keyId,byte[] canonicalPayload,byte[] signature) {
-        if (!properties.isEnabled()) return FoodSafetyPolicyApprovalVerification.Outcome.TRUST_REGISTRY_DISABLED;
-        var trusted=properties.getTrustedIssuers().get(keyId);
-        if (trusted==null || trusted.getIssuerId()==null || !trusted.getIssuerId().equals(issuerId))
-            return FoodSafetyPolicyApprovalVerification.Outcome.TRUSTED_ISSUER_UNKNOWN;
-        if (!trusted.isEnabled()) return FoodSafetyPolicyApprovalVerification.Outcome.TRUSTED_KEY_DISABLED;
-        return signatureValid(canonicalPayload,signature,trusted.getPublicKeyX509())
-                ?FoodSafetyPolicyApprovalVerification.Outcome.VERIFIED
-                :FoodSafetyPolicyApprovalVerification.Outcome.SIGNATURE_INVALID;
-    }
-
-    private boolean signatureValid(byte[] canonicalPayload,byte[] signature,String encodedKey) {
-        if (encodedKey==null || encodedKey.isBlank()) return false;
-        try {
-            var keyBytes=Base64.getDecoder().decode(encodedKey);
-            var key=KeyFactory.getInstance("Ed25519").generatePublic(new X509EncodedKeySpec(keyBytes));
-            var verifier=Signature.getInstance("Ed25519");
-            verifier.initVerify(key);
-            verifier.update(canonicalPayload);
-            return verifier.verify(signature);
-        } catch (IllegalArgumentException | GeneralSecurityException invalidConfigurationOrSignature) {
-            return false;
-        }
-    }
-
     private boolean scopeMatches(FoodSafetyPolicyVersion policy,UUID organizationId,FoodSafetyPolicyApproval approval) {
         return approval.organizationId().equals(organizationId)
                 && approval.policyVersionId().equals(policy.id()) && approval.profileId().equals(policy.profileId())
@@ -83,7 +62,7 @@ public final class FoodSafetyPolicyApprovalVerifier {
 
     private FoodSafetyPolicyApprovalVerification empty(FoodSafetyPolicyVersion policy,FoodSafetyPolicyApprovalVerification.Outcome outcome) {
         return new FoodSafetyPolicyApprovalVerification(outcome,policy.version(),FoodSafetyPolicyDigest.hex(policy),null,null,
-                List.of(),null,null,null,null,null,false,null,null,null);
+                List.of(),null,null,null,null,null,false,null,null,null,null,null,null,ruleset.id(),ruleset.digestHex());
     }
 
     private FoodSafetyPolicyApprovalVerification explanation(FoodSafetyPolicyVersion policy,FoodSafetyPolicyApproval approval,
@@ -92,6 +71,7 @@ public final class FoodSafetyPolicyApprovalVerifier {
                 approval.issuerId(),approval.keyId(),approval.allowedOperations().stream().sorted().toList(),approval.issuedAt(),
                 approval.validFrom(),approval.validUntil(),approval.evidenceReference(),approval.recordedAt(),revocation!=null,
                 revocation==null?null:revocation.recordedAt(),revocation==null?null:revocation.recordedByMembershipId(),
-                revocation==null?null:revocation.reason());
+                revocation==null?null:revocation.reason(),approval.attestationVersion(),approval.rulesetId(),
+                approval.rulesetDigest()==null?null:HexFormat.of().formatHex(approval.rulesetDigest()),ruleset.id(),ruleset.digestHex());
     }
 }

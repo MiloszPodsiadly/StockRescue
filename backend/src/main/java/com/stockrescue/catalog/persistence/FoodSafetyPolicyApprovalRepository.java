@@ -40,14 +40,17 @@ public class FoodSafetyPolicyApprovalRepository {
     public FoodSafetyPolicyApproval append(FoodSafetyPolicyApproval value) {
         return jdbc.sql("""
                 INSERT INTO stockrescue.food_safety_policy_approval(id,org_id,policy_version_id,profile_id,product_category,temperature_class,
-                    approved_sale,approved_transfer,policy_digest,issuer_id,key_id,issued_at,valid_from,valid_until,evidence_reference,signature,
+                    approved_sale,approved_transfer,policy_digest,attestation_version,ruleset_id,ruleset_digest,
+                    issuer_id,key_id,issued_at,valid_from,valid_until,evidence_reference,signature,
                     actor_user_id,recorded_by_membership_id,request_id,payload_digest)
-                VALUES (:id,:org,:policy,:profile,:category,:temperature,:sale,:transfer,:policyDigest,:issuer,:key,:issuedAt,:validFrom,
+                VALUES (:id,:org,:policy,:profile,:category,:temperature,:sale,:transfer,:policyDigest,:attestationVersion,:ruleset,:rulesetDigest,
+                    :issuer,:key,:issuedAt,:validFrom,
                     :validUntil,:reference,:signature,:actor,:membership,:request,:payloadDigest) RETURNING *
                 """).param("id",value.id()).param("org",value.organizationId()).param("policy",value.policyVersionId())
                 .param("profile",value.profileId()).param("category",value.productCategory().name()).param("temperature",value.temperatureClass().name())
                 .param("sale",value.allowedOperations().contains(Operation.SALE)).param("transfer",value.allowedOperations().contains(Operation.TRANSFER))
-                .param("policyDigest",value.policyDigest()).param("issuer",value.issuerId()).param("key",value.keyId())
+                .param("policyDigest",value.policyDigest()).param("attestationVersion",value.attestationVersion()).param("ruleset",value.rulesetId())
+                .param("rulesetDigest",value.rulesetDigest()).param("issuer",value.issuerId()).param("key",value.keyId())
                 .param("issuedAt",timestamp(value.issuedAt())).param("validFrom",timestamp(value.validFrom())).param("validUntil",timestamp(value.validUntil()))
                 .param("reference",value.evidenceReference()).param("signature",value.signature()).param("actor",value.actorUserId())
                 .param("membership",value.recordedByMembershipId()).param("request",value.requestId()).param("payloadDigest",value.payloadDigest())
@@ -84,7 +87,8 @@ public class FoodSafetyPolicyApprovalRepository {
                 row.getObject("policy_version_id",UUID.class),row.getObject("profile_id",UUID.class),
                 com.stockrescue.catalog.domain.ProductCategory.valueOf(row.getString("product_category")),
                 com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass.valueOf(row.getString("temperature_class")),
-                operations,row.getBytes("policy_digest"),row.getString("issuer_id"),row.getString("key_id"),
+                operations,row.getBytes("policy_digest"),row.getInt("attestation_version"),row.getString("ruleset_id"),row.getBytes("ruleset_digest"),
+                row.getString("issuer_id"),row.getString("key_id"),
                 row.getTimestamp("issued_at").toInstant(),row.getTimestamp("valid_from").toInstant(),row.getTimestamp("valid_until").toInstant(),
                 row.getString("evidence_reference"),row.getBytes("signature"),row.getObject("actor_user_id",UUID.class),
                 row.getObject("recorded_by_membership_id",UUID.class),row.getObject("request_id",UUID.class),row.getBytes("payload_digest"),

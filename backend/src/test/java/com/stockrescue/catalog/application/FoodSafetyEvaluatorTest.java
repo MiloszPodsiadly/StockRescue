@@ -159,10 +159,27 @@ class FoodSafetyEvaluatorTest {
                 PartialDateRule.NO_NORMALIZATION,ApprovalStatus.UNVERIFIED,source(),UUID.randomUUID(),NOW,"Unclassified scope review");
         var verified=new FoodSafetyPolicyApprovalVerification(FoodSafetyPolicyApprovalVerification.Outcome.VERIFIED,1,
                 FoodSafetyPolicyDigest.hex(policy),"test-issuer","test-key",java.util.List.of(Operation.SALE),NOW,NOW,NOW.plusSeconds(60),
-                "test-evidence",NOW,false,null,null,null);
+                "test-evidence",NOW,false,null,null,null,2,FoodSafetyRuleset.CURRENT_ID,new FoodSafetyRuleset().digestHex(),
+                FoodSafetyRuleset.CURRENT_ID,new FoodSafetyRuleset().digestHex());
         var result=evaluator.evaluate(new Context(original.lot(),original.product(),original.store(),original.zone(),policy),Operation.SALE,NOW,verified);
         assertThat(result.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
         assertThat(result.reasonCodes()).contains(ReasonCode.PRODUCT_CATEGORY_UNCLASSIFIED);
+    }
+
+    @Test
+    void archivedProductRemainsDeniedWhenItsClassificationEvidenceIsVerified() {
+        var original=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",TemperatureClass.AMBIENT,ProductCategory.DAIRY);
+        var current=original.product();
+        var archived=new Product(current.id(),current.data(),false,current.version()+1,NOW.minusSeconds(30),NOW,null);
+        var classification=new FoodSafetyProductClassificationVerification(FoodSafetyProductClassificationVerification.Outcome.VERIFIED,
+                UUID.randomUUID(),archived.id(),UUID.randomUUID(),archived.data().sku().value(),ProductCategory.DAIRY,archived.version(),
+                ProductCategory.DAIRY,archived.version(),"test-issuer","test-key",NOW.minusSeconds(30),NOW.minusSeconds(20),
+                NOW.plusSeconds(60),"test-evidence",NOW,false,null,null,null);
+
+        var result=evaluator.evaluate(new Context(original.lot(),archived,original.store(),original.zone(),null),Operation.SALE,NOW,null,classification);
+
+        assertThat(result.decision()).isEqualTo(Decision.DENIED);
+        assertThat(result.reasonCodes()).contains(ReasonCode.PRODUCT_ARCHIVED);
     }
 
     private Context context(String label,DateMarkingType type,DatePrecision precision,String zoneId,TemperatureClass temperature) {
