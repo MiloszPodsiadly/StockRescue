@@ -111,9 +111,15 @@ retained through later metadata corrections.
 Eligibility uses an injected clock, the store's time zone and a coherent snapshot
 of lot, product, store, zone and policy versions. Each request recomputes the
 decision and returns ordered reasons, evidence status and a next action.
-REQUIRES_REVIEW requires further evidence and independent policy approval before
-operative use. Declared zone compatibility describes configuration rather than
-continuous cold-chain verification.
+Independent approval evidence is an Ed25519 attestation bound to one immutable
+policy version, scope, operation and rule digest. The deployment-owned trust
+registry is disabled by default; tenant administrators can submit or revoke
+evidence but cannot enroll trusted keys. Signature verification proves the key,
+not the issuer's professional qualifications. Production enrollment and
+specialist validation remain owner-controlled external gates; deployment must
+keep the registry disabled until the owner validates and enrolls an issuer.
+Declared zone compatibility describes configuration rather than continuous
+cold-chain verification.
 
 Storage locations belong to one store and retain their code and zone identity.
 Administrators and assigned Store Managers configure names and archival; current
