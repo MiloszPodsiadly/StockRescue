@@ -80,19 +80,70 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
         var owner=f.owner.browser();var lotId=register("2027-04-30","USE_BY","DAY");
         assertThat(owner.write(statusPath(lotId),status(0,"NOT_REPORTED","NOT_REPORTED")).statusCode()).isEqualTo(201);
         var policyResponse=owner.write(policies(),review(0,"NO_NORMALIZATION"));assertThat(policyResponse.statusCode()).isEqualTo(201);
-        var policyId=UUID.fromString(tree(policyResponse).path("id").asString());var signer=signer();var trusted=trust(signer);
-        var categoryEvidence=owner.write(classificationPath(f.product),signedClassification(f.org,f.product,ProductCategory.BAKERY,signer,"external-case:bread-classification"));
-        assertThat(categoryEvidence.statusCode()).as(categoryEvidence.body()).isEqualTo(201);
-        assertThat(tree(categoryEvidence).path("outcome").asString()).isEqualTo("VERIFIED");
-        var approvalPath=approvalPath(policyId);var submission=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:ambient-pilot-1");
-        var before=tree(owner.get(eligibility(lotId,f.store,f.zone)));
-        assertThat(before.path("decision").asString()).isEqualTo("ALLOWED");
-        assertThat(before.path("approvalVerification").path("outcome").asString()).isEqualTo("NOT_SUBMITTED");
-        assertThat(before.path("assessmentBasis").asString()).isEqualTo("PLATFORM_RULESET");
-        assertThat(before.path("rulesetId").asString()).isEqualTo(ruleset.id());
-        assertThat(before.path("rulesetDigest").asString()).isEqualTo(ruleset.digestHex());
-        assertThat(before.path("assessmentNotice").asString()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
+        var policyId=UUID.fromString(tree(policyResponse).path("id").asString());
+        var signer=signer();var trusted=trust(signer);
 
+        var categoryOnly=owner.write(classificationPath(f.product),signedClassification(f.org,f.product,ProductCategory.BAKERY,signer,
+                "external-case:bread-category-v0"));
+        assertThat(categoryOnly.statusCode()).as(categoryOnly.body()).isEqualTo(201);
+        assertThat(tree(categoryOnly).path("outcome").asString()).isEqualTo("VERIFIED");
+        var beforeOperatorConfirmation=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(beforeOperatorConfirmation.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(beforeOperatorConfirmation.path("reasonCodes").toString()).contains("PRODUCT_CLASSIFICATION_MISSING");
+        assertThat(beforeOperatorConfirmation.path("assessmentNotice").isNull()).isTrue();
+        assertThat(beforeOperatorConfirmation.path("assessmentBasis").asString()).isEqualTo("PLATFORM_RULESET");
+        assertThat(beforeOperatorConfirmation.path("approvalVerification").path("outcome").asString()).isEqualTo("NOT_SUBMITTED");
+        assertThat(beforeOperatorConfirmation.path("classificationVerification").path("outcome").asString()).isEqualTo("VERIFIED");
+        assertThat(beforeOperatorConfirmation.path("evidence").path("classification").asString()).isEqualTo("INDEPENDENTLY_VERIFIED");
+        assertThat(beforeOperatorConfirmation.path("operatorClassificationStatus").asString()).isEqualTo("NOT_RECORDED");
+        assertThat(beforeOperatorConfirmation.toString()).doesNotContain(FoodSafetyEvaluation.ALLOWED_NOTICE);
+
+        var confirmationResponse=owner.write(operatorClassificationConfirmationPath(f.product),
+                operatorClassificationConfirmation(UUID.randomUUID(),0,"BAKERY","package:category-and-storage-label"));
+        assertThat(confirmationResponse.statusCode()).as(confirmationResponse.body()).isEqualTo(201);
+        var confirmation=tree(confirmationResponse);
+        assertThat(confirmation.path("status").asString()).isEqualTo("CURRENT_OPERATOR_CONFIRMED");
+        assertThat(confirmation.path("confirmation").path("expectedProductVersion").asLong()).isZero();
+        assertThat(confirmation.path("confirmation").path("productVersion").asLong()).isEqualTo(1);
+        assertThat(confirmation.path("confirmation").path("confirmedCategory").asString()).isEqualTo("BAKERY");
+        assertThat(confirmation.path("confirmation").path("confirmedTemperatureClass").asString()).isEqualTo("AMBIENT");
+        assertThat(confirmation.path("confirmation").path("productProfile").asString()).isEqualTo("PACKAGED_SHELF_STABLE_DRY_BAKERY");
+        assertThat(confirmation.path("confirmation").path("sourceType").asString()).isEqualTo("ORIGINAL_PACKAGE");
+        assertThat(confirmation.path("confirmation").path("evidenceReference").asString()).isEqualTo("package:category-and-storage-label");
+        assertThat(confirmation.path("confirmation").path("actorUserId").asString()).isEqualTo(f.owner.id.toString());
+        assertThat(confirmation.path("confirmation").path("recordedByMembershipId").asString()).isEqualTo(f.membership(f.owner).toString());
+        assertThat(audits("PRODUCT_CLASSIFICATION_CONFIRMED")).isEqualTo(1);
+
+        var staleCategory=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(staleCategory.path("decision").asString()).isEqualTo("ALLOWED");
+        assertThat(staleCategory.path("classificationVerification").path("outcome").asString()).isEqualTo("PRODUCT_SCOPE_MISMATCH");
+        assertThat(staleCategory.path("classificationVerification").path("signedProductVersion").asLong()).isZero();
+        assertThat(staleCategory.path("classificationVerification").path("currentProductVersion").asLong()).isEqualTo(1);
+        assertThat(staleCategory.path("operatorClassificationStatus").asString()).isEqualTo("CURRENT_OPERATOR_CONFIRMED");
+        assertThat(staleCategory.path("evidence").path("classification").asString()).isEqualTo("OPERATOR_CONFIRMED");
+        assertThat(staleCategory.path("assessmentBasis").asString()).isEqualTo("PLATFORM_RULESET");
+        assertThat(staleCategory.path("assessmentNotice").asString()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
+        assertThat(staleCategory.path("reasonCodes")).isEmpty();
+
+        var currentCategory=owner.write(classificationPath(f.product),signedClassification(f.org,f.product,ProductCategory.BAKERY,signer,
+                "external-case:bread-category-v1"));
+        assertThat(currentCategory.statusCode()).as(currentCategory.body()).isEqualTo(201);
+        assertThat(tree(currentCategory).path("outcome").asString()).isEqualTo("VERIFIED");
+
+        // A local assessment remains available with no trusted issuer, key or external policy approval.
+        approvalProperties.setEnabled(false);approvalProperties.setTrustedIssuers(Map.of());
+        var selfService=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(selfService.path("decision").asString()).isEqualTo("ALLOWED");
+        assertThat(selfService.path("approvalVerification").path("outcome").asString()).isEqualTo("TRUST_REGISTRY_DISABLED");
+        assertThat(selfService.path("classificationVerification").path("outcome").asString()).isEqualTo("TRUST_REGISTRY_DISABLED");
+        assertThat(selfService.path("evidence").path("classification").asString()).isEqualTo("OPERATOR_CONFIRMED");
+        assertThat(selfService.path("assessmentBasis").asString()).isEqualTo("PLATFORM_RULESET");
+        assertThat(selfService.path("rulesetId").asString()).isEqualTo(ruleset.id());
+        assertThat(selfService.path("rulesetDigest").asString()).isEqualTo(ruleset.digestHex());
+        assertThat(selfService.path("assessmentNotice").asString()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
+
+        trusted.setEnabled(true);approvalProperties.setTrustedIssuers(Map.of("test-key",trusted));approvalProperties.setEnabled(true);
+        var approvalPath=approvalPath(policyId);var submission=signedApproval(policyId,UUID.randomUUID(),Set.of(Operation.SALE),signer,"external-case:ambient-pilot-1");
         var submitted=owner.write(approvalPath,submission);assertThat(submitted.statusCode()).as(submitted.body()).isEqualTo(201);
         var evidence=tree(submitted);var approvalId=UUID.fromString(evidence.path("approvalId").asString());
         assertThat(evidence.path("verification").path("outcome").asString()).isEqualTo("VERIFIED");
@@ -105,19 +156,32 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
         assertThat(sale.path("decision").asString()).isEqualTo("ALLOWED");
         assertThat(sale.path("reasonCodes")).isEmpty();
         assertThat(sale.path("assessmentBasis").asString()).isEqualTo("PLATFORM_RULESET");
-        assertThat(sale.path("assessmentNotice").asString()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
+        assertThat(sale.path("approvalVerification").path("outcome").asString()).isEqualTo("VERIFIED");
+        assertThat(sale.path("classificationVerification").path("outcome").asString()).isEqualTo("VERIFIED");
+        assertThat(sale.path("classificationVerification").path("signedProductVersion").asLong()).isEqualTo(1);
+        assertThat(sale.path("operatorClassificationStatus").asString()).isEqualTo("CURRENT_OPERATOR_CONFIRMED");
+        assertThat(sale.path("evidence").path("classification").asString()).isEqualTo("OPERATOR_CONFIRMED");
         assertThat(sale.path("evidence").path("policy").asString()).isEqualTo("INDEPENDENTLY_VERIFIED");
+        assertThat(sale.path("assessmentNotice").asString()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
         trusted.setEnabled(false);
         var keyDisabled=tree(owner.get(eligibility(lotId,f.store,f.zone)));
-        assertThat(keyDisabled.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(keyDisabled.path("decision").asString()).isEqualTo("ALLOWED");
         assertThat(keyDisabled.path("approvalVerification").path("outcome").asString()).isEqualTo("TRUSTED_KEY_DISABLED");
+        assertThat(keyDisabled.path("classificationVerification").path("outcome").asString()).isEqualTo("TRUSTED_KEY_DISABLED");
+        assertThat(keyDisabled.path("evidence").path("classification").asString()).isEqualTo("OPERATOR_CONFIRMED");
+        assertThat(keyDisabled.path("assessmentBasis").asString()).isEqualTo("PLATFORM_RULESET");
         trusted.setEnabled(true);
         approvalProperties.setEnabled(false);
         var trustDisabled=tree(owner.get(eligibility(lotId,f.store,f.zone)));
-        assertThat(trustDisabled.path("decision").asString()).isEqualTo("REQUIRES_REVIEW");
+        assertThat(trustDisabled.path("decision").asString()).isEqualTo("ALLOWED");
         assertThat(trustDisabled.path("approvalVerification").path("outcome").asString()).isEqualTo("TRUST_REGISTRY_DISABLED");
+        assertThat(trustDisabled.path("classificationVerification").path("outcome").asString()).isEqualTo("TRUST_REGISTRY_DISABLED");
+        assertThat(trustDisabled.path("evidence").path("classification").asString()).isEqualTo("OPERATOR_CONFIRMED");
+        assertThat(trustDisabled.path("assessmentBasis").asString()).isEqualTo("PLATFORM_RULESET");
         approvalProperties.setEnabled(true);
-        assertThat(tree(owner.get(eligibility(lotId,f.store,f.zone))).path("decision").asString()).isEqualTo("ALLOWED");
+        var restored=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(restored.path("decision").asString()).isEqualTo("ALLOWED");
+        assertThat(restored.path("approvalVerification").path("outcome").asString()).isEqualTo("VERIFIED");
         var transfer=tree(owner.get(eligibility(lotId,f.store,f.zone,Operation.TRANSFER)));
         assertThat(transfer.path("decision").asString()).isEqualTo("ALLOWED");
         assertThat(transfer.path("approvalVerification").path("outcome").asString()).isEqualTo("OPERATION_NOT_APPROVED");
@@ -152,8 +216,8 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
         assertThat(count("food_safety_policy_approval_revocation")).isEqualTo(1);
         assertThat(audits("FOOD_SAFETY_POLICY_APPROVAL_SUBMITTED")).isEqualTo(1);
         assertThat(audits("FOOD_SAFETY_POLICY_APPROVAL_REVOKED")).isEqualTo(1);
-        assertThat(count("food_safety_product_classification")).isEqualTo(1);
-        assertThat(audits("PRODUCT_CLASSIFICATION_ATTESTED")).isEqualTo(1);
+        assertThat(count("food_safety_product_classification")).isEqualTo(2);
+        assertThat(audits("PRODUCT_CLASSIFICATION_ATTESTED")).isEqualTo(2);
     }
 
     @Test
