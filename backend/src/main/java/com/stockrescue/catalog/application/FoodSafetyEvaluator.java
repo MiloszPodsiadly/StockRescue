@@ -53,7 +53,9 @@ public final class FoodSafetyEvaluator {
         if (zone!=null && !zone.active()) reasons.add(ReasonCode.ZONE_ARCHIVED);
         if (context.location()!=null && !context.location().active()) reasons.add(ReasonCode.LOCATION_ARCHIVED);
         if (product.data().category()==ProductCategory.UNCLASSIFIED) reasons.add(ReasonCode.PRODUCT_CATEGORY_UNCLASSIFIED);
-        if (!RULESET.supports(product.data().category(),product.data().temperatureClass(),operation))
+        var profile=operatorClassificationConfirmation==null?null:operatorClassificationConfirmation.productProfile();
+        var sourceType=operatorClassificationConfirmation==null?null:operatorClassificationConfirmation.sourceType();
+        if (!RULESET.supports(product.data().category(),product.data().temperatureClass(),profile,sourceType,operation))
             reasons.add(ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED);
         boolean externalClassificationVerified=classificationVerification!=null && classificationVerification.authorizes(product);
         var operatorClassificationStatus=operatorClassificationConfirmation==null
@@ -61,7 +63,9 @@ public final class FoodSafetyEvaluator {
                 :operatorClassificationConfirmation.statusFor(product);
         boolean operatorClassificationConfirmed=operatorClassificationStatus
                 ==FoodSafetyProductClassificationConfirmation.Status.CURRENT_OPERATOR_CONFIRMED;
-        boolean classificationEstablished=externalClassificationVerified || operatorClassificationConfirmed;
+        // Signed classification evidence binds the category only. The current source-backed operator record
+        // is still required to bind declared temperature and the narrow product profile to this exact revision.
+        boolean classificationEstablished=operatorClassificationConfirmed;
         if (!classificationEstablished) {
             if (operatorClassificationConfirmation==null) reasons.add(classificationReason(classificationVerification));
             else if (operatorClassificationConfirmation.statusFor(product)==FoodSafetyProductClassificationConfirmation.Status.STALE)
@@ -86,7 +90,7 @@ public final class FoodSafetyEvaluator {
             if (policy.temperatureClass()!=product.data().temperatureClass()) reasons.add(ReasonCode.POLICY_CLASS_MISMATCH);
         }
         boolean denied=reasons.stream().anyMatch(ReasonCode::hardDenial);
-        boolean allowed=!denied && reasons.isEmpty() && RULESET.supports(product.data().category(),product.data().temperatureClass(),operation)
+        boolean allowed=!denied && reasons.isEmpty() && RULESET.supports(product.data().category(),product.data().temperatureClass(),profile,sourceType,operation)
                 && classificationEstablished;
         boolean classificationReview=reasons.stream().anyMatch(reason -> reason.name().startsWith("PRODUCT_CLASSIFICATION_"));
         var next=denied?NextAction.DO_NOT_EXECUTE
@@ -126,7 +130,8 @@ public final class FoodSafetyEvaluator {
             case EXPIRED -> ReasonCode.PRODUCT_CLASSIFICATION_EXPIRED;
             case REVOKED -> ReasonCode.PRODUCT_CLASSIFICATION_REVOKED;
             case PRODUCT_SCOPE_MISMATCH -> ReasonCode.PRODUCT_CLASSIFICATION_SCOPE_MISMATCH;
-            case VERIFIED -> ReasonCode.PRODUCT_CLASSIFICATION_SCOPE_MISMATCH;
+            // A valid category signature does not establish the separately required declared temperature and profile.
+            case VERIFIED -> ReasonCode.PRODUCT_CLASSIFICATION_MISSING;
         };
     }
     private DateEvidenceStatus assessDate(DateMarking marking,LocalDate localDate,EnumSet<ReasonCode> reasons) {

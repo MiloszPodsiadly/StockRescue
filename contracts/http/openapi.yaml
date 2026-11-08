@@ -4014,8 +4014,8 @@ paths:
           description: Service unavailable
       security:
       - session: []
-      summary: Read the latest attributed operator classification and whether it matches
-        the current product revision
+      summary: Read the latest attributed operator safety-attribute confirmation and
+        whether it matches the current product revision
       tags:
       - food-safety-product-classification-controller
     post:
@@ -4108,8 +4108,8 @@ paths:
           description: Service unavailable
       security:
       - session: []
-      summary: Record a source-attributed operator category confirmation and bind
-        it to a new product version
+      summary: "Record source-attributed category, declared temperature and product\
+        \ profile and bind them to a new product version"
       tags:
       - food-safety-product-classification-controller
   /api/v1/organizations/{organizationId}/products/{productId}/classification-evidence/{attestationId}/revocation:
@@ -6702,9 +6702,7 @@ components:
           - DAIRY
           - BAKERY
         evidenceReference:
-          type:
-          - string
-          - "null"
+          type: string
           description: Reference to the inspected source; source content is not uploaded
           maxLength: 256
           minLength: 0
@@ -6713,6 +6711,19 @@ components:
           format: int64
           maximum: 9223372036854775806
           minimum: 0
+        productProfile:
+          type: string
+          description: Operator-described profile; only PACKAGED_SHELF_STABLE_DRY_BAKERY
+            is in the limited platform pilot
+          enum:
+          - NOT_ASSESSED
+          - PACKAGED_SHELF_STABLE_DRY_BAKERY
+          - REFRIGERATION_REQUIRED
+          - CREAM_FILLED_OR_PERISHABLE
+          - NOT_SHELF_STABLE
+          - STORAGE_INSTRUCTION_MISSING_OR_AMBIGUOUS
+          - CONTRADICTORY_STORAGE_EVIDENCE
+          - OUTSIDE_CURRENT_PILOT
         reason:
           type: string
           maxLength: 500
@@ -6721,21 +6732,30 @@ components:
           type: string
           format: uuid
         sourceType:
-          type:
-          - string
-          - "null"
-          description: "ORIGINAL_PACKAGE, SUPPLIER_DOCUMENT or OTHER; required for\
-            \ a known category"
+          type: string
+          description: "ORIGINAL_PACKAGE, SUPPLIER_DOCUMENT or OTHER; source is required\
+            \ for every confirmation"
           enum:
           - ORIGINAL_PACKAGE
           - SUPPLIER_DOCUMENT
           - OTHER
-          - null
+        temperatureClass:
+          type: string
+          description: Declared product storage temperature confirmed from the cited
+            source
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
       required:
       - category
+      - evidenceReference
       - expectedProductVersion
+      - productProfile
       - reason
       - requestId
+      - sourceType
+      - temperatureClass
     CorrectLotMetadataRequest:
       type: object
       properties:
@@ -8081,10 +8101,14 @@ components:
           - UNCLASSIFIED
           - DAIRY
           - BAKERY
+        confirmedTemperatureClass:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
         evidenceReference:
-          type:
-          - string
-          - "null"
+          type: string
         expectedProductVersion:
           type: integer
           format: int64
@@ -8100,9 +8124,26 @@ components:
           - UNCLASSIFIED
           - DAIRY
           - BAKERY
+        originalTemperatureClass:
+          type: string
+          enum:
+          - AMBIENT
+          - CHILLED
+          - FROZEN
         productId:
           type: string
           format: uuid
+        productProfile:
+          type: string
+          enum:
+          - NOT_ASSESSED
+          - PACKAGED_SHELF_STABLE_DRY_BAKERY
+          - REFRIGERATION_REQUIRED
+          - CREAM_FILLED_OR_PERISHABLE
+          - NOT_SHELF_STABLE
+          - STORAGE_INSTRUCTION_MISSING_OR_AMBIGUOUS
+          - CONTRADICTORY_STORAGE_EVIDENCE
+          - OUTSIDE_CURRENT_PILOT
         productVersion:
           type: integer
           format: int64
@@ -8120,23 +8161,23 @@ components:
         sku:
           type: string
         sourceType:
-          type:
-          - string
-          - "null"
+          type: string
           enum:
           - ORIGINAL_PACKAGE
           - SUPPLIER_DOCUMENT
           - OTHER
-          - null
       required:
       - actorUserId
       - confirmedCategory
+      - confirmedTemperatureClass
       - evidenceReference
       - expectedProductVersion
       - id
       - organizationId
       - originalCategory
+      - originalTemperatureClass
       - productId
+      - productProfile
       - productVersion
       - reason
       - recordedAt
@@ -8146,8 +8187,9 @@ components:
       - sourceType
     OperatorClassificationConfirmationResponse:
       type: object
-      description: Operator-confirmed category evidence is attributed and source-referenced;
-        it is not independent or specialist verification.
+      description: "Operator-confirmed category, declared temperature and product-profile\
+        \ evidence is attributed and source-referenced; it is not independent or specialist\
+        \ verification."
       properties:
         confirmation:
           anyOf:

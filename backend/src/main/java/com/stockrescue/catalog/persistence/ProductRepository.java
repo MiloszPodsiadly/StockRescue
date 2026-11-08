@@ -115,11 +115,13 @@ public class ProductRepository {
                 """).param("org",org).param("id",id).param("version",version).query((row,index) -> product(row)).optional();
     }
 
-    public Optional<Product> confirmCategory(UUID org, UUID id, long version, ProductCategory category) {
+    public Optional<Product> confirmSafetyAttributes(UUID org, UUID id, long version, ProductCategory category,
+            TemperatureClass temperatureClass) {
         return jdbc.sql("""
-                UPDATE stockrescue.product SET category=:category,version=version+1
+                UPDATE stockrescue.product SET category=:category,temperature_class=:temperature,version=version+1
                 WHERE org_id=:org AND id=:id AND version=:version AND active RETURNING *
-                """).param("category",category.name()).param("org",org).param("id",id).param("version",version)
+                """).param("category",category.name()).param("temperature",temperatureClass.name())
+                .param("org",org).param("id",id).param("version",version)
                 .query((row,index) -> product(row)).optional();
     }
 

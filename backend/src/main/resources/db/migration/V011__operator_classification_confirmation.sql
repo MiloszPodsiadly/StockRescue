@@ -16,6 +16,12 @@ CREATE TABLE stockrescue.food_safety_product_classification_confirmation (
     product_version BIGINT NOT NULL CHECK (product_version>0),
     original_category VARCHAR(24) NOT NULL CHECK (original_category IN ('UNCLASSIFIED','DAIRY','BAKERY')),
     confirmed_category VARCHAR(24) NOT NULL CHECK (confirmed_category IN ('UNCLASSIFIED','DAIRY','BAKERY')),
+    original_temperature_class VARCHAR(16) NOT NULL CHECK (original_temperature_class IN ('AMBIENT','CHILLED','FROZEN')),
+    confirmed_temperature_class VARCHAR(16) NOT NULL CHECK (confirmed_temperature_class IN ('AMBIENT','CHILLED','FROZEN')),
+    product_profile VARCHAR(48) NOT NULL CHECK (product_profile IN (
+        'NOT_ASSESSED','PACKAGED_SHELF_STABLE_DRY_BAKERY','REFRIGERATION_REQUIRED',
+        'CREAM_FILLED_OR_PERISHABLE','NOT_SHELF_STABLE','STORAGE_INSTRUCTION_MISSING_OR_AMBIGUOUS',
+        'CONTRADICTORY_STORAGE_EVIDENCE','OUTSIDE_CURRENT_PILOT')),
     source_type VARCHAR(32) CHECK (source_type IN ('ORIGINAL_PACKAGE','SUPPLIER_DOCUMENT','OTHER')),
     evidence_reference VARCHAR(256) COLLATE "C",
     actor_user_id UUID NOT NULL REFERENCES stockrescue.user_account(id) ON DELETE RESTRICT,
@@ -30,8 +36,7 @@ CREATE TABLE stockrescue.food_safety_product_classification_confirmation (
         (source_type IS NULL AND evidence_reference IS NULL)
         OR (source_type IS NOT NULL AND evidence_reference IS NOT NULL
             AND length(btrim(evidence_reference))>0 AND evidence_reference COLLATE "C" !~ '[[:cntrl:]]')),
-    CONSTRAINT food_safety_product_classification_confirmation_known_category_has_source CHECK (
-        confirmed_category='UNCLASSIFIED' OR source_type IS NOT NULL),
+    CONSTRAINT food_safety_product_classification_confirmation_source_required CHECK (source_type IS NOT NULL),
     CONSTRAINT food_safety_product_classification_confirmation_product_fk FOREIGN KEY (org_id,product_id)
         REFERENCES stockrescue.product(org_id,id) ON DELETE RESTRICT,
     CONSTRAINT food_safety_product_classification_confirmation_actor_fk FOREIGN KEY (org_id,recorded_by_membership_id,actor_user_id)
@@ -48,4 +53,4 @@ CREATE TRIGGER food_safety_product_classification_confirmation_no_truncate
     BEFORE TRUNCATE ON stockrescue.food_safety_product_classification_confirmation
     FOR EACH STATEMENT EXECUTE FUNCTION stockrescue.reject_history_mutation();
 COMMENT ON TABLE stockrescue.food_safety_product_classification_confirmation IS
-    'Immutable operator-confirmed descriptive category with cited evidence, actor, reason, durable request and exact resulting product version; never independent or specialist verification.';
+    'Immutable operator confirmation of descriptive category, declared temperature and bounded product profile with cited evidence, actor, reason, durable request and exact resulting product version; never independent or specialist verification.';

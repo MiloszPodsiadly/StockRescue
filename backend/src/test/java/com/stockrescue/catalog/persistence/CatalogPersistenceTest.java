@@ -183,9 +183,21 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
         var source = source(lot, f.storeA);
         reject("23514", "UPDATE stockrescue.product SET version=-1 WHERE id=?", f.productA);
         reject("23514", "UPDATE stockrescue.manufacturer_lot SET version=2 WHERE id=?", lot);
+        reject("23514", "UPDATE stockrescue.manufacturer_lot SET active=FALSE,version=version+1 WHERE id=?", lot);
         reject("23514", "UPDATE stockrescue.consignment_evidence SET version=1,created_at=created_at-interval '1 second' WHERE id=?", source);
         reject("23514", "UPDATE stockrescue.product SET sku='NEW-KEY',version=1 WHERE id=?", f.productA);
         for (var row : List.of(new TableRow("product", f.productA), new TableRow("manufacturer_lot", lot), new TableRow("consignment_evidence", source))) {
+            if (row.table.equals("manufacturer_lot")) {
+                var request = UUID.randomUUID();
+                sql("""
+                        INSERT INTO stockrescue.lot_archive_command(org_id,actor_user_id,request_id,lot_id,result_version,payload_digest)
+                        VALUES (?,?,?,?,1,?)
+                        """, f.orgA, f.userA, request, lot, new byte[32]);
+                sql("""
+                        INSERT INTO stockrescue.audit_entry(id,actor_user_id,org_id,resource_type,resource_id,action,reason,correlation_id)
+                        VALUES (?,?,?,'manufacturer-lot',?,'LOT_ARCHIVED','Persistence archive fixture','catalog-lot-archive-test')
+                        """, UUID.randomUUID(), f.userA, f.orgA, lot);
+            }
             sql("UPDATE stockrescue." + row.table + " SET active=FALSE,version=version+1 WHERE id=?", row.id);
             assertThat(count("SELECT count(*) FROM stockrescue." + row.table + " WHERE id=? AND NOT active AND version=1 AND archived_at IS NOT NULL AND updated_at>=created_at", row.id)).isEqualTo(1);
             reject("23514", "UPDATE stockrescue." + row.table + " SET active=TRUE,version=version+1 WHERE id=?", row.id);
@@ -195,7 +207,7 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
         reject("23505", productSql(), UUID.randomUUID(), f.orgA, "MILK-1", null);
         // Run deferred archival checks before testing the dedicated TRUNCATE protection.
         sql("SET CONSTRAINTS ALL IMMEDIATE");
-        reject("55000", "TRUNCATE stockrescue.product,stockrescue.manufacturer_lot,stockrescue.consignment_evidence,stockrescue.product_command,stockrescue.lot_registration,stockrescue.consignment_registration,stockrescue.lot_correction");
+        reject("55000", "TRUNCATE stockrescue.lot_archive_command");
         assertThat(count("SELECT count(*) FROM stockrescue.consignment_evidence WHERE org_id=? AND lot_id=?", f.orgA, lot)).isEqualTo(1);
     }
 

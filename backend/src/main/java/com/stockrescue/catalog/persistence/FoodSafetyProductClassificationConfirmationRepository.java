@@ -44,14 +44,16 @@ public class FoodSafetyProductClassificationConfirmationRepository {
         return jdbc.sql("""
                 INSERT INTO stockrescue.food_safety_product_classification_confirmation(
                     id,org_id,product_id,sku,expected_product_version,product_version,original_category,confirmed_category,
-                    source_type,evidence_reference,actor_user_id,recorded_by_membership_id,request_id,reason,payload_digest,recorded_at)
-                VALUES (:id,:org,:product,:sku,:expectedVersion,:version,:originalCategory,:category,
+                    original_temperature_class,confirmed_temperature_class,product_profile,source_type,evidence_reference,
+                    actor_user_id,recorded_by_membership_id,request_id,reason,payload_digest,recorded_at)
+                VALUES (:id,:org,:product,:sku,:expectedVersion,:version,:originalCategory,:category,:originalTemperature,:temperature,:profile,
                     :sourceType,:reference,:actor,:membership,:request,:reason,:digest,:recordedAt)
                 RETURNING *
                 """).param("id", value.id()).param("org", value.organizationId()).param("product", value.productId())
                 .param("sku", value.sku()).param("expectedVersion", value.expectedProductVersion())
                 .param("version", value.productVersion()).param("originalCategory", value.originalCategory().name())
-                .param("category", value.confirmedCategory().name())
+                .param("category", value.confirmedCategory().name()).param("originalTemperature",value.originalTemperatureClass().name())
+                .param("temperature",value.confirmedTemperatureClass().name()).param("profile",value.productProfile().name())
                 .param("sourceType", value.sourceType() == null ? null : value.sourceType().name(), java.sql.Types.VARCHAR)
                 .param("reference", value.evidenceReference(), java.sql.Types.VARCHAR).param("actor", value.actorUserId())
                 .param("membership", value.recordedByMembershipId()).param("request", value.requestId())
@@ -67,6 +69,9 @@ public class FoodSafetyProductClassificationConfirmationRepository {
                 row.getLong("expected_product_version"), row.getLong("product_version"),
                 ProductCategory.valueOf(row.getString("original_category")),
                 ProductCategory.valueOf(row.getString("confirmed_category")),
+                com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass.valueOf(row.getString("original_temperature_class")),
+                com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass.valueOf(row.getString("confirmed_temperature_class")),
+                FoodSafetyProductClassificationConfirmation.ProductProfile.valueOf(row.getString("product_profile")),
                 sourceType == null ? null : SourceType.valueOf(sourceType), row.getString("evidence_reference"),
                 row.getObject("actor_user_id", UUID.class), row.getObject("recorded_by_membership_id", UUID.class),
                 row.getObject("request_id", UUID.class), row.getString("reason"), row.getBytes("payload_digest"),

@@ -130,24 +130,17 @@ class FoodSafetyEvaluatorTest {
     }
 
     @Test
-    void supportedPlatformAssessmentDoesNotRequireTenantPolicyOrExternalPolicyApproval() {
+    void independentCategoryEvidenceAloneCannotConfirmTemperatureOrProductProfile() {
         var context=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",TemperatureClass.AMBIENT,ProductCategory.BAKERY);
         var result=evaluator.evaluate(context,Operation.SALE,NOW,null,verifiedClassification(context.product()));
 
-        assertThat(result.decision()).isEqualTo(Decision.ALLOWED);
-        assertThat(result.reasonCodes()).isEmpty();
+        assertThat(result.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
+        assertThat(result.reasonCodes()).contains(ReasonCode.PRODUCT_CLASSIFICATION_MISSING);
         assertThat(result.approvalVerification()).isNull();
-        assertThat(result.policy()).isNull();
         assertThat(result.assessmentBasis()).isEqualTo(AssessmentBasis.PLATFORM_RULESET);
-        assertThat(result.evidence().policy()).isEqualTo(PolicyEvidenceStatus.PLATFORM_RULESET);
         assertThat(result.rulesetId()).isEqualTo(FoodSafetyRuleset.CURRENT_ID);
         assertThat(result.rulesetDigest()).matches("[0-9a-f]{64}");
-        assertThat(result.assessmentNotice()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
-        assertThat(result.evidence().recall()).isEqualTo(StatusEvidenceStatus.NOT_REPORTED_IN_REVIEWED_EVIDENCE);
-        assertThat(result.evidence().damage()).isEqualTo(StatusEvidenceStatus.NOT_REPORTED_IN_REVIEWED_EVIDENCE);
-        assertThat(result.evidence().manufacturerSource()).isEqualTo(source());
-        assertThat(result.evidence().dateLabelSource()).isEqualTo(source());
-        assertThat(result.evidence().safetyStatusSource()).isEqualTo(source());
+        assertThat(result.assessmentNotice()).isNull();
     }
 
     @Test
@@ -157,6 +150,8 @@ class FoodSafetyEvaluatorTest {
         var confirmedProduct=new Product(product.id(),product.data(),true,1,product.createdAt(),NOW,null);
         var confirmation=new FoodSafetyProductClassificationConfirmation(UUID.randomUUID(),UUID.randomUUID(),product.id(),
                 product.data().sku().value(),0,1,ProductCategory.BAKERY,ProductCategory.BAKERY,
+                TemperatureClass.AMBIENT,TemperatureClass.AMBIENT,
+                FoodSafetyProductClassificationConfirmation.ProductProfile.PACKAGED_SHELF_STABLE_DRY_BAKERY,
                 FoodSafetyProductClassificationConfirmation.SourceType.ORIGINAL_PACKAGE,"package:category-label",
                 UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),"Reviewed the package category",new byte[32],NOW);
         var current=evaluator.evaluate(new Context(original.lot(),confirmedProduct,original.store(),original.zone(),null),Operation.SALE,NOW,
@@ -166,12 +161,70 @@ class FoodSafetyEvaluatorTest {
         assertThat(current.evidence().classification()).isEqualTo(ProductClassificationEvidenceStatus.OPERATOR_CONFIRMED);
         assertThat(current.assessmentNotice()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
 
+        var changedTemperature=ProductData.parse(product.data().sku().value(),"Milk",null,"EA",ProductCategory.BAKERY,TemperatureClass.CHILLED);
+        var correctedProduct=new Product(product.id(),changedTemperature,true,2,product.createdAt(),NOW,null);
+        var corrected=evaluator.evaluate(new Context(original.lot(),correctedProduct,original.store(),original.zone(),null),Operation.SALE,NOW,
+                null,null,confirmation);
+        assertThat(corrected.decision()).isEqualTo(Decision.DENIED);
+        assertThat(corrected.operatorClassificationStatus()).isEqualTo(FoodSafetyProductClassificationConfirmation.Status.STALE);
+        assertThat(corrected.reasonCodes()).contains(ReasonCode.PRODUCT_CLASSIFICATION_OPERATOR_CONFIRMATION_STALE,
+                ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED,ReasonCode.COLD_CHAIN_EVIDENCE_UNVERIFIED,ReasonCode.TEMPERATURE_CLASS_MISMATCH);
+
         var laterProduct=new Product(product.id(),product.data(),true,2,product.createdAt(),NOW,null);
         var stale=evaluator.evaluate(new Context(original.lot(),laterProduct,original.store(),original.zone(),null),Operation.SALE,NOW,
                 null,null,confirmation);
         assertThat(stale.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
         assertThat(stale.operatorClassificationStatus()).isEqualTo(FoodSafetyProductClassificationConfirmation.Status.STALE);
         assertThat(stale.reasonCodes()).contains(ReasonCode.PRODUCT_CLASSIFICATION_OPERATOR_CONFIRMATION_STALE);
+    }
+
+    @Test
+    void onlyExplicitShelfStableDryBakeryEvidenceFromAnOriginalPackageOrSupplierDocumentPasses() {
+        var original=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",TemperatureClass.AMBIENT,ProductCategory.BAKERY);
+        var before=original.product();
+        var current=new Product(before.id(),before.data(),true,1,before.createdAt(),NOW,null);
+        var profiles=new FoodSafetyProductClassificationConfirmation.ProductProfile[]{
+                FoodSafetyProductClassificationConfirmation.ProductProfile.NOT_ASSESSED,
+                FoodSafetyProductClassificationConfirmation.ProductProfile.REFRIGERATION_REQUIRED,
+                FoodSafetyProductClassificationConfirmation.ProductProfile.CREAM_FILLED_OR_PERISHABLE,
+                FoodSafetyProductClassificationConfirmation.ProductProfile.NOT_SHELF_STABLE,
+                FoodSafetyProductClassificationConfirmation.ProductProfile.STORAGE_INSTRUCTION_MISSING_OR_AMBIGUOUS,
+                FoodSafetyProductClassificationConfirmation.ProductProfile.CONTRADICTORY_STORAGE_EVIDENCE,
+                FoodSafetyProductClassificationConfirmation.ProductProfile.OUTSIDE_CURRENT_PILOT};
+
+        for (var profile:profiles) {
+            var confirmation=operatorConfirmation(before,current,profile,FoodSafetyProductClassificationConfirmation.SourceType.ORIGINAL_PACKAGE);
+            var result=evaluator.evaluate(new Context(original.lot(),current,original.store(),original.zone(),null),Operation.SALE,NOW,
+                    null,null,confirmation);
+            assertThat(result.decision()).as(profile.name()).isEqualTo(Decision.REQUIRES_REVIEW);
+            assertThat(result.reasonCodes()).as(profile.name()).contains(ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED);
+        }
+
+        var supported=FoodSafetyProductClassificationConfirmation.ProductProfile.PACKAGED_SHELF_STABLE_DRY_BAKERY;
+        for (var sourceType:new FoodSafetyProductClassificationConfirmation.SourceType[]{
+                FoodSafetyProductClassificationConfirmation.SourceType.ORIGINAL_PACKAGE,
+                FoodSafetyProductClassificationConfirmation.SourceType.SUPPLIER_DOCUMENT}) {
+            var confirmation=operatorConfirmation(before,current,supported,sourceType);
+            var result=evaluator.evaluate(new Context(original.lot(),current,original.store(),original.zone(),null),Operation.SALE,NOW,
+                    null,null,confirmation);
+            assertThat(result.decision()).as(sourceType.name()).isEqualTo(Decision.ALLOWED);
+        }
+
+        var nonProductEvidence=operatorConfirmation(before,current,supported,
+                FoodSafetyProductClassificationConfirmation.SourceType.OTHER);
+        var outside=evaluator.evaluate(new Context(original.lot(),current,original.store(),original.zone(),null),Operation.SALE,NOW,
+                null,null,nonProductEvidence);
+        assertThat(outside.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
+        assertThat(outside.reasonCodes()).contains(ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED);
+    }
+
+    private FoodSafetyProductClassificationConfirmation operatorConfirmation(Product before,Product after,
+            FoodSafetyProductClassificationConfirmation.ProductProfile profile,
+            FoodSafetyProductClassificationConfirmation.SourceType sourceType) {
+        return new FoodSafetyProductClassificationConfirmation(UUID.randomUUID(),UUID.randomUUID(),before.id(),
+                before.data().sku().value(),before.version(),after.version(),before.data().category(),after.data().category(),
+                before.data().temperatureClass(),after.data().temperatureClass(),profile,sourceType,"package:storage-and-product-label",
+                UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),"Reviewed source instructions",new byte[32],NOW);
     }
 
     @Test

@@ -19,7 +19,7 @@ public record FoodSafetyEvaluation(Decision decision,List<ReasonCode> reasonCode
                                    Instant evaluatedAt,LocalDate storeLocalDate,String storeTimeZone,
                                    EvidenceAssessment evidence,NextAction nextAction,String evaluatorVersion,
                                    AssessmentBasis assessmentBasis,String rulesetId,String rulesetDigest,String assessmentNotice) {
-    public static final String ALLOWED_NOTICE = "Passed the limited StockRescue checks on the available evidence at this time; not approval to sell, donate, transfer or perform stock movements.";
+    public static final String ALLOWED_NOTICE = "Passed the limited StockRescue checks on the available evidence at this time. This point-in-time assessment does not authorize sale, donation, transfer or stock movement.";
     public FoodSafetyEvaluation { reasonCodes=List.copyOf(reasonCodes); }
     public enum Decision { ALLOWED, DENIED, REQUIRES_REVIEW }
     public enum Operation { SALE, TRANSFER }

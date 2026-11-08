@@ -113,14 +113,17 @@ auditable but never independently verified. A public match is only a suggestion;
 no matching alert does not establish absence of a recall. Missing or unavailable
 evidence stays unknown.
 
-The local pilot is limited to classified BAKERY products stored at AMBIENT
-temperature. A positive assessment requires a confirmed manufacturer lot, a
-complete original day-precision label with source reference, referenced recall
-and damage observations, and active compatible storage context. It is a
-point-in-time check of recorded evidence, not certification or permission to
-sell, donate, transfer or move stock. `NOT_REPORTED` means only that no issue was
-reported in the evidence reviewed. Dairy, unclassified products, chilled/frozen
-products, partial dates and missing evidence remain under review; known recalled,
+The local pilot is limited to sealed, packaged, shelf-stable dry bakery products
+whose original package or supplier document supports BAKERY, AMBIENT and that
+specific profile. Perishable, cream-filled, refrigeration-dependent or uncertain
+products remain under review. A positive assessment also requires a confirmed
+manufacturer lot, a complete original day-precision label with source reference,
+referenced recall and damage observations, and active compatible storage context.
+The source-backed category, declared temperature and product profile are
+recorded together against a new product version. The result is a point-in-time
+check of recorded evidence, not certification or permission to sell, donate,
+transfer or move stock. `NOT_REPORTED` means only that no issue was reported in
+the evidence reviewed. Missing evidence remains under review; known recalled,
 damaged, expired or archived records and incompatible storage are denied.
 
 Eligibility uses an injected clock, the store's time zone and a coherent snapshot
@@ -147,7 +150,7 @@ evidence.
 
 | Evidence state | Assessment | Meaning |
 | --- | --- | --- |
-| Supported BAKERY / AMBIENT scope, complete attributed evidence, no known block | ALLOWED | Limited platform checks passed for this snapshot; no operation is authorized. |
+| Source-confirmed packaged shelf-stable dry BAKERY / AMBIENT scope, complete attributed evidence, no known block | ALLOWED | Limited platform checks passed for this snapshot; no operation is authorized. |
 | Unknown, incomplete, stale or unsupported evidence/scope | REQUIRES_REVIEW | Resolve the named evidence gaps; do not infer safety. |
 | Known recall, damage, expiry, archive or incompatible storage | DENIED | A hard block remains even when optional signed evidence exists. |
 

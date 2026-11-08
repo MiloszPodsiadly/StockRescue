@@ -14,9 +14,10 @@ import org.springframework.stereotype.Component;
 /** Immutable, reviewable identity for the platform's bounded food-safety checks. */
 @Component
 public final class FoodSafetyRuleset {
-    public static final String CURRENT_ID="food-safety-bakery-ambient-v1";
+    public static final String CURRENT_ID="food-safety-bakery-ambient-dry-packaged-v2";
     private static final String CURRENT_MANIFEST=String.join("\n",
-            "scope=BAKERY/AMBIENT-only;all-other-category-temperature-pairs-require-review",
+            "scope=BAKERY/AMBIENT/PACKAGED_SHELF_STABLE_DRY_BAKERY-only;all-other-category-temperature-profile-pairs-require-review",
+            "profile=operator-confirms-sealed-packaged-shelf-stable-dry-bakery-from-original-package-or-supplier-document;uncertain-or-perishable-products-require-review",
             "operations=SALE,TRANSFER-as-assessment-context-only;never-operation-authorization",
             "category=exact-current-product-category;UNCLASSIFIED-and-unsupported-categories-never-allow",
             "temperature=AMBIENT-product-and-active-AMBIENT-storage-only",
@@ -27,7 +28,7 @@ public final class FoodSafetyRuleset {
             "status=recall-and-damage-unknown-require-review;NOT_REPORTED-is-only-what-the-reviewed-evidence-says",
             "blocks=recalled,damaged,archived-lot,product,store,zone,location,expired-date,temperature-mismatch",
             "storage=active-AMBIENT-zone-must-match-product-temperature;non-ambient-cold-chain-evidence-unverified",
-            "classification=source-attributed-current-operator-confirmation-or-current-verified-external-evidence",
+            "classification=source-attributed-current-operator-confirmation-of-category-temperature-profile-required;external-signatures-are-optional-category-evidence",
             "missing-evidence=fail-closed-to-review;hard-blocks-take-precedence",
             "tenant-policy=never-weakens-or-replaces-this-platform-ruleset",
             "result=limited-point-in-time-evidence-check;not-certification-or-permission-to-sell-donate-transfer-or-move-stock");
@@ -55,8 +56,13 @@ public final class FoodSafetyRuleset {
     public String digestHex() { return digestHex; }
     public byte[] digest() { return HexFormat.of().parseHex(digestHex); }
 
-    public boolean supports(ProductCategory category,TemperatureClass temperatureClass,Operation operation) {
+    public boolean supports(ProductCategory category,TemperatureClass temperatureClass,
+            FoodSafetyProductClassificationConfirmation.ProductProfile productProfile,
+            FoodSafetyProductClassificationConfirmation.SourceType sourceType,Operation operation) {
         return category==ProductCategory.BAKERY && temperatureClass==TemperatureClass.AMBIENT
+                && productProfile==FoodSafetyProductClassificationConfirmation.ProductProfile.PACKAGED_SHELF_STABLE_DRY_BAKERY
+                && (sourceType==FoodSafetyProductClassificationConfirmation.SourceType.ORIGINAL_PACKAGE
+                    || sourceType==FoodSafetyProductClassificationConfirmation.SourceType.SUPPLIER_DOCUMENT)
                 && (operation==Operation.SALE || operation==Operation.TRANSFER);
     }
 

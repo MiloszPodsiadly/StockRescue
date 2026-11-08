@@ -179,7 +179,7 @@ class ProductManagementTest extends InfrastructureTestBase {
     }
 
     @Test
-    void operatorCategoryConfirmationUsesSourceEvidenceVersionedReplayAndImmutableAudit() throws Exception {
+    void operatorSafetyAttributeConfirmationUsesSourceEvidenceVersionedReplayAndImmutableAudit() throws Exception {
         var owner=f.ownerA.browser();
         var product=create(owner,"CATEGORY-CONFIRMATION");
         var request=UUID.randomUUID();
@@ -192,6 +192,9 @@ class ProductManagementTest extends InfrastructureTestBase {
         assertThat(expected.path("product").path("version").asLong()).isEqualTo(1);
         assertThat(expected.path("confirmation").path("originalCategory").asString()).isEqualTo("DAIRY");
         assertThat(expected.path("confirmation").path("confirmedCategory").asString()).isEqualTo("BAKERY");
+        assertThat(expected.path("confirmation").path("originalTemperatureClass").asString()).isEqualTo("CHILLED");
+        assertThat(expected.path("confirmation").path("confirmedTemperatureClass").asString()).isEqualTo("CHILLED");
+        assertThat(expected.path("confirmation").path("productProfile").asString()).isEqualTo("PACKAGED_SHELF_STABLE_DRY_BAKERY");
         assertThat(expected.path("confirmation").path("productVersion").asLong()).isEqualTo(1);
         assertThat(expected.path("confirmation").path("evidenceReference").asString()).isEqualTo("package:category-label");
         assertThat(expected.path("status").asString()).isEqualTo("CURRENT_OPERATOR_CONFIRMED");
@@ -201,9 +204,10 @@ class ProductManagementTest extends InfrastructureTestBase {
             assertThatThrownBy(() -> jdbc.sql(sql).param("org",f.orgA).param("id",confirmationId).update())
                     .isInstanceOf(org.springframework.dao.DataAccessException.class);
         var missingSource=new HashMap<String,Object>();missingSource.put("requestId",UUID.randomUUID());missingSource.put("expectedProductVersion",1);
-        missingSource.put("category","DAIRY");missingSource.put("sourceType",null);missingSource.put("evidenceReference",null);
+        missingSource.put("category","DAIRY");missingSource.put("temperatureClass","CHILLED");missingSource.put("productProfile","OUTSIDE_CURRENT_PILOT");
+        missingSource.put("sourceType",null);missingSource.put("evidenceReference",null);
         missingSource.put("reason","Source reference has not been recorded");
-        problem(owner.write("POST",endpoint,missingSource),422,"INVALID_REQUEST");
+        problem(owner.write("POST",endpoint,missingSource),400,"INVALID_REQUEST");
         assertThat(tree(owner.get(path(f.orgA,product))).path("version").asLong()).isEqualTo(1);
         assertThat(tree(owner.write("POST",endpoint,confirmation))).isEqualTo(expected);
         var changed=categoryConfirmation(request,0,"UNCLASSIFIED");
@@ -489,6 +493,7 @@ class ProductManagementTest extends InfrastructureTestBase {
     private Map<String,Object> bodyWithoutGtin(UUID request,String sku) { var body=body(request,sku);body.remove("gtin");return body; }
     private Map<String,Object> archive(UUID request,long version) { return new HashMap<>(Map.of("requestId",request,"expectedVersion",version,"reason","Discontinued product reviewed")); }
     private Map<String,Object> categoryConfirmation(UUID request,long version,String category) { return new HashMap<>(Map.of("requestId",request,"expectedProductVersion",version,"category",category,
+            "temperatureClass","CHILLED","productProfile",category.equals("BAKERY")?"PACKAGED_SHELF_STABLE_DRY_BAKERY":category.equals("UNCLASSIFIED")?"NOT_ASSESSED":"OUTSIDE_CURRENT_PILOT",
             "sourceType","ORIGINAL_PACKAGE","evidenceReference","package:category-label","reason","Confirmed from the package label")); }
     private UUID create(Browser browser,String sku) throws Exception { return create(browser,f.orgA,sku); }
     private UUID create(Browser browser,UUID org,String sku) throws Exception { var result=browser.write("POST",base(org),bodyWithoutGtin(UUID.randomUUID(),sku)); assertThat(result.statusCode()).as(result.body()).isEqualTo(201); return UUID.fromString(tree(result).path("id").asString()); }

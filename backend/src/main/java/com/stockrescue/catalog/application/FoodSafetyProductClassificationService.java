@@ -66,7 +66,7 @@ public class FoodSafetyProductClassificationService {
                         || submission.evidenceReference().codePoints().anyMatch(Character::isISOControl))) invalid();
 
         var normalized=new FoodSafetyProductClassificationConfirmationSubmission(submission.requestId(),
-                submission.expectedProductVersion(),submission.category(),submission.sourceType(),
+                submission.expectedProductVersion(),submission.category(),submission.temperatureClass(),submission.productProfile(),submission.sourceType(),
                 submission.evidenceReference()==null?null:submission.evidenceReference().strip(),submission.reason().strip());
         var fingerprint=normalized.fingerprint(organizationId,productId);
         var prior=products.receiptIfPresent(actor,organizationId,Operation.CONFIRM_CLASSIFICATION,submission.requestId());
@@ -81,10 +81,12 @@ public class FoodSafetyProductClassificationService {
         var before=product(organizationId,productId,true);
         if (!before.active()) throw new CatalogFailure(CatalogFailure.Kind.INACTIVE);
         if (before.version()!=submission.expectedProductVersion()) conflict();
-        var after=products.confirmCategory(organizationId,productId,submission.expectedProductVersion(),submission.category())
+        var after=products.confirmSafetyAttributes(organizationId,productId,submission.expectedProductVersion(),
+                submission.category(),submission.temperatureClass())
                 .orElseThrow(() -> new CatalogFailure(CatalogFailure.Kind.CONFLICT));
         var candidate=new FoodSafetyProductClassificationConfirmation(UUID.randomUUID(),organizationId,productId,
                 before.data().sku().value(),before.version(),after.version(),before.data().category(),after.data().category(),
+                before.data().temperatureClass(),after.data().temperatureClass(),normalized.productProfile(),
                 normalized.sourceType(),normalized.evidenceReference(),actor,membership.membershipId(),normalized.requestId(),
                 normalized.reason(),fingerprint,clock.instant());
         var stored=confirmations.append(candidate);

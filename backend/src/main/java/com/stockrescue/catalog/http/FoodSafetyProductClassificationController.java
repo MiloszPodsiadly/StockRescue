@@ -8,7 +8,9 @@ import com.stockrescue.catalog.application.FoodSafetyProductClassificationConfir
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationConfirmationSubmission;
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationRevocationCommand;
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationVerification;
+import com.stockrescue.catalog.application.FoodSafetyProductClassificationConfirmation.ProductProfile;
 import com.stockrescue.catalog.domain.ProductCategory;
+import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
 import com.stockrescue.platform.http.ApiProblem;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -53,7 +55,7 @@ public class FoodSafetyProductClassificationController {
     }
 
     @GetMapping("/operator-confirmations")
-    @Operation(operationId="getOperatorProductClassificationConfirmation",summary="Read the latest attributed operator classification and whether it matches the current product revision")
+    @Operation(operationId="getOperatorProductClassificationConfirmation",summary="Read the latest attributed operator safety-attribute confirmation and whether it matches the current product revision")
     @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=OperatorClassificationConfirmationResponse.class)))
     public ResponseEntity<OperatorClassificationConfirmationResponse> operatorConfirmation(Authentication actor,
             @PathVariable UUID organizationId,@PathVariable UUID productId) {
@@ -62,7 +64,7 @@ public class FoodSafetyProductClassificationController {
     }
 
     @PostMapping(value="/operator-confirmations",consumes=MediaType.APPLICATION_JSON_VALUE)
-    @Operation(operationId="confirmOperatorProductClassification",summary="Record a source-attributed operator category confirmation and bind it to a new product version")
+    @Operation(operationId="confirmOperatorProductClassification",summary="Record source-attributed category, declared temperature and product profile and bind them to a new product version")
     @ApiResponses({
             @ApiResponse(responseCode="201",content=@Content(schema=@Schema(implementation=OperatorClassificationConfirmationResponse.class))),
             @ApiResponse(responseCode="200",description="Previously recorded confirmation replayed",content=@Content(schema=@Schema(implementation=OperatorClassificationConfirmationResponse.class)))})
@@ -70,7 +72,7 @@ public class FoodSafetyProductClassificationController {
             @PathVariable UUID organizationId,@PathVariable UUID productId,
             @Valid @RequestBody ConfirmOperatorClassificationRequest request) {
         var submission=new FoodSafetyProductClassificationConfirmationSubmission(request.requestId(),request.expectedProductVersion(),
-                request.category(),request.sourceType(),request.evidenceReference(),request.reason());
+                request.category(),request.temperatureClass(),request.productProfile(),request.sourceType(),request.evidenceReference(),request.reason());
         var result=classifications.confirm(actor(actor),organizationId,productId,submission);
         return ResponseEntity.status(result.created()?HttpStatus.CREATED:HttpStatus.OK).cacheControl(CacheControl.noStore())
                 .body(OperatorClassificationConfirmationResponse.from(result));
@@ -124,8 +126,10 @@ public class FoodSafetyProductClassificationController {
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
             @NotNull @Min(0) @Max(Long.MAX_VALUE-1) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedProductVersion,
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Descriptive category confirmed from the cited source; UNCLASSIFIED stays under review") ProductCategory category,
-            @Schema(types={"string","null"},description="ORIGINAL_PACKAGE, SUPPLIER_DOCUMENT or OTHER; required for a known category") FoodSafetyProductClassificationConfirmation.SourceType sourceType,
-            @Schema(types={"string","null"},description="Reference to the inspected source; source content is not uploaded") @Size(max=256) String evidenceReference,
+            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Declared product storage temperature confirmed from the cited source") TemperatureClass temperatureClass,
+            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Operator-described profile; only PACKAGED_SHELF_STABLE_DRY_BAKERY is in the limited platform pilot") ProductProfile productProfile,
+            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="ORIGINAL_PACKAGE, SUPPLIER_DOCUMENT or OTHER; source is required for every confirmation") FoodSafetyProductClassificationConfirmation.SourceType sourceType,
+            @NotBlank @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Reference to the inspected source; source content is not uploaded") @Size(max=256) String evidenceReference,
             @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
 
     public record OperatorClassificationConfirmationDetails(
@@ -137,8 +141,11 @@ public class FoodSafetyProductClassificationController {
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long productVersion,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) ProductCategory originalCategory,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) ProductCategory confirmedCategory,
-            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyProductClassificationConfirmation.SourceType sourceType,
-            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String evidenceReference,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) TemperatureClass originalTemperatureClass,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) TemperatureClass confirmedTemperatureClass,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) ProductProfile productProfile,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyProductClassificationConfirmation.SourceType sourceType,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String evidenceReference,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID actorUserId,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID recordedByMembershipId,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
@@ -147,12 +154,13 @@ public class FoodSafetyProductClassificationController {
         static OperatorClassificationConfirmationDetails from(FoodSafetyProductClassificationConfirmation value) {
             return new OperatorClassificationConfirmationDetails(value.id(),value.organizationId(),value.productId(),value.sku(),
                     value.expectedProductVersion(),value.productVersion(),value.originalCategory(),value.confirmedCategory(),
+                    value.originalTemperatureClass(),value.confirmedTemperatureClass(),value.productProfile(),
                     value.sourceType(),value.evidenceReference(),value.actorUserId(),value.recordedByMembershipId(),value.requestId(),
                     value.reason(),value.recordedAt());
         }
     }
 
-    @Schema(description="Operator-confirmed category evidence is attributed and source-referenced; it is not independent or specialist verification.")
+    @Schema(description="Operator-confirmed category, declared temperature and product-profile evidence is attributed and source-referenced; it is not independent or specialist verification.")
     public record OperatorClassificationConfirmationResponse(
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) ProductController.ProductResponse product,
             @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) OperatorClassificationConfirmationDetails confirmation,

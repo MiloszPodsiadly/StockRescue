@@ -189,21 +189,36 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
         assertThat(assessment.path("reasonCodes")).isEmpty();
         assertThat(approvalProperties.isEnabled()).isFalse();
         assertThat(approvalProperties.getTrustedIssuers()).isEmpty();
+
+        var originalProduct=tree(confirmation).path("product");
+        var temperatureCorrection=operatorClassificationConfirmation(UUID.randomUUID(),1,"BAKERY","package:storage-instructions");
+        temperatureCorrection.put("temperatureClass","CHILLED");
+        temperatureCorrection.put("productProfile","OUTSIDE_CURRENT_PILOT");
+        var corrected=owner.write(operatorClassificationConfirmationPath(f.product),temperatureCorrection);
+        assertThat(corrected.statusCode()).as(corrected.body()).isEqualTo(201);
+        var correctedProduct=tree(owner.get("/api/v1/organizations/"+f.org+"/products/"+f.product));
+        assertThat(correctedProduct.path("id")).isEqualTo(originalProduct.path("id"));
+        assertThat(correctedProduct.path("sku")).isEqualTo(originalProduct.path("sku"));
+        assertThat(correctedProduct.path("version").asLong()).isEqualTo(2);
+        assertThat(correctedProduct.path("temperatureClass").asString()).isEqualTo("CHILLED");
+        var afterCorrection=tree(owner.get(eligibility(lotId,f.store,f.zone)));
+        assertThat(afterCorrection.path("decision").asString()).isEqualTo("DENIED");
+        assertThat(afterCorrection.path("reasonCodes").toString()).contains("PLATFORM_RULESET_SCOPE_UNSUPPORTED","COLD_CHAIN_EVIDENCE_UNVERIFIED","TEMPERATURE_CLASS_MISMATCH");
     }
 
     @Test
-    void unclassifiedProductCanBeRecordedWithoutInventedEvidenceAndRemainsUnderReview() throws Exception {
+    void unclassifiedProductCanRecordItsTemperatureSourceAndRemainsUnderReview() throws Exception {
         var owner=f.owner.browser();
         var created=owner.write("/api/v1/organizations/"+f.org+"/products",Map.of("requestId",UUID.randomUUID(),"sku","UNKNOWN-CATEGORY",
                 "name","Unclassified product","baseUnit","EA","category","UNCLASSIFIED","temperatureClass","AMBIENT"));
         assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
         var product=UUID.fromString(tree(created).path("id").asString());
-        var confirmation=operatorClassificationConfirmation(UUID.randomUUID(),0,"UNCLASSIFIED",null);
+        var confirmation=operatorClassificationConfirmation(UUID.randomUUID(),0,"UNCLASSIFIED","package:storage-label");
         var recorded=owner.write(operatorClassificationConfirmationPath(product),confirmation);
         assertThat(recorded.statusCode()).as(recorded.body()).isEqualTo(201);
         assertThat(tree(recorded).path("status").asString()).isEqualTo("INSUFFICIENT_EVIDENCE");
-        assertThat(tree(recorded).path("confirmation").path("sourceType").isNull()).isTrue();
-        assertThat(tree(recorded).path("confirmation").path("evidenceReference").isNull()).isTrue();
+        assertThat(tree(recorded).path("confirmation").path("sourceType").asString()).isEqualTo("ORIGINAL_PACKAGE");
+        assertThat(tree(recorded).path("confirmation").path("evidenceReference").asString()).isEqualTo("package:storage-label");
         var lotId=register(product,"UNCLASSIFIED-LOT","2027-04-30","USE_BY","DAY");
         assertThat(owner.write(statusPath(lotId),status(0,"NOT_REPORTED","NOT_REPORTED")).statusCode()).isEqualTo(201);
         var assessment=tree(owner.get(eligibility(lotId,f.store,f.zone)));
@@ -896,11 +911,14 @@ class FoodSafetyWorkflowTest extends InfrastructureTestBase {
     private String approvalPath(UUID policyId) { return policies()+"/"+policyId+"/approval-evidence"; }
     private Map<String,Object> operatorClassificationConfirmation(UUID request,long version,String category,String reference) {
         var body=new HashMap<String,Object>();body.put("requestId",request);body.put("expectedProductVersion",version);body.put("category",category);
+        body.put("temperatureClass","AMBIENT");
+        body.put("productProfile",category.equals("BAKERY")?"PACKAGED_SHELF_STABLE_DRY_BAKERY":
+                category.equals("UNCLASSIFIED")?"NOT_ASSESSED":"OUTSIDE_CURRENT_PILOT");
         if (reference!=null) {
             body.put("sourceType",reference.startsWith("supplier:")?"SUPPLIER_DOCUMENT":"ORIGINAL_PACKAGE");
             body.put("evidenceReference",reference);
-        } else { body.put("sourceType",null);body.put("evidenceReference",null); }
-        body.put("reason","Reviewed the category against the cited product evidence");return body;
+        } else { body.put("sourceType","ORIGINAL_PACKAGE");body.put("evidenceReference","package:source-review"); }
+        body.put("reason","Reviewed category and declared temperature against the cited product evidence");return body;
     }
     private String operatorClassificationConfirmationPath(UUID productId) { return classificationPath(productId)+"/operator-confirmations"; }
     private String classificationPath(UUID productId) { return "/api/v1/organizations/"+f.org+"/products/"+productId+"/classification-evidence"; }
