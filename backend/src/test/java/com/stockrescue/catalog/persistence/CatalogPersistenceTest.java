@@ -306,12 +306,12 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
     }
 
     @Test
-    void v014ProductsAndPolicyReviewsUpgradeWithoutLossOrAccidentalClassification() throws Exception {
+    void v010ProductsAndPolicyReviewsUpgradeWithoutLossOrAccidentalClassification() throws Exception {
         try (var previous = isolatedDatabase()) {
             previous.start();
             var baseline = Flyway.configure().dataSource(previous.getJdbcUrl(), "stockrescue_app", "test-app-password")
-                    .defaultSchema("public").target("14").cleanDisabled(true).load();
-            assertThat(baseline.migrate().migrationsExecuted).isEqualTo(14);
+                    .defaultSchema("public").target("10").cleanDisabled(true).load();
+            assertThat(baseline.migrate().migrationsExecuted).isEqualTo(10);
 
             var user = UUID.randomUUID();
             var org = UUID.randomUUID();
@@ -346,7 +346,7 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
             }
 
             var upgraded = migrations(previous.getJdbcUrl());
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.migrationsAfter(14));
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.migrationsAfter(10));
             upgraded.validate();
             MigrationAssertions.assertCurrent(upgraded);
             try (var current = open(previous.getJdbcUrl())) {

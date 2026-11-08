@@ -1,11 +1,11 @@
 ALTER TABLE stockrescue.product_command DROP CONSTRAINT product_command_operation_check;
 ALTER TABLE stockrescue.product_command ALTER COLUMN operation TYPE VARCHAR(32);
 ALTER TABLE stockrescue.product_command ADD CONSTRAINT product_command_operation_check
-    CHECK (operation IN ('CREATE','ARCHIVE','RECLASSIFY','CONFIRM_CLASSIFICATION'));
+    CHECK (operation IN ('CREATE','ARCHIVE','CONFIRM_CLASSIFICATION'));
 ALTER TABLE stockrescue.product_command DROP CONSTRAINT product_command_version_valid;
 ALTER TABLE stockrescue.product_command ADD CONSTRAINT product_command_version_valid CHECK (
     (operation='CREATE' AND result_version=0)
-    OR (operation IN ('ARCHIVE','RECLASSIFY','CONFIRM_CLASSIFICATION') AND result_version>0));
+    OR (operation IN ('ARCHIVE','CONFIRM_CLASSIFICATION') AND result_version>0));
 
 CREATE TABLE stockrescue.food_safety_product_classification_confirmation (
     id UUID PRIMARY KEY,

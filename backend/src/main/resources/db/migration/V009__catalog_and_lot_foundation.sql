@@ -211,3 +211,253 @@ CREATE TRIGGER consignment_evidence_lifecycle BEFORE UPDATE ON stockrescue.consi
 CREATE TRIGGER consignment_evidence_identity BEFORE UPDATE ON stockrescue.consignment_evidence FOR EACH ROW EXECUTE FUNCTION stockrescue.validate_consignment_identity();
 CREATE TRIGGER consignment_evidence_no_delete BEFORE DELETE ON stockrescue.consignment_evidence FOR EACH ROW EXECUTE FUNCTION stockrescue.reject_history_mutation();
 CREATE TRIGGER consignment_evidence_no_truncate BEFORE TRUNCATE ON stockrescue.consignment_evidence FOR EACH STATEMENT EXECUTE FUNCTION stockrescue.reject_history_mutation();
+
+CREATE TABLE stockrescue.product_command (
+    org_id UUID NOT NULL REFERENCES stockrescue.organization(id) ON DELETE RESTRICT,
+    actor_user_id UUID NOT NULL REFERENCES stockrescue.user_account(id) ON DELETE RESTRICT,
+    operation VARCHAR(16) NOT NULL CHECK (operation IN ('CREATE','ARCHIVE')),
+    request_id UUID NOT NULL,
+    product_id UUID NOT NULL,
+    result_version BIGINT NOT NULL CHECK (result_version>=0),
+    payload_digest BYTEA NOT NULL CHECK (octet_length(payload_digest)=32),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    CONSTRAINT product_command_version_valid CHECK ((operation='CREATE' AND result_version=0) OR (operation='ARCHIVE' AND result_version>0)),
+    PRIMARY KEY (org_id,actor_user_id,operation,request_id),
+    CONSTRAINT product_command_result_fk FOREIGN KEY (org_id,product_id)
+        REFERENCES stockrescue.product(org_id,id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+);
+COMMENT ON TABLE stockrescue.product_command IS 'Immutable successful product command outcomes. The unique key serializes retries; a creation reservation and its product commit together through the deferred result FK.';
+CREATE INDEX product_command_result_idx ON stockrescue.product_command(org_id,product_id);
+CREATE TRIGGER product_command_immutable BEFORE UPDATE OR DELETE ON stockrescue.product_command
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.reject_history_mutation();
+CREATE TRIGGER product_command_no_truncate BEFORE TRUNCATE ON stockrescue.product_command
+    FOR EACH STATEMENT EXECUTE FUNCTION stockrescue.reject_history_mutation();
+
+CREATE TABLE stockrescue.lot_registration (
+    org_id UUID NOT NULL REFERENCES stockrescue.organization(id) ON DELETE RESTRICT,
+    actor_user_id UUID NOT NULL REFERENCES stockrescue.user_account(id) ON DELETE RESTRICT,
+    request_id UUID NOT NULL,
+    lot_id UUID NOT NULL,
+    payload_digest BYTEA NOT NULL CHECK (octet_length(payload_digest)=32),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (org_id,actor_user_id,request_id),
+    CONSTRAINT lot_registration_result_fk FOREIGN KEY (org_id,lot_id)
+        REFERENCES stockrescue.manufacturer_lot(org_id,id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX lot_registration_result_idx ON stockrescue.lot_registration(org_id,lot_id);
+CREATE TRIGGER lot_registration_immutable BEFORE UPDATE OR DELETE ON stockrescue.lot_registration
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.reject_history_mutation();
+CREATE TRIGGER lot_registration_no_truncate BEFORE TRUNCATE ON stockrescue.lot_registration
+    FOR EACH STATEMENT EXECUTE FUNCTION stockrescue.reject_history_mutation();
+
+CREATE TABLE stockrescue.consignment_registration (
+    org_id UUID NOT NULL REFERENCES stockrescue.organization(id) ON DELETE RESTRICT,
+    actor_user_id UUID NOT NULL REFERENCES stockrescue.user_account(id) ON DELETE RESTRICT,
+    request_id UUID NOT NULL,
+    evidence_id UUID NOT NULL,
+    payload_digest BYTEA NOT NULL CHECK (octet_length(payload_digest)=32),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (org_id,actor_user_id,request_id),
+    CONSTRAINT consignment_registration_result_fk FOREIGN KEY (org_id,evidence_id)
+        REFERENCES stockrescue.consignment_evidence(org_id,id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX consignment_registration_result_idx ON stockrescue.consignment_registration(org_id,evidence_id);
+CREATE TRIGGER consignment_registration_immutable BEFORE UPDATE OR DELETE ON stockrescue.consignment_registration
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.reject_history_mutation();
+CREATE TRIGGER consignment_registration_no_truncate BEFORE TRUNCATE ON stockrescue.consignment_registration
+    FOR EACH STATEMENT EXECUTE FUNCTION stockrescue.reject_history_mutation();
+
+ALTER TABLE stockrescue.membership ADD CONSTRAINT membership_actor_identity UNIQUE (org_id,id,user_id);
+
+CREATE OR REPLACE FUNCTION stockrescue.validate_lot_identity() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+    IF (NEW.product_id,NEW.lot_code) IS DISTINCT FROM (OLD.product_id,OLD.lot_code)
+        OR (OLD.manufacturer_identity_key IS NOT NULL AND NEW.manufacturer_identity_key IS DISTINCT FROM OLD.manufacturer_identity_key)
+        OR (OLD.manufacturer_source IS NOT NULL AND NEW.manufacturer_source IS DISTINCT FROM OLD.manufacturer_source
+            AND NOT (OLD.identity_state='CANDIDATE' AND NEW.identity_state='CONFIRMED'))
+        OR (OLD.identity_state='CONFIRMED' AND
+            (NEW.identity_state,NEW.confirmed_by_membership_id,NEW.confirmed_at)
+            IS DISTINCT FROM (OLD.identity_state,OLD.confirmed_by_membership_id,OLD.confirmed_at)) THEN
+        RAISE EXCEPTION 'Known lot identity, source and confirmation are protected' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TABLE stockrescue.lot_correction (
+    id UUID PRIMARY KEY,
+    org_id UUID NOT NULL,
+    lot_id UUID NOT NULL,
+    actor_user_id UUID NOT NULL,
+    actor_membership_id UUID NOT NULL,
+    request_id UUID NOT NULL,
+    payload_digest BYTEA NOT NULL CHECK (octet_length(payload_digest)=32),
+    expected_version BIGINT NOT NULL CHECK (expected_version>=0),
+    result_version BIGINT NOT NULL CHECK (result_version>0),
+    reason VARCHAR(500) NOT NULL CHECK (length(btrim(reason))>0 AND reason COLLATE "C" !~ '[[:cntrl:]]'),
+    before_evidence JSONB NOT NULL,
+    after_evidence JSONB NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    CONSTRAINT lot_correction_next_version CHECK (result_version::numeric=expected_version::numeric+1),
+    CONSTRAINT lot_correction_lot_fk FOREIGN KEY (org_id,lot_id)
+        REFERENCES stockrescue.manufacturer_lot(org_id,id) ON DELETE RESTRICT,
+    CONSTRAINT lot_correction_actor_fk FOREIGN KEY (org_id,actor_membership_id,actor_user_id)
+        REFERENCES stockrescue.membership(org_id,id,user_id) ON DELETE RESTRICT,
+    CONSTRAINT lot_correction_request_unique UNIQUE (org_id,actor_user_id,request_id),
+    CONSTRAINT lot_correction_version_unique UNIQUE (org_id,lot_id,result_version),
+    CONSTRAINT lot_correction_snapshots_valid CHECK (coalesce(
+        jsonb_typeof(before_evidence)='object' AND jsonb_typeof(after_evidence)='object'
+        AND before_evidence->>'id'=lot_id::text AND after_evidence->>'id'=lot_id::text
+        AND before_evidence->>'org_id'=org_id::text AND after_evidence->>'org_id'=org_id::text
+        AND before_evidence->>'version'=expected_version::text AND after_evidence->>'version'=result_version::text,FALSE))
+);
+COMMENT ON TABLE stockrescue.lot_correction IS 'Immutable reviewed metadata correction and durable request result. Snapshots are exact PostgreSQL row evidence, not safety approvals.';
+CREATE TRIGGER lot_correction_immutable BEFORE UPDATE OR DELETE ON stockrescue.lot_correction
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.reject_history_mutation();
+CREATE TRIGGER lot_correction_no_truncate BEFORE TRUNCATE ON stockrescue.lot_correction
+    FOR EACH STATEMENT EXECUTE FUNCTION stockrescue.reject_history_mutation();
+
+CREATE FUNCTION stockrescue.require_lot_correction_evidence() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+    IF (NEW.identity_state,NEW.manufacturer_identity_key,NEW.manufacturer_source,NEW.manufacturer_reference,
+        NEW.confirmed_by_membership_id,NEW.confirmed_at,NEW.labeled_value,NEW.date_marking_type,NEW.date_precision,
+        NEW.marking_source,NEW.marking_reference,NEW.normalized_cutoff,NEW.normalization_policy_version_id,
+        NEW.normalization_policy_version,NEW.normalization_version)
+        IS DISTINCT FROM
+       (OLD.identity_state,OLD.manufacturer_identity_key,OLD.manufacturer_source,OLD.manufacturer_reference,
+        OLD.confirmed_by_membership_id,OLD.confirmed_at,OLD.labeled_value,OLD.date_marking_type,OLD.date_precision,
+        OLD.marking_source,OLD.marking_reference,OLD.normalized_cutoff,OLD.normalization_policy_version_id,
+        OLD.normalization_policy_version,OLD.normalization_version)
+       AND NOT EXISTS (
+           SELECT 1 FROM stockrescue.lot_correction c WHERE c.org_id=NEW.org_id AND c.lot_id=NEW.id
+             AND c.expected_version=OLD.version AND c.result_version=NEW.version
+             AND c.before_evidence=to_jsonb(OLD) AND c.after_evidence=to_jsonb(NEW)
+       ) THEN
+        RAISE EXCEPTION 'Lot metadata changes require exact immutable correction evidence in the same transaction'
+            USING ERRCODE='23514',CONSTRAINT='lot_correction_evidence_required';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER lot_correction_evidence_required
+    AFTER UPDATE ON stockrescue.manufacturer_lot DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.require_lot_correction_evidence();
+
+CREATE TABLE stockrescue.product_gtin_review_scope (
+    org_id UUID NOT NULL REFERENCES stockrescue.organization(id) ON DELETE RESTRICT,
+    gtin VARCHAR(14) COLLATE "C" NOT NULL CHECK (stockrescue.catalog_gtin_valid(gtin)),
+    version BIGINT NOT NULL CHECK (version>=0 AND version<9223372036854775807),
+    PRIMARY KEY (org_id,gtin)
+);
+
+INSERT INTO stockrescue.product_gtin_review_scope(org_id,gtin,version)
+SELECT org_id,gtin,count(*)::BIGINT
+FROM stockrescue.product
+WHERE gtin IS NOT NULL
+GROUP BY org_id,gtin;
+
+CREATE FUNCTION stockrescue.bump_product_gtin_review_scope() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP='INSERT' THEN
+        IF NEW.gtin IS NOT NULL THEN
+            INSERT INTO stockrescue.product_gtin_review_scope(org_id,gtin,version)
+            VALUES (NEW.org_id,NEW.gtin,1)
+            ON CONFLICT (org_id,gtin) DO UPDATE
+                SET version=stockrescue.product_gtin_review_scope.version+1;
+        END IF;
+        RETURN NEW;
+    ELSIF TG_OP='UPDATE' THEN
+        IF OLD.org_id IS DISTINCT FROM NEW.org_id OR OLD.gtin IS DISTINCT FROM NEW.gtin THEN
+            IF OLD.gtin IS NOT NULL THEN
+                UPDATE stockrescue.product_gtin_review_scope SET version=version+1
+                WHERE org_id=OLD.org_id AND gtin=OLD.gtin;
+            END IF;
+            IF NEW.gtin IS NOT NULL THEN
+                INSERT INTO stockrescue.product_gtin_review_scope(org_id,gtin,version)
+                VALUES (NEW.org_id,NEW.gtin,1)
+                ON CONFLICT (org_id,gtin) DO UPDATE
+                    SET version=stockrescue.product_gtin_review_scope.version+1;
+            END IF;
+        ELSIF (OLD.id IS DISTINCT FROM NEW.id
+                OR OLD.active IS DISTINCT FROM NEW.active
+                OR OLD.sku_normalized IS DISTINCT FROM NEW.sku_normalized
+                OR OLD.name IS DISTINCT FROM NEW.name) AND NEW.gtin IS NOT NULL THEN
+            UPDATE stockrescue.product_gtin_review_scope SET version=version+1
+            WHERE org_id=NEW.org_id AND gtin=NEW.gtin;
+        END IF;
+        RETURN NEW;
+    ELSE
+        IF OLD.gtin IS NOT NULL THEN
+            UPDATE stockrescue.product_gtin_review_scope SET version=version+1
+            WHERE org_id=OLD.org_id AND gtin=OLD.gtin;
+        END IF;
+        RETURN OLD;
+    END IF;
+END;
+$$;
+
+CREATE TRIGGER product_gtin_review_scope_insert AFTER INSERT ON stockrescue.product
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.bump_product_gtin_review_scope();
+CREATE TRIGGER product_gtin_review_scope_update AFTER UPDATE OF id,org_id,gtin,active,sku_normalized,name ON stockrescue.product
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.bump_product_gtin_review_scope();
+CREATE TRIGGER product_gtin_review_scope_delete AFTER DELETE ON stockrescue.product
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.bump_product_gtin_review_scope();
+
+COMMENT ON TABLE stockrescue.product_gtin_review_scope IS
+    'Per-organization exact GTIN serialization row. Its revision changes when a matching product is added, removed, renamed, recoded, moved or changes active state.';
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM stockrescue.lot_registration
+        GROUP BY org_id,request_id HAVING count(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'Cannot enforce organization-scoped lot request identifiers while historical request IDs are duplicated';
+    END IF;
+END $$;
+
+ALTER TABLE stockrescue.lot_registration DROP CONSTRAINT lot_registration_pkey;
+ALTER TABLE stockrescue.lot_registration ADD CONSTRAINT lot_registration_pkey PRIMARY KEY (org_id,request_id);
+ALTER TABLE stockrescue.lot_registration ADD COLUMN store_id UUID;
+ALTER TABLE stockrescue.lot_registration ADD CONSTRAINT lot_registration_store_fk
+    FOREIGN KEY (org_id,store_id) REFERENCES stockrescue.store(org_id,id) ON DELETE RESTRICT;
+CREATE INDEX lot_registration_store_idx ON stockrescue.lot_registration(org_id,store_id,recorded_at) WHERE store_id IS NOT NULL;
+
+CREATE TABLE stockrescue.lot_archive_command (
+    org_id UUID NOT NULL REFERENCES stockrescue.organization(id) ON DELETE RESTRICT,
+    actor_user_id UUID NOT NULL REFERENCES stockrescue.user_account(id) ON DELETE RESTRICT,
+    request_id UUID NOT NULL,
+    lot_id UUID NOT NULL,
+    result_version BIGINT NOT NULL CHECK (result_version>0),
+    payload_digest BYTEA NOT NULL CHECK (octet_length(payload_digest)=32),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (org_id,actor_user_id,request_id),
+    CONSTRAINT lot_archive_result_fk FOREIGN KEY (org_id,lot_id)
+        REFERENCES stockrescue.manufacturer_lot(org_id,id) ON DELETE RESTRICT
+);
+CREATE INDEX lot_archive_command_result_idx ON stockrescue.lot_archive_command(org_id,lot_id);
+COMMENT ON TABLE stockrescue.lot_archive_command IS 'Immutable successful manufacturer-lot archival outcomes. Request reservation, lot state and audit commit together.';
+
+CREATE TRIGGER lot_archive_command_immutable BEFORE UPDATE OR DELETE ON stockrescue.lot_archive_command
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.reject_history_mutation();
+CREATE TRIGGER lot_archive_command_no_truncate BEFORE TRUNCATE ON stockrescue.lot_archive_command
+    FOR EACH STATEMENT EXECUTE FUNCTION stockrescue.reject_history_mutation();
+
+CREATE FUNCTION stockrescue.require_lot_archive_command() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+    IF OLD.active AND NOT NEW.active AND NOT EXISTS (
+        SELECT 1 FROM stockrescue.lot_archive_command c
+        WHERE c.org_id=NEW.org_id AND c.lot_id=NEW.id AND c.result_version=NEW.version
+    ) THEN
+        RAISE EXCEPTION 'Manufacturer lot archival requires a durable command outcome' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER manufacturer_lot_archive_command BEFORE UPDATE ON stockrescue.manufacturer_lot
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.require_lot_archive_command();
