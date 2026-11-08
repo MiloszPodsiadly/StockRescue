@@ -11,10 +11,7 @@ import { Field, inputClass } from '@/components/form-field'
 import { catalogRefresh, useCatalogScope } from './catalog-query'
 import { Facts, Pager, QueryNotice } from './catalog-ui'
 import { reasonMessages, nextActions } from './eligibility-messages'
-
-const allowedNotice = 'Passed the limited StockRescue checks on the available evidence at this time; not approval to sell, donate, transfer or perform stock movements.'
-const platformRulesetId = 'food-safety-bakery-ambient-v1'
-const platformRulesetDigest = '95e5d9260dd9c37f655723b12681e03bae753153399f773a5420676f3e487ad0'
+import { allowedAssessmentNotice, platformRulesetDigest, platformRulesetId } from './eligibility-ruleset'
 
 export function EligibilityPanel({ organizationId, lot, store }: { organizationId: string, lot: ManufacturerLot, store: Store }) {
   const scope = useCatalogScope()
@@ -59,6 +56,7 @@ export function EligibilityResult({ value }: { value: Eligibility }) {
     && value.operatorClassificationConfirmation.productVersion === value.productVersion
     && value.operatorClassificationConfirmation.confirmedCategory === value.productCategory
     && value.operatorClassificationConfirmation.confirmedCategory === value.classificationVerification?.currentCategory
+    && value.operatorClassificationConfirmation.confirmedTemperatureClass === value.productTemperatureClass
     && value.operatorClassificationConfirmation.sourceType !== null
     && Boolean(value.operatorClassificationConfirmation.evidenceReference?.trim())
   const signedClassificationCurrent = value.classificationVerification?.outcome === 'VERIFIED'
@@ -68,7 +66,10 @@ export function EligibilityResult({ value }: { value: Eligibility }) {
     && value.classificationVerification.signedProductVersion === value.productVersion
     && value.classificationVerification.currentCategory === value.productCategory
     && value.classificationVerification.signedCategory === value.productCategory
+  const profileConfirmation = value.operatorClassificationConfirmation
+  const profileEvidenceSource = profileConfirmation?.sourceType === 'ORIGINAL_PACKAGE' || profileConfirmation?.sourceType === 'SUPPLIER_DOCUMENT'
   const platformScopeSupported = value.productCategory === 'BAKERY' && value.productTemperatureClass === 'AMBIENT'
+    && operatorConfirmationCurrent && profileConfirmation?.productProfile === 'PACKAGED_SHELF_STABLE_DRY_BAKERY' && profileEvidenceSource
   const recordedEvidenceComplete = value.evidence.date === 'COMPLETE_LABEL'
     && value.evidence.recall === 'NOT_REPORTED_IN_REVIEWED_EVIDENCE'
     && value.evidence.damage === 'NOT_REPORTED_IN_REVIEWED_EVIDENCE'
@@ -76,17 +77,18 @@ export function EligibilityResult({ value }: { value: Eligibility }) {
     && hasEvidenceSource(value.evidence.manufacturerSource)
     && hasEvidenceSource(value.evidence.dateLabelSource)
     && hasEvidenceSource(value.evidence.safetyStatusSource)
-  const platformEvidenceComplete = platformScopeSupported && (value.evidence.classification === 'OPERATOR_CONFIRMED' ? operatorConfirmationCurrent
-    : value.evidence.classification === 'INDEPENDENTLY_VERIFIED' && signedClassificationCurrent)
-  const basisVerified = value.assessmentBasis === 'SIGNED_EXTERNAL_POLICY' ? signedPolicyVerified && signedClassificationCurrent
+  const classificationEvidenceCurrent = value.evidence.classification === 'OPERATOR_CONFIRMED' ? operatorConfirmationCurrent
+    : value.evidence.classification === 'INDEPENDENTLY_VERIFIED' && operatorConfirmationCurrent && signedClassificationCurrent
+  const platformEvidenceComplete = platformScopeSupported && classificationEvidenceCurrent
+  const basisVerified = value.assessmentBasis === 'SIGNED_EXTERNAL_POLICY' ? signedPolicyVerified && signedClassificationCurrent && operatorConfirmationCurrent
     : value.assessmentBasis === 'PLATFORM_RULESET' ? platformEvidenceComplete : false
   const rulesetIdentified = value.rulesetId === platformRulesetId && value.evaluatorVersion === platformRulesetId
     && value.rulesetDigest === platformRulesetDigest
   const verifiedForOperation = platformScopeSupported && recordedEvidenceComplete && basisVerified && rulesetIdentified
-  const allowed = value.decision === 'ALLOWED' && verifiedForOperation && value.reasonCodes.length === 0 && value.assessmentNotice === allowedNotice
+  const allowed = value.decision === 'ALLOWED' && verifiedForOperation && value.reasonCodes.length === 0 && value.assessmentNotice === allowedAssessmentNotice
   const unexpectedApproval = value.decision === 'ALLOWED' && !allowed
   return <section aria-label="Assessment result" className={`space-y-4 rounded-2xl border p-5 ${value.decision === 'DENIED' ? 'border-destructive/50' : 'border-border'}`}>
-    <h4 className="text-xl font-semibold">{value.decision === 'DENIED' ? 'Denied' : allowed ? 'Allowed' : 'Requires review'}</h4>
+    <h4 className="text-xl font-semibold">{value.decision === 'DENIED' ? 'Denied' : allowed ? 'Passed limited checks' : 'Requires review'}</h4>
     {unexpectedApproval && <p role="alert">The returned allowed decision does not satisfy every approval and evidence check. Do not execute an operation from this result.</p>}
     {allowed && <p className="rounded-xl border border-border p-4 text-sm font-medium">{value.assessmentNotice}</p>}
     {value.approvalVerification?.outcome === 'RULESET_MISMATCH' && <p role="alert">The signed approval matches a different food-safety ruleset. This assessment requires renewed approval for the active ruleset.</p>}
@@ -95,9 +97,10 @@ export function EligibilityResult({ value }: { value: Eligibility }) {
     {value.classificationVerification?.outcome === 'REVOKED' && <p role="alert">The product classification attestation has been revoked and cannot authorize this assessment.</p>}
     {value.classificationVerification?.outcome === 'EXPIRED' && <p role="alert">The product classification attestation has expired and cannot authorize this assessment.</p>}
     <p className="text-sm text-muted-foreground">Operator-confirmed classification is attributed source evidence, not independent verification. Optional external signatures are shown separately.</p>
+    <p className="text-sm text-muted-foreground">{value.operation} identifies the assessment context. This screen does not authorize or execute that operation.</p>
     <p className="text-sm text-muted-foreground">“Not reported in reviewed evidence” describes the source reviewed for this lot; it does not certify that no recall exists.</p>
     <p className="font-medium">{nextActions[value.nextAction]}</p><ul className="list-inside list-disc space-y-2 text-sm">{value.reasonCodes.map(reason => <li key={reason}>{reasonMessages[reason]}</li>)}</ul>
-    <Facts values={[["Assessment time", value.evaluatedAt], ['Store local date', value.storeLocalDate], ['Store time zone', value.storeTimeZone], ['Recall evidence', value.evidence.recall.replaceAll('_', ' ').toLowerCase()], ['Recall source', evidenceSource(value.evidence.safetyStatusSource)], ['Damage evidence', value.evidence.damage.replaceAll('_', ' ').toLowerCase()], ['Damage source', evidenceSource(value.evidence.safetyStatusSource)], ['Lot version assessed', value.lotVersion], ['Manufacturer source', evidenceSource(value.evidence.manufacturerSource)], ['Date label source', evidenceSource(value.evidence.dateLabelSource)], ['Product category', value.productCategory.replaceAll('_', ' ')], ['Product temperature class', value.productTemperatureClass], ['Ruleset basis', value.assessmentBasis.replaceAll('_', ' ').toLowerCase()], ['Ruleset identity', `${value.rulesetId} · ${value.rulesetDigest}`], ['Policy version', value.policy ? `${value.policy.version} · ${value.policy.id}` : 'No recorded policy'], ['Policy evidence', value.evidence.policy === 'MISSING' ? 'Missing' : value.evidence.policy === 'INDEPENDENTLY_VERIFIED' ? 'Cryptographically verified' : value.evidence.policy === 'PLATFORM_RULESET' ? 'Platform ruleset' : 'Recorded, unverified'], ['Approval verification', value.approvalVerification?.outcome ?? 'Not available'], ['Product classification', value.evidence.classification.replaceAll('_', ' ').toLowerCase()], ['Operator classification status', value.operatorClassificationStatus.replaceAll('_', ' ').toLowerCase()], ['Operator source reference', value.operatorClassificationConfirmation?.evidenceReference ?? 'Not supplied'], ['Classification verification', value.classificationVerification?.outcome ?? 'Not available'], ['Signed category and version', value.classificationVerification?.signedCategory && value.classificationVerification.signedProductVersion !== null ? `${value.classificationVerification.signedCategory} · ${value.classificationVerification.signedProductVersion}` : 'Not available'], ['Date evidence', value.evidence.date.replaceAll('_', ' ').toLowerCase()], ['Storage evidence', value.evidence.storage.replaceAll('_', ' ').toLowerCase()]]} />
+    <Facts values={[["Assessment time", value.evaluatedAt], ['Store local date', value.storeLocalDate], ['Store time zone', value.storeTimeZone], ['Recall evidence', value.evidence.recall.replaceAll('_', ' ').toLowerCase()], ['Recall source', evidenceSource(value.evidence.safetyStatusSource)], ['Damage evidence', value.evidence.damage.replaceAll('_', ' ').toLowerCase()], ['Damage source', evidenceSource(value.evidence.safetyStatusSource)], ['Lot version assessed', value.lotVersion], ['Manufacturer source', evidenceSource(value.evidence.manufacturerSource)], ['Date label source', evidenceSource(value.evidence.dateLabelSource)], ['Product category', value.productCategory.replaceAll('_', ' ')], ['Product temperature class', value.productTemperatureClass], ['Product profile', value.operatorClassificationConfirmation?.productProfile.replaceAll('_', ' ').toLowerCase() ?? 'Not assessed'], ['Ruleset basis', value.assessmentBasis.replaceAll('_', ' ').toLowerCase()], ['Ruleset identity', `${value.rulesetId} · ${value.rulesetDigest}`], ['Policy version', value.policy ? `${value.policy.version} · ${value.policy.id}` : 'No recorded policy'], ['Policy evidence', value.evidence.policy === 'MISSING' ? 'Missing' : value.evidence.policy === 'INDEPENDENTLY_VERIFIED' ? 'Cryptographically verified' : value.evidence.policy === 'PLATFORM_RULESET' ? 'Platform ruleset' : 'Recorded, unverified'], ['Approval verification', value.approvalVerification?.outcome ?? 'Not available'], ['Product classification', value.evidence.classification.replaceAll('_', ' ').toLowerCase()], ['Operator attributes status', value.operatorClassificationStatus.replaceAll('_', ' ').toLowerCase()], ['Operator source type', value.operatorClassificationConfirmation?.sourceType?.replaceAll('_', ' ') ?? 'Not supplied'], ['Operator source reference', value.operatorClassificationConfirmation?.evidenceReference ?? 'Not supplied'], ['Classification verification', value.classificationVerification?.outcome ?? 'Not available'], ['Signed category and version', value.classificationVerification?.signedCategory && value.classificationVerification.signedProductVersion !== null ? `${value.classificationVerification.signedCategory} · ${value.classificationVerification.signedProductVersion}` : 'Not available'], ['Date evidence', value.evidence.date.replaceAll('_', ' ').toLowerCase()], ['Storage evidence', value.evidence.storage.replaceAll('_', ' ').toLowerCase()]]} />
     <p className="text-sm text-muted-foreground">This is evidence at the displayed time, not a reusable permission or a physical stock hold.</p>
   </section>
 }

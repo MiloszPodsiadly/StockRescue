@@ -21,7 +21,7 @@ const policy: FoodSafetyPolicyVersion = { id: 'policy-v1', profileId: 'profile',
   recordedAt: '2026-11-06T10:00:00Z', reason: 'Initial policy review' }
 const notSubmitted: PolicyApprovalEvidence = { approvalId: null, verification: { outcome: 'NOT_SUBMITTED', policyVersion: 1, policyDigest: '0'.repeat(64), issuerId: null, keyId: null,
   allowedOperations: [], issuedAt: null, validFrom: null, validUntil: null, evidenceReference: null, recordedAt: null, revoked: false, revokedAt: null, revokedByMembershipId: null, revocationReason: null,
-  attestationVersion: null, signedRulesetId: null, signedRulesetDigest: null, activeRulesetId: 'food-safety-bakery-ambient-v1', activeRulesetDigest: '1'.repeat(64) } }
+  attestationVersion: null, signedRulesetId: null, signedRulesetDigest: null, activeRulesetId: 'food-safety-bakery-ambient-dry-packaged-v2', activeRulesetDigest: '1'.repeat(64) } }
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -56,5 +56,5 @@ it('explains a ruleset mismatch as blocking approval evidence', async () => {
   panel()
   expect(await screen.findByText(/This signature verifies for a different evaluator ruleset/)).toBeVisible()
   expect(screen.getByText('food-safety-conservative-pilot-v0')).toBeVisible()
-  expect(screen.getByText(/food-safety-bakery-ambient-v1/)).toBeVisible()
+  expect(screen.getByText(/food-safety-bakery-ambient-dry-packaged-v2/)).toBeVisible()
 })

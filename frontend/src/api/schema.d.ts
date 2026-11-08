@@ -601,10 +601,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read the latest attributed operator classification and whether it matches the current product revision */
+        /** Read the latest attributed operator safety-attribute confirmation and whether it matches the current product revision */
         get: operations["getOperatorProductClassificationConfirmation"];
         put?: never;
-        /** Record a source-attributed operator category confirmation and bind it to a new product version */
+        /** Record source-attributed category, declared temperature and product profile and bind them to a new product version */
         post: operations["confirmOperatorProductClassification"];
         delete?: never;
         options?: never;
@@ -1078,17 +1078,27 @@ export interface components {
              */
             category: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
             /** @description Reference to the inspected source; source content is not uploaded */
-            evidenceReference?: string | null;
+            evidenceReference: string;
             /** Format: int64 */
             expectedProductVersion: number;
+            /**
+             * @description Operator-described profile; only PACKAGED_SHELF_STABLE_DRY_BAKERY is in the limited platform pilot
+             * @enum {string}
+             */
+            productProfile: "NOT_ASSESSED" | "PACKAGED_SHELF_STABLE_DRY_BAKERY" | "REFRIGERATION_REQUIRED" | "CREAM_FILLED_OR_PERISHABLE" | "NOT_SHELF_STABLE" | "STORAGE_INSTRUCTION_MISSING_OR_AMBIGUOUS" | "CONTRADICTORY_STORAGE_EVIDENCE" | "OUTSIDE_CURRENT_PILOT";
             reason: string;
             /** Format: uuid */
             requestId: string;
             /**
-             * @description ORIGINAL_PACKAGE, SUPPLIER_DOCUMENT or OTHER; required for a known category
-             * @enum {string|null}
+             * @description ORIGINAL_PACKAGE, SUPPLIER_DOCUMENT or OTHER; source is required for every confirmation
+             * @enum {string}
              */
-            sourceType?: "ORIGINAL_PACKAGE" | "SUPPLIER_DOCUMENT" | "OTHER" | null;
+            sourceType: "ORIGINAL_PACKAGE" | "SUPPLIER_DOCUMENT" | "OTHER";
+            /**
+             * @description Declared product storage temperature confirmed from the cited source
+             * @enum {string}
+             */
+            temperatureClass: "AMBIENT" | "CHILLED" | "FROZEN";
         };
         CorrectLotMetadataRequest: {
             dateMarking: components["schemas"]["DateMarkingRequest"];
@@ -1546,7 +1556,9 @@ export interface components {
             actorUserId: string;
             /** @enum {string} */
             confirmedCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
-            evidenceReference: string | null;
+            /** @enum {string} */
+            confirmedTemperatureClass: "AMBIENT" | "CHILLED" | "FROZEN";
+            evidenceReference: string;
             /** Format: int64 */
             expectedProductVersion: number;
             /** Format: uuid */
@@ -1555,8 +1567,12 @@ export interface components {
             organizationId: string;
             /** @enum {string} */
             originalCategory: "UNCLASSIFIED" | "DAIRY" | "BAKERY";
+            /** @enum {string} */
+            originalTemperatureClass: "AMBIENT" | "CHILLED" | "FROZEN";
             /** Format: uuid */
             productId: string;
+            /** @enum {string} */
+            productProfile: "NOT_ASSESSED" | "PACKAGED_SHELF_STABLE_DRY_BAKERY" | "REFRIGERATION_REQUIRED" | "CREAM_FILLED_OR_PERISHABLE" | "NOT_SHELF_STABLE" | "STORAGE_INSTRUCTION_MISSING_OR_AMBIGUOUS" | "CONTRADICTORY_STORAGE_EVIDENCE" | "OUTSIDE_CURRENT_PILOT";
             /** Format: int64 */
             productVersion: number;
             reason: string;
@@ -1567,10 +1583,10 @@ export interface components {
             /** Format: uuid */
             requestId: string;
             sku: string;
-            /** @enum {string|null} */
-            sourceType: "ORIGINAL_PACKAGE" | "SUPPLIER_DOCUMENT" | "OTHER" | null;
+            /** @enum {string} */
+            sourceType: "ORIGINAL_PACKAGE" | "SUPPLIER_DOCUMENT" | "OTHER";
         };
-        /** @description Operator-confirmed category evidence is attributed and source-referenced; it is not independent or specialist verification. */
+        /** @description Operator-confirmed category, declared temperature and product-profile evidence is attributed and source-referenced; it is not independent or specialist verification. */
         OperatorClassificationConfirmationResponse: {
             confirmation: components["schemas"]["OperatorClassificationConfirmationDetails"] | null;
             product: components["schemas"]["ProductResponse"];

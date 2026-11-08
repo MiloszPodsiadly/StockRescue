@@ -96,9 +96,9 @@ export function ProductForm({ organizationId, onSaved, onRefresh, onCancel }: { 
   }
   return <DurableForm title="Create product" submitLabel="Save product" canSubmit={canSubmit}
     onPreconditionConflict={code => { if (code === 'GTIN_REVIEW_REQUIRED') refreshGtinReview() }}
-    confirmation="I reviewed the product evidence and confirm this descriptive category and declared temperature class; if the category is unknown, I will keep it unclassified."
     prepare={prepareProduct}
     execute={(body, signal) => createProduct(organizationId, body, signal)} onSaved={onSaved} onRefresh={onRefresh} onCancel={onCancel}>
+    <p className="text-sm text-muted-foreground">The initial category and declared storage class are provisional. A source-backed product review is required before the limited safety checks can pass.</p>
     <Field label="SKU" help="A stable product code, unique in this organization, including archived products.">{(id, description) => <input id={id} required maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9._\/\-]{0,63}" aria-describedby={description} value={sku} onChange={event => { setSku(event.target.value) }} className={inputClass} />}</Field>
     <Field label="Product name">{id => <input id={id} required maxLength={160} value={name} onChange={event => { setName(event.target.value) }} className={inputClass} />}</Field>
     <Field label="GTIN (optional)" help="Copy every digit, including leading zeros.">{(id, description) => <input id={id} inputMode="numeric" pattern="[0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14}" maxLength={14} aria-describedby={description} value={gtin} onChange={event => { changeGtin(event.target.value) }} className={inputClass} />}</Field>
@@ -117,8 +117,8 @@ export function ProductForm({ organizationId, onSaved, onRefresh, onCancel }: { 
       {currentReview.hasMore && currentReview.offset >= 10000 && <p role="alert" className="text-sm">More matches exist beyond the review limit. Creation stays blocked until every match can be reviewed.</p>}
     </section>}
     <Field label="Base unit">{id => <input id={id} value="EA" readOnly className={inputClass} />}</Field>
-    <Field label="Product category" help="This is a descriptive grouping, not a legal classification or food-safety approval.">{id => <select id={id} value={category} onChange={event => { setCategory(event.target.value as Product['category']) }} className={inputClass}><option value="UNCLASSIFIED">Unclassified — category unknown</option><option value="DAIRY">Dairy</option><option value="BAKERY">Bakery</option></select>}</Field>
-    <Field label="Declared temperature class" help="Choose a class supported by the product label or supplier evidence.">{id => <select id={id} required value={temperature} onChange={event => { setTemperature(event.target.value as Product['temperatureClass'] | '') }} className={inputClass}><option value="">Choose from product evidence</option>{['AMBIENT', 'CHILLED', 'FROZEN'].map(value => <option key={value} value={value}>{value}</option>)}</select>}</Field>
+    <Field label="Product category" help="Initial descriptive value only; it remains provisional until confirmed from a cited source.">{id => <select id={id} value={category} onChange={event => { setCategory(event.target.value as Product['category']) }} className={inputClass}><option value="UNCLASSIFIED">Unclassified — category unknown</option><option value="DAIRY">Dairy</option><option value="BAKERY">Bakery</option></select>}</Field>
+    <Field label="Declared temperature class" help="Initial storage requirement only; it remains provisional until confirmed from a cited source.">{id => <select id={id} required value={temperature} onChange={event => { setTemperature(event.target.value as Product['temperatureClass'] | '') }} className={inputClass}><option value="">Choose from product evidence</option>{['AMBIENT', 'CHILLED', 'FROZEN'].map(value => <option key={value} value={value}>{value}</option>)}</select>}</Field>
   </DurableForm>
 }
 export function ProductPage() {
@@ -174,9 +174,11 @@ function OperatorClassificationStatus({ confirmation }: { confirmation: Operator
   if (!evidence) return <p role="status">No operator classification confirmation has been recorded. Any safety assessment remains subject to its own evidence checks.</p>
   const message = confirmation.status === 'CURRENT_OPERATOR_CONFIRMED' ? 'The cited source was recorded against the current product version.'
     : confirmation.status === 'STALE' ? 'This confirmation refers to an older product version. Review the current source and confirm again.'
-      : 'The category or source evidence is incomplete. This confirmation does not satisfy classification evidence checks.'
+      : 'The category, declared temperature or source evidence is incomplete. This confirmation does not satisfy product attribute checks.'
   return <div className="space-y-2 text-sm"><p role="status">{message} It remains attributed operator evidence, not independent verification.</p>
     <dl className="grid gap-2 sm:grid-cols-2"><div><dt className="font-medium">Recorded category</dt><dd>{evidence.confirmedCategory.replaceAll('_', ' ')}</dd></div>
+      <div><dt className="font-medium">Recorded temperature class</dt><dd>{evidence.confirmedTemperatureClass}</dd></div>
+      <div><dt className="font-medium">Product profile</dt><dd>{evidence.productProfile.replaceAll('_', ' ').toLowerCase()}</dd></div>
       <div><dt className="font-medium">Evidence source</dt><dd>{evidence.sourceType?.replaceAll('_', ' ') ?? 'Not supplied'}</dd></div>
       <div className="break-words"><dt className="font-medium">Source reference</dt><dd>{evidence.evidenceReference ?? 'Not supplied'}</dd></div>
       <div><dt className="font-medium">Recorded</dt><dd>{new Date(evidence.recordedAt).toLocaleString()}</dd></div>

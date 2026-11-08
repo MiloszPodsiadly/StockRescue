@@ -35,7 +35,7 @@ test('owner preserves original labels and independent sources, reviews safety ev
     await productForm.getByLabel('Product name', { exact: true }).fill(productName)
     await productForm.getByLabel('GTIN (optional)').fill('036000291452')
     await productForm.getByLabel('Product category').selectOption('BAKERY')
-    await productForm.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
+    await productForm.getByLabel('Declared temperature class').selectOption('AMBIENT')
     let rejectedCsrf = false
     const productRequests: object[] = []
     await page.route('**/api/v1/auth/csrf', async route => {
@@ -56,6 +56,19 @@ test('owner preserves original labels and independent sources, reviews safety ev
     await expect(page.getByRole('heading', { name: productName, exact: true })).toBeVisible()
     const productPath = new URL(page.url()).pathname
     const productId = productPath.split('/').at(-1)!
+    await page.getByRole('button', { name: 'Confirm product classification', exact: true }).click()
+    const classificationForm = page.getByRole('form', { name: 'Confirm product safety attributes', exact: true })
+    await classificationForm.getByLabel('Product category from the reviewed source').selectOption('BAKERY')
+    await classificationForm.getByLabel('Declared temperature class from the reviewed source').selectOption('AMBIENT')
+    await classificationForm.getByLabel('Product profile from the reviewed source').selectOption('PACKAGED_SHELF_STABLE_DRY_BAKERY')
+    await classificationForm.getByLabel('Source type').selectOption('ORIGINAL_PACKAGE')
+    await classificationForm.getByLabel('Source reference').fill('package:shelf-stable-storage-label')
+    await classificationForm.getByLabel('Reason for this confirmation').fill('Reviewed the original package storage and product description')
+    await classificationForm.getByLabel(/I inspected the cited source/).check()
+    await submitCapturedWhenAdmitted(page, classificationForm, 'Save product evidence', page.getByText('The cited source was recorded against the current product version.', { exact: false }))
+    const recordedAttributes = await (await owner.context.request.get(`${base}/products/${productId}/classification-evidence/operator-confirmations`)).json() as components['schemas']['OperatorClassificationConfirmationResponse']
+    expect(recordedAttributes.status).toBe('CURRENT_OPERATOR_CONFIRMED')
+    expect(recordedAttributes.confirmation).toMatchObject({ productVersion: 1, confirmedCategory: 'BAKERY', confirmedTemperatureClass: 'AMBIENT', productProfile: 'PACKAGED_SHELF_STABLE_DRY_BAKERY', evidenceReference: 'package:shelf-stable-storage-label' })
     await page.getByRole('button', { name: 'Register lot', exact: true }).click()
     await registerLotForm(page, `ORIGINAL-${suffix}`, futureDay, 'USE_BY', 'DAY', true)
     await expect(page.getByRole('heading', { name: `ORIGINAL-${suffix}`, exact: true })).toBeVisible()
@@ -103,19 +116,54 @@ test('owner preserves original labels and independent sources, reviews safety ev
     await page.getByRole('button', { name: 'Assess current evidence' }).click()
     const result = page.getByRole('region', { name: 'Assessment result', exact: true })
     await expect(result.getByRole('heading', { name: 'Requires review', exact: true })).toBeVisible()
-    await expect(result).toContainText('No policy review is recorded for this product category and temperature class.')
+    await expect(result).toContainText('Recall status is unknown.')
+    await expect(result).toContainText('Damage status is unknown.')
 
-    await page.getByRole('button', { name: 'Record policy review', exact: true }).click()
-    const policyForm = page.getByRole('form', { name: 'Record policy review evidence', exact: true })
-    await policyForm.getByLabel('Requested partial-date rule').selectOption('END_OF_LABELED_PERIOD')
-    await policyForm.getByLabel('Policy review source', { exact: true }).fill('Independent review dossier')
-    await policyForm.getByLabel('Policy review document reference').fill('dossier-awaiting-verification')
-    await policyForm.getByLabel('Reason for policy review').fill('Record the received class-specific review evidence')
-    await policyForm.getByLabel('I confirm this records review evidence, not independent policy approval.').check()
-    await submitCapturedWhenAdmitted(page, policyForm, 'Save policy review', page.getByRole('heading', { name: 'Policy version 1', exact: true }))
-    await expect(page.getByRole('heading', { name: 'Policy version 1', exact: true })).toBeVisible()
-    await expect(result).toContainText('Independent approval for this category and temperature scope has not been verified.')
-    await expect(result.getByRole('heading', { name: 'Requires review' })).toBeVisible()
+    await page.getByRole('button', { name: 'Record safety notice', exact: true }).click()
+    const initialSafety = page.getByRole('form', { name: 'Record safety status evidence', exact: true })
+    await initialSafety.getByLabel('Recall evidence', { exact: true }).selectOption('NOT_REPORTED')
+    await initialSafety.getByLabel('Damage evidence', { exact: true }).selectOption('NOT_REPORTED')
+    await initialSafety.getByLabel('Safety notice source', { exact: true }).fill('Supplier safety statement')
+    await initialSafety.getByLabel('Safety notice reference', { exact: true }).fill('supplier-safety-statement')
+    await initialSafety.getByLabel('Reason for safety evidence').fill('Reviewed the supplier statement for this lot')
+    await initialSafety.getByLabel('I reviewed the notice and confirm this safety evidence. Recall and damage blocks remain recorded.').check()
+    await submitCapturedWhenAdmitted(page, initialSafety, 'Save safety status evidence', page.getByRole('region', { name: 'Lot evidence history' }).getByText(/Safety status evidence/))
+    await page.getByRole('button', { name: 'Assess current evidence' }).click()
+    await expect(result.getByRole('heading', { name: 'Passed limited checks', exact: true })).toBeVisible()
+    await expect(result).toContainText('does not authorize sale, donation, transfer or stock movement')
+    const eligible = await (await owner.context.request.get(`${base}/lots/${lotId}/eligibility?storeId=${store.id}&locationId=${location.id}&operation=SALE`)).json() as components['schemas']['EligibilityResponse']
+    expect(eligible.decision).toBe('ALLOWED')
+    expect(eligible.reasonCodes).toEqual([])
+    expect(eligible.rulesetId).toBe('food-safety-bakery-ambient-dry-packaged-v2')
+    expect(eligible.assessmentNotice).toBe('Passed the limited StockRescue checks on the available evidence at this time. This point-in-time assessment does not authorize sale, donation, transfer or stock movement.')
+    expect(eligible.evidence.classification).toBe('OPERATOR_CONFIRMED')
+
+    await page.goto(productPath)
+    await page.getByRole('button', { name: 'Confirm product classification', exact: true }).click()
+    const temperatureCorrection = page.getByRole('form', { name: 'Confirm product safety attributes', exact: true })
+    await temperatureCorrection.getByLabel('Product category from the reviewed source').selectOption('BAKERY')
+    await temperatureCorrection.getByLabel('Declared temperature class from the reviewed source').selectOption('CHILLED')
+    await temperatureCorrection.getByLabel('Product profile from the reviewed source').selectOption('PACKAGED_SHELF_STABLE_DRY_BAKERY')
+    await temperatureCorrection.getByLabel('Source type').selectOption('ORIGINAL_PACKAGE')
+    await temperatureCorrection.getByLabel('Source reference').fill('package:corrected-chilled-storage-label')
+    await temperatureCorrection.getByLabel('Reason for this confirmation').fill('Corrected the declared storage requirement from the original package')
+    await temperatureCorrection.getByLabel(/I inspected the cited source/).check()
+    await submitCapturedWhenAdmitted(page, temperatureCorrection, 'Save product evidence', page.getByText('package:corrected-chilled-storage-label', { exact: true }))
+    const correctedProductEvidence = await (await owner.context.request.get(`${base}/products/${productId}/classification-evidence/operator-confirmations`)).json() as components['schemas']['OperatorClassificationConfirmationResponse']
+    expect(correctedProductEvidence.product.version).toBe(2)
+    expect(correctedProductEvidence.confirmation).toMatchObject({ originalTemperatureClass: 'AMBIENT', confirmedTemperatureClass: 'CHILLED', productVersion: 2 })
+
+    await page.goto(mainLotPath)
+    await page.getByLabel('Store context', { exact: true }).selectOption(store.id)
+    await page.getByLabel('Storage evidence context').selectOption('LOCATION')
+    await page.getByLabel('Assessment location', { exact: true }).selectOption(location.id)
+    await page.getByRole('button', { name: 'Assess current evidence' }).click()
+    await expect(result.getByRole('heading', { name: 'Denied', exact: true })).toBeVisible()
+    await expect(result.getByRole('listitem').filter({ hasText: 'The product and storage zone declare different temperature classes.' })).toBeVisible()
+    const noLongerEligible = await (await owner.context.request.get(`${base}/lots/${lotId}/eligibility?storeId=${store.id}&locationId=${location.id}&operation=SALE`)).json() as components['schemas']['EligibilityResponse']
+    expect(noLongerEligible.decision).toBe('DENIED')
+    expect(noLongerEligible.reasonCodes).toContain('TEMPERATURE_CLASS_MISMATCH')
+    expect(noLongerEligible.productVersion).toBe(2)
 
     await page.getByRole('button', { name: 'Review metadata correction' }).click()
     const correction = page.getByRole('form', { name: 'Review lot correction', exact: true })
@@ -133,7 +181,7 @@ test('owner preserves original labels and independent sources, reviews safety ev
     expect(await originalMarking.getByText(futureDay.slice(0, 7), { exact: true }).textContent()).toBe(partialLabel)
     await expect(originalMarking.getByText('No verified normalization')).toBeVisible()
     await expect(result).toContainText('no day has been inferred')
-    await page.getByText('Version 1 · Metadata correction', { exact: true }).click()
+    await page.getByText('Version 2 · Metadata correction', { exact: true }).click()
     await expect(page.getByRole('region', { name: 'Lot evidence history' })).toContainText('replacement-photo')
 
     await page.getByRole('button', { name: 'Record safety notice', exact: true }).click()
@@ -174,18 +222,18 @@ test('owner preserves original labels and independent sources, reviews safety ev
     expect(archiveRequests[0]).toEqual(archiveRequests[1])
     const archivedLot = await (await owner.context.request.get(`${base}/lots/${lotId}`)).json() as Lot
     expect(archivedLot.active).toBe(false)
-    expect(archivedLot.version).toBe(3)
+    expect(archivedLot.version).toBe(4)
     expect(archivedLot.recallState).toBe('RECALLED')
     expect(archivedLot).not.toHaveProperty('quantity')
     expect(archivedLot).not.toHaveProperty('receivedQuantity')
     expect(await (await owner.context.request.get(sourcesPath)).json()).toEqual(sources)
     const archivedHistory = await (await owner.context.request.get(`${base}/lots/${lotId}/corrections`)).json() as components['schemas']['LotCorrectionPage']
-    expect(archivedHistory.items).toHaveLength(2)
+    expect(archivedHistory.items).toHaveLength(3)
     const rejectedSource = await write<components['schemas']['ApiProblem']>(owner.context, sourcesPath,
       { requestId: randomUUID(), storeId: store.id, provenance: { source: 'Supplier statement', reference: 'after-archive' } }, 409)
     expect(rejectedSource.code).toBe('CATALOG_INACTIVE')
     const rejectedSafety = await write<components['schemas']['ApiProblem']>(owner.context, `${base}/lots/${lotId}/safety-status-evidence`,
-      { requestId: randomUUID(), expectedVersion: 3, reason: 'Attempt to replace retained recall evidence', recallState: 'UNKNOWN', damageState: 'UNKNOWN', provenance: { source: 'Replacement notice', reference: 'after-archive' } }, 409)
+      { requestId: randomUUID(), expectedVersion: 4, reason: 'Attempt to replace retained recall evidence', recallState: 'UNKNOWN', damageState: 'UNKNOWN', provenance: { source: 'Replacement notice', reference: 'after-archive' } }, 409)
     expect(rejectedSafety.code).toBe('CATALOG_INACTIVE')
     await expect(page.getByRole('button', { name: 'Review metadata correction' })).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Record safety notice' })).toHaveCount(0)
@@ -269,8 +317,8 @@ test('owner reviews exact duplicate GTIN matches before product creation', async
     await first.getByLabel('SKU', { exact: true }).fill('GTIN-FIRST')
     await first.getByLabel('Product name', { exact: true }).fill('First catalog product')
     await first.getByLabel('GTIN (optional)').fill('036000291452')
+    await first.getByLabel('Declared temperature class').selectOption('AMBIENT')
     await expect(first.getByText('No active or archived catalog products currently use this GTIN.')).toBeVisible()
-    await first.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
     await submitCapturedWhenAdmitted(page, first, 'Save product', page.getByRole('heading', { name: 'First catalog product', exact: true }))
 
     let rejectGtinReview = true
@@ -284,6 +332,7 @@ test('owner reviews exact duplicate GTIN matches before product creation', async
     await second.getByLabel('SKU', { exact: true }).fill('GTIN-SECOND')
     await second.getByLabel('Product name', { exact: true }).fill('Second catalog product')
     await second.getByLabel('GTIN (optional)').fill('036000291452')
+    await second.getByLabel('Declared temperature class').selectOption('AMBIENT')
     const warning = second.getByRole('alert', { name: 'Potential GTIN matches', exact: true })
     const retryReview = second.getByRole('button', { name: 'Retry GTIN check', exact: true })
     await expect(retryReview).toBeVisible({ timeout: 20000 })
@@ -314,17 +363,16 @@ test('owner reviews exact duplicate GTIN matches before product creation', async
     await concurrent.getByLabel('SKU', { exact: true }).fill('GTIN-THIRD')
     await concurrent.getByLabel('Product name', { exact: true }).fill('Third catalog product')
     await concurrent.getByLabel('GTIN (optional)').fill('036000291452')
+    await concurrent.getByLabel('Declared temperature class').selectOption('AMBIENT')
     const concurrentWarning = concurrent.getByRole('alert', { name: 'Potential GTIN matches', exact: true })
     await expect(concurrentWarning.getByText('GTIN-FIRST', { exact: true })).toBeVisible()
     const concurrentConsent = concurrent.getByLabel('I reviewed the current matches and still want to create a separate product with this GTIN.', { exact: true })
     await concurrentConsent.focus()
     await secondTab.keyboard.press('Space')
     await expect(concurrentConsent).toBeChecked()
-    await concurrent.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
     await submitCapturedWhenAdmitted(secondTab, concurrent, 'Save product', secondTab.getByRole('heading', { name: 'Third catalog product', exact: true }))
 
     await acknowledge.check()
-    await second.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
     await second.getByRole('button', { name: 'Save product', exact: true }).click()
     await expect(second.getByText('Review the current GTIN matches; submit again to create a new command with the fresh review.', { exact: false })).toBeVisible()
     await expect(warning.getByText('GTIN-THIRD', { exact: true })).toBeVisible()
@@ -332,7 +380,6 @@ test('owner reviews exact duplicate GTIN matches before product creation', async
     await expect(second.getByRole('button', { name: 'Save product', exact: true })).toBeDisabled()
 
     await acknowledge.check()
-    await second.getByLabel('I confirm this descriptive category; if the category is unknown, I will keep it unclassified.').check()
     loseNextAcknowledgement = true
     await second.getByRole('button', { name: 'Save product', exact: true }).click()
     await expect(second.getByRole('button', { name: 'Retry same request' })).toBeVisible()
@@ -422,6 +469,13 @@ test('assigned store manager registers unverified lot metadata without recording
     const members = await (await owner.context.request.get(`${base}/members`)).json() as { items: Member[] }
     const pending = members.items.find(member => member.userId === manager.id)!
     await write(owner.context, `${base}/members/${pending.id}/approve`, { version: pending.version, verifiedUserId: manager.id, reason: 'Verified intended store manager account' }, 200)
+    const unauthorizedConfirmation = await write<components['schemas']['ApiProblem']>(manager.context,
+      `${base}/products/${product.id}/classification-evidence/operator-confirmations`, {
+        requestId: randomUUID(), expectedProductVersion: 0, category: 'BAKERY', temperatureClass: 'AMBIENT',
+        productProfile: 'PACKAGED_SHELF_STABLE_DRY_BAKERY', sourceType: 'ORIGINAL_PACKAGE',
+        evidenceReference: 'package:manager-not-authorized', reason: 'Store Manager cannot correct organization-wide product attributes',
+      }, 403)
+    expect(unauthorizedConfirmation.code).toBe('ACCESS_DENIED')
 
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto(`/organizations/${organization.id}/catalog/products/${product.id}`)

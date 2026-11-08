@@ -32,11 +32,11 @@ it('exposes an archive conflict without another write or a new retry key', async
   expect(await (fetcher.mock.calls[1][0] as Request).json()).toEqual(body)
 })
 
-it('sends a source-bound operator classification command with the expected product version', async () => {
+it('sends a source-bound safety-attribute command with the expected product version', async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(json({ token: 'csrf' }))
     .mockResolvedValueOnce(json({ product: { id: 'product', category: 'BAKERY', version: 1 }, confirmation: { evidenceReference: 'package:category-label' }, status: 'CURRENT_OPERATOR_CONFIRMED' }, 201))
   vi.stubGlobal('fetch', fetcher)
-  const body = { requestId: 'classification-confirmation', expectedProductVersion: 0, category: 'BAKERY', sourceType: 'ORIGINAL_PACKAGE', evidenceReference: 'package:category-label', reason: 'Package label reviewed' } as const
+  const body = { requestId: 'classification-confirmation', expectedProductVersion: 0, category: 'BAKERY', temperatureClass: 'AMBIENT', productProfile: 'PACKAGED_SHELF_STABLE_DRY_BAKERY', sourceType: 'ORIGINAL_PACKAGE', evidenceReference: 'package:category-label', reason: 'Package label reviewed' } as const
   const result = await confirmOperatorClassification('organization', 'product', body, new AbortController().signal)
   expect(result.product.category).toBe('BAKERY')
   expect(result.status).toBe('CURRENT_OPERATOR_CONFIRMED')
