@@ -171,6 +171,7 @@ def main():
         return execute(compose + list(command), **options)
 
     scenario_projects = []
+    pnpm_executable = "pnpm.cmd" if os.name == "nt" else "pnpm"
 
     def new_scenario(label, server_port=None):
         scenario_project = f"{project}-{label}"
@@ -582,7 +583,7 @@ def main():
         )
         subprocess.run(
             [
-                "pnpm",
+                pnpm_executable,
                 "--dir",
                 "frontend",
                 "exec",
@@ -1263,7 +1264,7 @@ def main():
         if arguments.browser:
             subprocess.run(
                 [
-                    "pnpm",
+                    pnpm_executable,
                     "--dir",
                     "frontend",
                     "exec",
