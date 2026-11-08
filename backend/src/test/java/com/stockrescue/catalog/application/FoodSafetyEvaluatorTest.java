@@ -1,6 +1,7 @@
 package com.stockrescue.catalog.application;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import com.stockrescue.catalog.application.FoodSafetyEvaluation.*;
@@ -216,6 +217,53 @@ class FoodSafetyEvaluatorTest {
                 null,null,nonProductEvidence);
         assertThat(outside.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
         assertThat(outside.reasonCodes()).contains(ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED);
+    }
+
+    @Test
+    void rulesetScopeDecisionMatrixMatchesTheVersionedManifest() {
+        record ScopeCase(ProductCategory category,TemperatureClass temperature,
+                FoodSafetyProductClassificationConfirmation.ProductProfile profile,
+                FoodSafetyProductClassificationConfirmation.SourceType source,Operation operation,boolean supported) { }
+        var packaged=FoodSafetyProductClassificationConfirmation.ProductProfile.PACKAGED_SHELF_STABLE_DRY_BAKERY;
+        var originalPackage=FoodSafetyProductClassificationConfirmation.SourceType.ORIGINAL_PACKAGE;
+        var supplierDocument=FoodSafetyProductClassificationConfirmation.SourceType.SUPPLIER_DOCUMENT;
+        var cases=List.of(
+                new ScopeCase(ProductCategory.BAKERY,TemperatureClass.AMBIENT,packaged,originalPackage,Operation.SALE,true),
+                new ScopeCase(ProductCategory.BAKERY,TemperatureClass.AMBIENT,packaged,supplierDocument,Operation.SALE,true),
+                new ScopeCase(ProductCategory.BAKERY,TemperatureClass.AMBIENT,packaged,originalPackage,Operation.TRANSFER,true),
+                new ScopeCase(ProductCategory.BAKERY,TemperatureClass.AMBIENT,packaged,supplierDocument,Operation.TRANSFER,true),
+                new ScopeCase(ProductCategory.DAIRY,TemperatureClass.AMBIENT,
+                        FoodSafetyProductClassificationConfirmation.ProductProfile.OUTSIDE_CURRENT_PILOT,originalPackage,Operation.SALE,false),
+                new ScopeCase(ProductCategory.BAKERY,TemperatureClass.CHILLED,packaged,originalPackage,Operation.SALE,false),
+                new ScopeCase(ProductCategory.BAKERY,TemperatureClass.FROZEN,packaged,supplierDocument,Operation.TRANSFER,false),
+                new ScopeCase(ProductCategory.BAKERY,TemperatureClass.AMBIENT,
+                        FoodSafetyProductClassificationConfirmation.ProductProfile.STORAGE_INSTRUCTION_MISSING_OR_AMBIGUOUS,
+                        originalPackage,Operation.SALE,false),
+                new ScopeCase(ProductCategory.BAKERY,TemperatureClass.AMBIENT,packaged,
+                        FoodSafetyProductClassificationConfirmation.SourceType.OTHER,Operation.TRANSFER,false),
+                new ScopeCase(ProductCategory.UNCLASSIFIED,TemperatureClass.AMBIENT,
+                        FoodSafetyProductClassificationConfirmation.ProductProfile.NOT_ASSESSED,originalPackage,Operation.SALE,false));
+
+        for (var example:cases) {
+            var original=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",example.temperature(),example.category());
+            var currentProduct=new Product(original.product().id(),original.product().data(),true,1,
+                    original.product().createdAt(),NOW,null);
+            var confirmation=operatorConfirmation(original.product(),currentProduct,example.profile(),example.source());
+            var result=evaluator.evaluate(new Context(original.lot(),currentProduct,original.store(),original.zone(),null),
+                    example.operation(),NOW,null,null,confirmation);
+
+            assertThat(result.assessmentBasis()).as(example.toString()).isEqualTo(AssessmentBasis.PLATFORM_RULESET);
+            assertThat(result.rulesetId()).as(example.toString()).isEqualTo(FoodSafetyRuleset.CURRENT_ID);
+            if (example.supported()) {
+                assertThat(result.decision()).as(example.toString()).isEqualTo(Decision.ALLOWED);
+                assertThat(result.reasonCodes()).as(example.toString()).isEmpty();
+                assertThat(result.assessmentNotice()).as(example.toString()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
+            } else {
+                assertThat(result.decision()).as(example.toString()).isNotEqualTo(Decision.ALLOWED);
+                assertThat(result.reasonCodes()).as(example.toString()).contains(ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED);
+                assertThat(result.assessmentNotice()).as(example.toString()).isNull();
+            }
+        }
     }
 
     private FoodSafetyProductClassificationConfirmation operatorConfirmation(Product before,Product after,

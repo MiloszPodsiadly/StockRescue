@@ -229,6 +229,25 @@ class ProductManagementTest extends InfrastructureTestBase {
     }
 
     @Test
+    void operatorConfirmationRejectsBlankOversizedAndControlCharacterSourceReferences() throws Exception {
+        var owner=f.ownerA.browser();
+        var product=create(owner,"SOURCE-REFERENCE-VALIDATION");
+        var endpoint=path(f.orgA,product)+"/classification-evidence/operator-confirmations";
+        var blank=categoryConfirmation(UUID.randomUUID(),0,"BAKERY");blank.put("evidenceReference","  ");
+        var oversized=categoryConfirmation(UUID.randomUUID(),0,"BAKERY");oversized.put("evidenceReference","x".repeat(257));
+        var controlCharacter=categoryConfirmation(UUID.randomUUID(),0,"BAKERY");controlCharacter.put("evidenceReference","package:front-label\nforged");
+
+        problem(owner.write("POST",endpoint,blank),400,"INVALID_REQUEST");
+        problem(owner.write("POST",endpoint,oversized),400,"INVALID_REQUEST");
+        problem(owner.write("POST",endpoint,controlCharacter),422,"INVALID_REQUEST");
+
+        assertThat(tree(owner.get(path(f.orgA,product))).path("version").asLong()).isZero();
+        assertThat(tree(owner.get(endpoint)).path("status").asString()).isEqualTo("NOT_RECORDED");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.food_safety_product_classification_confirmation WHERE org_id=:org AND product_id=:product")
+                .param("org",f.orgA).param("product",product).query(Long.class).single()).isZero();
+    }
+
+    @Test
     void concurrentClassificationEditsAgainstOneProductVersionLeaveOneCurrentConfirmation() throws Exception {
         var first=f.ownerA.browser();
         var second=new Browser(f.ownerA);
