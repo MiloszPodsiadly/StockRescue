@@ -17,6 +17,7 @@ import com.stockrescue.catalog.domain.DatePrecision;
 import com.stockrescue.catalog.domain.EvidenceProvenance;
 import com.stockrescue.catalog.domain.Gtin;
 import com.stockrescue.support.InfrastructureTestBase;
+import com.stockrescue.support.MigrationAssertions;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -37,7 +38,7 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
         var flyway = migrations(POSTGRES.getJdbcUrl());
         flyway.migrate();
         flyway.validate();
-        assertThat(flyway.info().applied()).hasSize(15);
+        MigrationAssertions.assertCurrent(flyway);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
     }
 
@@ -253,8 +254,9 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
         try (var clean = isolatedDatabase()) {
             clean.start();
             var flyway = migrations(clean.getJdbcUrl());
-            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(15);
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.CURRENT_VERSION);
             flyway.validate();
+            MigrationAssertions.assertCurrent(flyway);
             assertThat(flyway.migrate().migrationsExecuted).isZero();
             try (var current = open(clean.getJdbcUrl()); var statement = current.createStatement();
                     var row = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema='stockrescue' AND table_name IN ('product','manufacturer_lot','consignment_evidence')")) {
@@ -287,9 +289,9 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
                 history = history(old);
             }
             var upgraded = migrations(previous.getJdbcUrl());
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(7);
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.migrationsAfter(8));
             upgraded.validate();
-            assertThat(upgraded.info().applied()).hasSize(15);
+            MigrationAssertions.assertCurrent(upgraded);
             try (var current = open(previous.getJdbcUrl())) {
                 assertThat(history(current)).isEqualTo(history);
                 try (var query = current.prepareStatement("SELECT name FROM stockrescue.store WHERE org_id=? AND id=?")) {
@@ -344,9 +346,9 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
             }
 
             var upgraded = migrations(previous.getJdbcUrl());
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.migrationsAfter(14));
             upgraded.validate();
-            assertThat(upgraded.info().applied()).hasSize(15);
+            MigrationAssertions.assertCurrent(upgraded);
             try (var current = open(previous.getJdbcUrl())) {
                 assertThat(text(current, "SELECT category FROM stockrescue.product WHERE org_id=? AND id=?", org, product))
                         .isEqualTo("UNCLASSIFIED");

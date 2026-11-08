@@ -14,6 +14,7 @@ import java.util.List;
 import javax.sql.DataSource;
 
 import com.stockrescue.support.InfrastructureTestBase;
+import com.stockrescue.support.MigrationAssertions;
 import com.stockrescue.StockRescueApplication;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
@@ -48,7 +49,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
         var flyway = applicationFlyway;
         flyway.validate();
         assertThat(flyway.migrate().migrationsExecuted).isZero();
-        assertThat(flyway.info().applied()).hasSize(15);
+        MigrationAssertions.assertCurrent(flyway);
         try (var connection = appConnection(); var statement = connection.createStatement()) {
             var current = statement.executeQuery("SELECT current_schema(), current_user");
             assertThat(current.next()).isTrue();
@@ -69,7 +70,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertPublicSchemaContainsOnlyFlywayHistory(connection);
             var tables = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'stockrescue'");
             assertThat(tables.next()).isTrue();
-            assertThat(tables.getInt(1)).isEqualTo(31);
+            assertThat(tables.getInt(1)).isEqualTo(36);
             var auditTimeDefault = statement.executeQuery("""
                     SELECT pg_get_expr(d.adbin,d.adrelid)
                     FROM pg_attrdef d
@@ -193,7 +194,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
                     var flyway = upgraded.getBean(Flyway.class);
                     assertThat(flyway.getConfiguration().getDefaultSchema()).isEqualTo("public");
                     flyway.validate();
-                    assertThat(flyway.info().applied()).hasSize(15);
+                    MigrationAssertions.assertCurrent(flyway);
                     assertThat(flyway.migrate().migrationsExecuted).isZero();
                     try (var connection = upgraded.getBean(DataSource.class).getConnection()) {
                         assertThat(connection.getSchema()).isEqualTo("stockrescue");

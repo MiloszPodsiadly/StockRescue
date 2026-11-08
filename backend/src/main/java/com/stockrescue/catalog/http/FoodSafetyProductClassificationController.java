@@ -4,6 +4,8 @@ import java.time.Instant;
 import java.util.UUID;
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationService;
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationSubmission;
+import com.stockrescue.catalog.application.FoodSafetyProductClassificationConfirmation;
+import com.stockrescue.catalog.application.FoodSafetyProductClassificationConfirmationSubmission;
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationRevocationCommand;
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationVerification;
 import com.stockrescue.catalog.domain.ProductCategory;
@@ -50,6 +52,30 @@ public class FoodSafetyProductClassificationController {
                 .body(ProductClassificationEvidenceResponse.from(classifications.evidence(actor(actor),organizationId,productId)));
     }
 
+    @GetMapping("/operator-confirmations")
+    @Operation(operationId="getOperatorProductClassificationConfirmation",summary="Read the latest attributed operator classification and whether it matches the current product revision")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=OperatorClassificationConfirmationResponse.class)))
+    public ResponseEntity<OperatorClassificationConfirmationResponse> operatorConfirmation(Authentication actor,
+            @PathVariable UUID organizationId,@PathVariable UUID productId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(
+                OperatorClassificationConfirmationResponse.from(classifications.confirmation(actor(actor),organizationId,productId)));
+    }
+
+    @PostMapping(value="/operator-confirmations",consumes=MediaType.APPLICATION_JSON_VALUE)
+    @Operation(operationId="confirmOperatorProductClassification",summary="Record a source-attributed operator category confirmation and bind it to a new product version")
+    @ApiResponses({
+            @ApiResponse(responseCode="201",content=@Content(schema=@Schema(implementation=OperatorClassificationConfirmationResponse.class))),
+            @ApiResponse(responseCode="200",description="Previously recorded confirmation replayed",content=@Content(schema=@Schema(implementation=OperatorClassificationConfirmationResponse.class)))})
+    public ResponseEntity<OperatorClassificationConfirmationResponse> confirmOperatorClassification(Authentication actor,
+            @PathVariable UUID organizationId,@PathVariable UUID productId,
+            @Valid @RequestBody ConfirmOperatorClassificationRequest request) {
+        var submission=new FoodSafetyProductClassificationConfirmationSubmission(request.requestId(),request.expectedProductVersion(),
+                request.category(),request.sourceType(),request.evidenceReference(),request.reason());
+        var result=classifications.confirm(actor(actor),organizationId,productId,submission);
+        return ResponseEntity.status(result.created()?HttpStatus.CREATED:HttpStatus.OK).cacheControl(CacheControl.noStore())
+                .body(OperatorClassificationConfirmationResponse.from(result));
+    }
+
     @PostMapping(consumes=MediaType.APPLICATION_JSON_VALUE)
     @Operation(operationId="submitProductClassificationEvidence",summary="Submit domain-separated external Ed25519 evidence for the product's current descriptive category and version")
     @ApiResponses({@ApiResponse(responseCode="201",content=@Content(schema=@Schema(implementation=ProductClassificationEvidenceResponse.class))),
@@ -93,6 +119,49 @@ public class FoodSafetyProductClassificationController {
 
     public record RevokeProductClassificationEvidenceRequest(@NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
             @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
+
+    public record ConfirmOperatorClassificationRequest(
+            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
+            @NotNull @Min(0) @Max(Long.MAX_VALUE-1) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedProductVersion,
+            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Descriptive category confirmed from the cited source; UNCLASSIFIED stays under review") ProductCategory category,
+            @Schema(types={"string","null"},description="ORIGINAL_PACKAGE, SUPPLIER_DOCUMENT or OTHER; required for a known category") FoodSafetyProductClassificationConfirmation.SourceType sourceType,
+            @Schema(types={"string","null"},description="Reference to the inspected source; source content is not uploaded") @Size(max=256) String evidenceReference,
+            @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
+
+    public record OperatorClassificationConfirmationDetails(
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID organizationId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID productId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String sku,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long expectedProductVersion,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long productVersion,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) ProductCategory originalCategory,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) ProductCategory confirmedCategory,
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyProductClassificationConfirmation.SourceType sourceType,
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String evidenceReference,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID actorUserId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID recordedByMembershipId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant recordedAt) {
+        static OperatorClassificationConfirmationDetails from(FoodSafetyProductClassificationConfirmation value) {
+            return new OperatorClassificationConfirmationDetails(value.id(),value.organizationId(),value.productId(),value.sku(),
+                    value.expectedProductVersion(),value.productVersion(),value.originalCategory(),value.confirmedCategory(),
+                    value.sourceType(),value.evidenceReference(),value.actorUserId(),value.recordedByMembershipId(),value.requestId(),
+                    value.reason(),value.recordedAt());
+        }
+    }
+
+    @Schema(description="Operator-confirmed category evidence is attributed and source-referenced; it is not independent or specialist verification.")
+    public record OperatorClassificationConfirmationResponse(
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) ProductController.ProductResponse product,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) OperatorClassificationConfirmationDetails confirmation,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyProductClassificationConfirmation.Status status) {
+        static OperatorClassificationConfirmationResponse from(FoodSafetyProductClassificationService.ConfirmationResult value) {
+            return new OperatorClassificationConfirmationResponse(ProductController.ProductResponse.from(value.product()),
+                    value.confirmation()==null?null:OperatorClassificationConfirmationDetails.from(value.confirmation()),value.status());
+        }
+    }
 
     public record ProductClassificationEvidenceResponse(
             @Schema(types={"string","null"},format="uuid",requiredMode=Schema.RequiredMode.REQUIRED) UUID attestationId,

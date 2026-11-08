@@ -10,6 +10,7 @@ import com.stockrescue.catalog.application.FoodSafetyEvaluation.Operation;
 import com.stockrescue.catalog.persistence.FoodSafetyPolicyRepository;
 import com.stockrescue.catalog.persistence.FoodSafetyPolicyApprovalRepository;
 import com.stockrescue.catalog.persistence.FoodSafetyProductClassificationRepository;
+import com.stockrescue.catalog.persistence.FoodSafetyProductClassificationConfirmationRepository;
 import com.stockrescue.catalog.persistence.LotRepository;
 import com.stockrescue.catalog.persistence.ProductRepository;
 import com.stockrescue.stores.persistence.StoreRepository;
@@ -26,15 +27,18 @@ public class FoodSafetyEvaluationService {
     private final StoreRepository stores; private final ZoneRepository zones; private final FoodSafetyPolicyRepository policies; private final Clock clock;
     private final FoodSafetyPolicyApprovalRepository approvals; private final FoodSafetyPolicyApprovalVerifier approvalVerifier;
     private final FoodSafetyProductClassificationRepository classifications; private final FoodSafetyProductClassificationVerifier classificationVerifier;
+    private final FoodSafetyProductClassificationConfirmationRepository classificationConfirmations;
     private final StorageLocationRepository locations;
     private final FoodSafetyEvaluator evaluator=new FoodSafetyEvaluator();
     public FoodSafetyEvaluationService(AccessPolicy access,LotRepository lots,ProductRepository products,StoreRepository stores,ZoneRepository zones,
             StorageLocationRepository locations,FoodSafetyPolicyRepository policies,FoodSafetyPolicyApprovalRepository approvals,
             FoodSafetyPolicyApprovalVerifier approvalVerifier,FoodSafetyProductClassificationRepository classifications,
+            FoodSafetyProductClassificationConfirmationRepository classificationConfirmations,
             FoodSafetyProductClassificationVerifier classificationVerifier,Clock clock) {
         this.access=access;this.lots=lots;this.products=products;this.stores=stores;this.zones=zones;this.locations=locations;
         this.policies=policies;this.approvals=approvals;this.approvalVerifier=approvalVerifier;
-        this.classifications=classifications;this.classificationVerifier=classificationVerifier;this.clock=clock;
+        this.classifications=classifications;this.classificationConfirmations=classificationConfirmations;
+        this.classificationVerifier=classificationVerifier;this.clock=clock;
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public FoodSafetyEvaluation evaluate(UUID actor,UUID org,UUID lotId,UUID storeId,UUID zoneId,UUID locationId,Operation operation) {
@@ -55,6 +59,8 @@ public class FoodSafetyEvaluationService {
         var classification=classifications.latest(org,product.id()).orElse(null);
         var classificationRevocation=classification==null?null:classifications.revocation(org,classification.id()).orElse(null);
         var classificationEvidence=classificationVerifier.verify(org,product,classification,classificationRevocation,evaluatedAt);
-        return evaluator.evaluate(new FoodSafetyEvaluator.Context(lot,product,store,zone,policy,location),operation,evaluatedAt,verification,classificationEvidence);
+        var operatorConfirmation=classificationConfirmations.latest(org,product.id()).orElse(null);
+        return evaluator.evaluate(new FoodSafetyEvaluator.Context(lot,product,store,zone,policy,location),operation,evaluatedAt,
+                verification,classificationEvidence,operatorConfirmation);
     }
 }

@@ -103,9 +103,10 @@ public class SecurityConfiguration {
                             .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/stores/*/storage-locations",
                                     "/api/v1/organizations/*/stores/*/storage-locations/*/rename", "/api/v1/organizations/*/stores/*/storage-locations/*/archive").authenticated()
                             .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/products", "/api/v1/organizations/*/products/*").authenticated()
-                            .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/products/*/classification-evidence").authenticated()
+                            .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/products/*/classification-evidence",
+                                    "/api/v1/organizations/*/products/*/classification-evidence/operator-confirmations").authenticated()
                             .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/products", "/api/v1/organizations/*/products/*/archive",
-                                    "/api/v1/organizations/*/products/*/category-corrections",
+                                    "/api/v1/organizations/*/products/*/classification-evidence/operator-confirmations",
                                     "/api/v1/organizations/*/products/*/classification-evidence",
                                     "/api/v1/organizations/*/products/*/classification-evidence/*/revocation").authenticated()
                             .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/lots", "/api/v1/organizations/*/lots/*",

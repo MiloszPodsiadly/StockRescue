@@ -106,25 +106,50 @@ reviewed evidence. Increased date precision requires an actual label and source
 reference. Corrections clear prior normalization so subsequent evaluation uses
 the revised evidence.
 
-Food-safety profiles preserve immutable, class-specific review versions and source
-references. Reviews carry UNVERIFIED approval status; requested partial-date rules
-remain evidence for specialist review. Use-by expiry, pilot best-before expiry,
-recall, damage and declared temperature mismatch enforce hard denials. Recall and
-damage observations share the lot's versioned history, with recorded blocks
-retained through later metadata corrections.
+Food-safety assessment combines distinct evidence: immutable platform rules,
+operator-entered observations, optional externally signed evidence, and any
+future public-source suggestions. An operator statement is attributed and
+auditable but never independently verified. A public match is only a suggestion;
+no matching alert does not establish absence of a recall. Missing or unavailable
+evidence stays unknown.
+
+The local pilot is limited to classified BAKERY products stored at AMBIENT
+temperature. A positive assessment requires a confirmed manufacturer lot, a
+complete original day-precision label with source reference, referenced recall
+and damage observations, and active compatible storage context. It is a
+point-in-time check of recorded evidence, not certification or permission to
+sell, donate, transfer or move stock. `NOT_REPORTED` means only that no issue was
+reported in the evidence reviewed. Dairy, unclassified products, chilled/frozen
+products, partial dates and missing evidence remain under review; known recalled,
+damaged, expired or archived records and incompatible storage are denied.
 
 Eligibility uses an injected clock, the store's time zone and a coherent snapshot
 of lot, product, store, zone and policy versions. Each request recomputes the
-decision and returns ordered reasons, evidence status and a next action.
-Independent approval evidence is an Ed25519 attestation bound to one immutable
-policy version, scope, operation and rule digest. The deployment-owned trust
-registry is disabled by default; tenant administrators can submit or revoke
-evidence but cannot enroll trusted keys. Signature verification proves the key,
-not the issuer's professional qualifications. Production enrollment and
-specialist validation remain owner-controlled external gates; deployment must
-keep the registry disabled until the owner validates and enrolls an issuer.
-Declared zone compatibility describes configuration rather than continuous
-cold-chain verification.
+decision and returns ordered reasons, evidence status, input versions, the active
+ruleset identity and a next action. The platform selects rules only by an exact
+supported category, temperature and assessment operation; tenant policy records
+are supplementary evidence and never select a fallback or replace those rules.
+Platform rules are immutable and cannot be weakened by tenant policy. Hard denials
+take precedence over optional Ed25519 evidence. External signatures remain
+separately verifiable and revocable; trust registry configuration never gates the
+local baseline. Signature verification proves the key, not the issuer's
+professional qualifications. Declared zone compatibility describes configuration
+rather than continuous cold-chain verification.
+
+Future `ProductReferenceProvider` and `SafetyAlertProvider` adapters remain
+optional, source-linked suggestions fetched outside the evaluator. Open Food Facts
+requires license, attribution and quota review; RASFF and GIS matches cannot prove
+that a lot is not recalled, and a stable GIS feed must be established first; GS1
+identity checks require acceptable commercial terms. Persist source identity,
+fetch/publication times, raw-data hash, freshness and match explanation. The
+current assessment stays offline and never promotes an external match to verified
+evidence.
+
+| Evidence state | Assessment | Meaning |
+| --- | --- | --- |
+| Supported BAKERY / AMBIENT scope, complete attributed evidence, no known block | ALLOWED | Limited platform checks passed for this snapshot; no operation is authorized. |
+| Unknown, incomplete, stale or unsupported evidence/scope | REQUIRES_REVIEW | Resolve the named evidence gaps; do not infer safety. |
+| Known recall, damage, expiry, archive or incompatible storage | DENIED | A hard block remains even when optional signed evidence exists. |
 
 Storage locations belong to one store and retain their code and zone identity.
 Administrators and assigned Store Managers configure names and archival; current

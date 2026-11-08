@@ -5,7 +5,9 @@ export type Product = components['schemas']['ProductResponse']
 export type CreateProduct = components['schemas']['CreateProductRequest']
 export type GtinReview = components['schemas']['GtinReviewResponse']
 export type ArchiveProduct = components['schemas']['ArchiveProductRequest']
-export type CorrectProductCategory = components['schemas']['CorrectProductCategoryRequest']
+export type OperatorClassificationConfirmationRequest = components['schemas']['ConfirmOperatorClassificationRequest']
+export type OperatorClassificationConfirmation = components['schemas']['OperatorClassificationConfirmationResponse']
+export type ClassificationEvidenceSource = NonNullable<OperatorClassificationConfirmationRequest['sourceType']>
 export type ProductCategory = Product['category']
 export type ProductState = NonNullable<operations['listProducts']['parameters']['query']>['state']
 
@@ -54,8 +56,16 @@ export async function archiveProduct(organizationId: string, productId: string, 
   return data
 }
 
-export async function correctProductCategory(organizationId: string, productId: string, body: CorrectProductCategory, signal: AbortSignal) {
-  const { data, error, response } = await api.POST('/api/v1/organizations/{organizationId}/products/{productId}/category-corrections', { params: { path: { organizationId, productId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
+export async function getOperatorClassificationConfirmation(organizationId: string, productId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.GET('/api/v1/organizations/{organizationId}/products/{productId}/classification-evidence/operator-confirmations', {
+    params: { path: { organizationId, productId } }, signal: requestSignal(signal),
+  })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function confirmOperatorClassification(organizationId: string, productId: string, body: OperatorClassificationConfirmationRequest, signal: AbortSignal) {
+  const { data, error, response } = await api.POST('/api/v1/organizations/{organizationId}/products/{productId}/classification-evidence/operator-confirmations', { params: { path: { organizationId, productId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
   signal.throwIfAborted()
   if (!data) throw new ApiError(response, error)
   return data

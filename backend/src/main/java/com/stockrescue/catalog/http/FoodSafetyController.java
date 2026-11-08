@@ -5,6 +5,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 import com.stockrescue.catalog.application.*;
+import com.stockrescue.catalog.domain.EvidenceProvenance;
 import com.stockrescue.catalog.domain.ProductCategory;
 import com.stockrescue.catalog.application.FoodSafetyEvaluation.*;
 import com.stockrescue.catalog.application.FoodSafetyPolicyVersion.*;
@@ -213,8 +214,18 @@ public class FoodSafetyController {
     public record EligibilityEvidenceResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) DateEvidenceStatus date,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) StatusEvidenceStatus recall,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) StatusEvidenceStatus damage,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) StorageEvidenceStatus storage,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) PolicyEvidenceStatus policy,
-            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyEvaluation.ProductClassificationEvidenceStatus classification) { }
-    @Schema(description="Point-in-time evidence, not a reusable permission or physical hold. ALLOWED requires a current signed approval for this exact policy and operation plus every narrow-pilot evidence gate. Recompute before future operative use.")
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyEvaluation.ProductClassificationEvidenceStatus classification,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) EvidenceProvenanceResponse manufacturerSource,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) EvidenceProvenanceResponse dateLabelSource,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) EvidenceProvenanceResponse safetyStatusSource) { }
+    @Schema(description="Operator-supplied source attribution; it does not independently verify source contents.")
+    public record EvidenceProvenanceResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) String source,
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String reference) {
+        static EvidenceProvenanceResponse from(EvidenceProvenance value) {
+            return value==null?null:new EvidenceProvenanceResponse(value.source(),value.reference());
+        }
+    }
+    @Schema(description="Point-in-time evidence assessment with explicit ruleset basis and input versions. It is not a reusable permission or authorization to execute an operation.")
     public record EligibilityResponse(
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Decision decision,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<ReasonCode> reasonCodes,
@@ -229,22 +240,39 @@ public class FoodSafetyController {
             @Schema(types={"integer","null"},format="int64",requiredMode=Schema.RequiredMode.REQUIRED) Long zoneVersion,
             @Schema(types={"string","null"},format="uuid",requiredMode=Schema.RequiredMode.REQUIRED) UUID locationId,
             @Schema(types={"integer","null"},format="int64",requiredMode=Schema.RequiredMode.REQUIRED) Long locationVersion,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) ProductCategory productCategory,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) TemperatureClass productTemperatureClass,
             @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) EligibilityPolicyReferenceResponse policy,
             @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) ApprovalVerificationResponse approvalVerification,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyProductClassificationController.ProductClassificationEvidenceResponse classificationVerification,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED,
+                    description="Attributed operator category evidence; never independently verified")
+            FoodSafetyProductClassificationController.OperatorClassificationConfirmationDetails operatorClassificationConfirmation,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyProductClassificationConfirmation.Status operatorClassificationStatus,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant evaluatedAt,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) LocalDate storeLocalDate,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String storeTimeZone,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) EligibilityEvidenceResponse evidence,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) NextAction nextAction,
-            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String evaluatorVersion) {
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String evaluatorVersion,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) AssessmentBasis assessmentBasis,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String rulesetId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String rulesetDigest,
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String assessmentNotice) {
         static EligibilityResponse from(FoodSafetyEvaluation value) {
             var policy=value.policy(); var evidence=value.evidence();
             return new EligibilityResponse(value.decision(),value.reasonCodes(),value.operation(),value.lotId(),value.lotVersion(),value.productId(),value.productVersion(),
-                    value.storeId(),value.storeVersion(),value.zoneId(),value.zoneVersion(),value.locationId(),value.locationVersion(),policy==null?null:new EligibilityPolicyReferenceResponse(policy.id(),policy.profileId(),policy.productCategory(),policy.version()),
+                    value.storeId(),value.storeVersion(),value.zoneId(),value.zoneVersion(),value.locationId(),value.locationVersion(),value.productCategory(),value.productTemperatureClass(),
+                    policy==null?null:new EligibilityPolicyReferenceResponse(policy.id(),policy.profileId(),policy.productCategory(),policy.version()),
                     value.approvalVerification()==null?null:ApprovalVerificationResponse.from(value.approvalVerification()),
                     FoodSafetyProductClassificationController.ProductClassificationEvidenceResponse.from(value.classificationVerification()),
-                    value.evaluatedAt(),value.storeLocalDate(),value.storeTimeZone(),new EligibilityEvidenceResponse(evidence.date(),evidence.recall(),evidence.damage(),evidence.storage(),evidence.policy(),evidence.classification()),value.nextAction(),value.evaluatorVersion());
+                    value.operatorClassificationConfirmation()==null?null:
+                            FoodSafetyProductClassificationController.OperatorClassificationConfirmationDetails.from(value.operatorClassificationConfirmation()),
+                    value.operatorClassificationStatus(),
+                    value.evaluatedAt(),value.storeLocalDate(),value.storeTimeZone(),new EligibilityEvidenceResponse(evidence.date(),evidence.recall(),evidence.damage(),evidence.storage(),evidence.policy(),evidence.classification(),
+                            EvidenceProvenanceResponse.from(evidence.manufacturerSource()),EvidenceProvenanceResponse.from(evidence.dateLabelSource()),
+                            EvidenceProvenanceResponse.from(evidence.safetyStatusSource())),
+                    value.nextAction(),value.evaluatorVersion(),value.assessmentBasis(),value.rulesetId(),value.rulesetDigest(),value.assessmentNotice());
         }
     }
 }

@@ -113,11 +113,22 @@ class OpenApiContractTest extends InfrastructureTestBase {
         assertThat(schemas.path("ProductResponse").path("properties").path("gtin").path("type")).anyMatch(value -> value.asString().equals("null"));
         assertThat(schemas.path("ProductResponse").path("properties").path("category").path("enum").toString()).isEqualTo("[\"UNCLASSIFIED\",\"DAIRY\",\"BAKERY\"]");
         assertThat(schemas.path("CreateProductRequest").path("required")).anyMatch(value -> value.asString().equals("category"));
-        var categoryCorrection=document.path("paths").path(productPath+"/{productId}/category-corrections").path("post");
-        assertThat(categoryCorrection.path("operationId").asString()).isEqualTo("correctProductCategory");
         var classificationPath=productPath+"/{productId}/classification-evidence";
         assertThat(document.path("paths").path(classificationPath).path("get").path("operationId").asString()).isEqualTo("getProductClassificationEvidence");
         assertThat(document.path("paths").path(classificationPath).path("post").path("operationId").asString()).isEqualTo("submitProductClassificationEvidence");
+        var operatorConfirmationPath=classificationPath+"/operator-confirmations";
+        assertThat(document.path("paths").path(operatorConfirmationPath).path("get").path("operationId").asString())
+                .isEqualTo("getOperatorProductClassificationConfirmation");
+        assertThat(document.path("paths").path(operatorConfirmationPath).path("post").path("operationId").asString())
+                .isEqualTo("confirmOperatorProductClassification");
+        assertThat(document.path("paths").has(productPath+"/{productId}/category-corrections")).isFalse();
+        var operatorConfirmationRequest=schemas.path("ConfirmOperatorClassificationRequest");
+        for (var field:java.util.List.of("requestId","expectedProductVersion","category","reason")) {
+            assertThat(operatorConfirmationRequest.path("properties").has(field)).isTrue();
+            assertThat(operatorConfirmationRequest.path("required")).anyMatch(value -> value.asString().equals(field));
+        }
+        assertThat(schemas.path("OperatorClassificationConfirmationResponse").path("description").asString())
+                .contains("not independent");
         assertThat(document.path("paths").path(classificationPath+"/{attestationId}/revocation").path("post").path("operationId").asString())
                 .isEqualTo("revokeProductClassificationEvidence");
         var classificationRequest=schemas.path("SubmitProductClassificationEvidenceRequest");
@@ -127,7 +138,13 @@ class OpenApiContractTest extends InfrastructureTestBase {
         }
         assertThat(schemas.path("ProductClassificationEvidenceResponse").path("properties").has("signature")).isFalse();
         assertThat(schemas.path("EligibilityResponse").path("properties").has("classificationVerification")).isTrue();
+        for (var field:java.util.List.of("productCategory","productTemperatureClass")) {
+            assertThat(schemas.path("EligibilityResponse").path("properties").has(field)).isTrue();
+            assertThat(schemas.path("EligibilityResponse").path("required")).anyMatch(value -> value.asString().equals(field));
+        }
         assertThat(schemas.path("EligibilityEvidenceResponse").path("properties").has("classification")).isTrue();
+        for (var field:java.util.List.of("manufacturerSource","dateLabelSource","safetyStatusSource"))
+            assertThat(schemas.path("EligibilityEvidenceResponse").path("properties").has(field)).isTrue();
         var archiveProduct=document.path("paths").path(productPath+"/{productId}/archive").path("post");
         assertThat(archiveProduct.path("operationId").asString()).isEqualTo("archiveProduct");
         var productArchiveProperties=schemas.path("ArchiveProductRequest").path("properties");

@@ -98,7 +98,8 @@ class FoodSafetyEvaluatorTest {
         var policy=new FoodSafetyPolicyVersion(UUID.randomUUID(),UUID.randomUUID(),ProductCategory.UNCLASSIFIED,TemperatureClass.AMBIENT,1,PartialDateRule.END_OF_LABELED_PERIOD,
                 ApprovalStatus.UNVERIFIED,source(),UUID.randomUUID(),NOW,"Requested rule reviewed");
         var result=evaluator.evaluate(new Context(original.lot(),original.product(),original.store(),original.zone(),policy),Operation.SALE,NOW);
-        assertThat(result.reasonCodes()).contains(ReasonCode.PARTIAL_DATE_RULE_UNVERIFIED,ReasonCode.POLICY_APPROVAL_UNVERIFIED);
+        assertThat(result.reasonCodes()).contains(ReasonCode.PARTIAL_DATE_RULE_UNVERIFIED,ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED)
+                .doesNotContain(ReasonCode.POLICY_APPROVAL_UNVERIFIED);
         assertThat(result.policy().id()).isEqualTo(policy.id());
         assertThat(result.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
     }
@@ -111,7 +112,7 @@ class FoodSafetyEvaluatorTest {
         var result=evaluator.evaluate(new Context(blocked,context.product(),context.store(),null,null),Operation.TRANSFER,NOW);
         assertThat(result.decision()).isEqualTo(Decision.DENIED);
         assertThat(result.reasonCodes()).startsWith(ReasonCode.LOT_RECALLED,ReasonCode.LOT_DAMAGED);
-        assertThat(result.reasonCodes()).contains(ReasonCode.DATE_LABEL_MISSING,ReasonCode.STORAGE_CONTEXT_MISSING,ReasonCode.POLICY_MISSING);
+        assertThat(result.reasonCodes()).contains(ReasonCode.DATE_LABEL_MISSING,ReasonCode.STORAGE_CONTEXT_MISSING);
         assertThat(result.nextAction()).isEqualTo(NextAction.DO_NOT_EXECUTE);
     }
 
@@ -129,15 +130,58 @@ class FoodSafetyEvaluatorTest {
     }
 
     @Test
-    void completeDateAndDeclaredCompatibilityNeverSubstituteForClassSpecificPolicyApproval() {
-        for (var temperature:TemperatureClass.values()) for (var operation:Operation.values()) {
-            var context=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",temperature);
-            var result=evaluator.evaluate(context,operation,NOW);
+    void supportedPlatformAssessmentDoesNotRequireTenantPolicyOrExternalPolicyApproval() {
+        var context=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",TemperatureClass.AMBIENT,ProductCategory.BAKERY);
+        var result=evaluator.evaluate(context,Operation.SALE,NOW,null,verifiedClassification(context.product()));
+
+        assertThat(result.decision()).isEqualTo(Decision.ALLOWED);
+        assertThat(result.reasonCodes()).isEmpty();
+        assertThat(result.approvalVerification()).isNull();
+        assertThat(result.policy()).isNull();
+        assertThat(result.assessmentBasis()).isEqualTo(AssessmentBasis.PLATFORM_RULESET);
+        assertThat(result.evidence().policy()).isEqualTo(PolicyEvidenceStatus.PLATFORM_RULESET);
+        assertThat(result.rulesetId()).isEqualTo(FoodSafetyRuleset.CURRENT_ID);
+        assertThat(result.rulesetDigest()).matches("[0-9a-f]{64}");
+        assertThat(result.assessmentNotice()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
+        assertThat(result.evidence().recall()).isEqualTo(StatusEvidenceStatus.NOT_REPORTED_IN_REVIEWED_EVIDENCE);
+        assertThat(result.evidence().damage()).isEqualTo(StatusEvidenceStatus.NOT_REPORTED_IN_REVIEWED_EVIDENCE);
+        assertThat(result.evidence().manufacturerSource()).isEqualTo(source());
+        assertThat(result.evidence().dateLabelSource()).isEqualTo(source());
+        assertThat(result.evidence().safetyStatusSource()).isEqualTo(source());
+    }
+
+    @Test
+    void operatorClassificationIsAttributedAndOnlyAppliesToItsExactProductVersion() {
+        var original=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",TemperatureClass.AMBIENT,ProductCategory.BAKERY);
+        var product=original.product();
+        var confirmedProduct=new Product(product.id(),product.data(),true,1,product.createdAt(),NOW,null);
+        var confirmation=new FoodSafetyProductClassificationConfirmation(UUID.randomUUID(),UUID.randomUUID(),product.id(),
+                product.data().sku().value(),0,1,ProductCategory.BAKERY,ProductCategory.BAKERY,
+                FoodSafetyProductClassificationConfirmation.SourceType.ORIGINAL_PACKAGE,"package:category-label",
+                UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),"Reviewed the package category",new byte[32],NOW);
+        var current=evaluator.evaluate(new Context(original.lot(),confirmedProduct,original.store(),original.zone(),null),Operation.SALE,NOW,
+                null,null,confirmation);
+        assertThat(current.decision()).isEqualTo(Decision.ALLOWED);
+        assertThat(current.operatorClassificationStatus()).isEqualTo(FoodSafetyProductClassificationConfirmation.Status.CURRENT_OPERATOR_CONFIRMED);
+        assertThat(current.evidence().classification()).isEqualTo(ProductClassificationEvidenceStatus.OPERATOR_CONFIRMED);
+        assertThat(current.assessmentNotice()).isEqualTo(FoodSafetyEvaluation.ALLOWED_NOTICE);
+
+        var laterProduct=new Product(product.id(),product.data(),true,2,product.createdAt(),NOW,null);
+        var stale=evaluator.evaluate(new Context(original.lot(),laterProduct,original.store(),original.zone(),null),Operation.SALE,NOW,
+                null,null,confirmation);
+        assertThat(stale.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
+        assertThat(stale.operatorClassificationStatus()).isEqualTo(FoodSafetyProductClassificationConfirmation.Status.STALE);
+        assertThat(stale.reasonCodes()).contains(ReasonCode.PRODUCT_CLASSIFICATION_OPERATOR_CONFIRMATION_STALE);
+    }
+
+    @Test
+    void unsupportedCategoryAndTemperatureNeverFallBackToThePlatformRuleset() {
+        for (var pair:new Object[][]{{ProductCategory.DAIRY,TemperatureClass.AMBIENT},{ProductCategory.BAKERY,TemperatureClass.CHILLED},
+                {ProductCategory.BAKERY,TemperatureClass.FROZEN}}) {
+            var context=context("2027-04-30",DateMarkingType.USE_BY,DatePrecision.DAY,"UTC",(TemperatureClass)pair[1],(ProductCategory)pair[0]);
+            var result=evaluator.evaluate(context,Operation.SALE,NOW,null,verifiedClassification(context.product()));
             assertThat(result.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
-            assertThat(result.evidence().date()).isEqualTo(DateEvidenceStatus.COMPLETE_LABEL);
-            assertThat(result.evidence().storage()).isEqualTo(StorageEvidenceStatus.DECLARED_COMPATIBLE);
-            assertThat(result.reasonCodes()).contains(ReasonCode.POLICY_MISSING);
-            assertThat(result.policy()).isNull();
+            assertThat(result.reasonCodes()).contains(ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED);
         }
     }
 
@@ -148,7 +192,8 @@ class FoodSafetyEvaluatorTest {
                 PartialDateRule.NO_NORMALIZATION,ApprovalStatus.UNVERIFIED,source(),UUID.randomUUID(),NOW,"Separate bakery scope");
         var result=evaluator.evaluate(new Context(productContext.lot(),productContext.product(),productContext.store(),productContext.zone(),bakeryPolicy),Operation.SALE,NOW);
         assertThat(result.decision()).isEqualTo(Decision.REQUIRES_REVIEW);
-        assertThat(result.reasonCodes()).contains(ReasonCode.POLICY_SCOPE_MISMATCH,ReasonCode.POLICY_APPROVAL_UNVERIFIED);
+        assertThat(result.reasonCodes()).contains(ReasonCode.POLICY_SCOPE_MISMATCH,ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED)
+                .doesNotContain(ReasonCode.POLICY_APPROVAL_UNVERIFIED);
         assertThat(result.policy().productCategory()).isEqualTo(ProductCategory.BAKERY);
     }
 
@@ -198,4 +243,10 @@ class FoodSafetyEvaluatorTest {
         return new Context(lot,product,store,new Zone(UUID.randomUUID(),"Declared zone",temperature,true,0,NOW,NOW),null);
     }
     private EvidenceProvenance source() { return new EvidenceProvenance("Observed original document","document-17"); }
+    private FoodSafetyProductClassificationVerification verifiedClassification(Product product) {
+        var category=product.data().category();
+        return new FoodSafetyProductClassificationVerification(FoodSafetyProductClassificationVerification.Outcome.VERIFIED,
+                UUID.randomUUID(),product.id(),UUID.randomUUID(),product.data().sku().value(),category,product.version(),category,product.version(),
+                "test-issuer","test-key",NOW,NOW,NOW.plusSeconds(3600),"classification:source-17",NOW,false,null,null,null);
+    }
 }

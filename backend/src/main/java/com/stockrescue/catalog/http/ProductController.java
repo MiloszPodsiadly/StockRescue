@@ -95,13 +95,6 @@ public class ProductController {
         return ProductResponse.from(products.archive(actor(actor),organizationId,productId,request.requestId(),request.expectedVersion(),request.reason()));
     }
 
-    @PostMapping(value="/{productId}/category-corrections",consumes=MediaType.APPLICATION_JSON_VALUE)
-    @Operation(operationId="correctProductCategory",summary="Correct a product's descriptive category with an expected version and audited reason")
-    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=ProductResponse.class)))
-    public ProductResponse correctCategory(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID productId,@Valid @RequestBody CorrectProductCategoryRequest request) {
-        return ProductResponse.from(products.reclassify(actor(actor),organizationId,productId,request.requestId(),request.expectedVersion(),request.category(),request.reason()));
-    }
-
     private UUID actor(Authentication actor) { return UUID.fromString(actor.getName()); }
     public record CreateProductRequest(
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
@@ -130,11 +123,6 @@ public class ProductController {
     public record ArchiveProductRequest(
             @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
             @NotNull @Min(0) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedVersion,
-            @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
-    public record CorrectProductCategoryRequest(
-            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
-            @NotNull @Min(0) @Max(Long.MAX_VALUE-1) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Long expectedVersion,
-            @NotNull @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Descriptive product category only") ProductCategory category,
             @NotBlank @Size(max=500) @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason) { }
     public record ProductPage(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<ProductResponse> items,
                               @Schema(requiredMode=Schema.RequiredMode.REQUIRED) boolean hasMore,

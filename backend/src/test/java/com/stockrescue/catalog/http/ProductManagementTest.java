@@ -67,7 +67,7 @@ class ProductManagementTest extends InfrastructureTestBase {
             assertThat(tree(browser.get(base(f.orgA))).path("canCreate").asBoolean()).isFalse();
             problem(browser.write("POST",base(f.orgA),body(UUID.randomUUID(),"FORBIDDEN")),403,"ACCESS_DENIED");
             problem(browser.write("POST",path(f.orgA,product)+"/archive",archive(UUID.randomUUID(),0)),403,"ACCESS_DENIED");
-            problem(browser.write("POST",path(f.orgA,product)+"/category-corrections",categoryCorrection(UUID.randomUUID(),0,"BAKERY")),403,"ACCESS_DENIED");
+            problem(browser.write("POST",path(f.orgA,product)+"/classification-evidence/operator-confirmations",categoryConfirmation(UUID.randomUUID(),0,"BAKERY")),403,"ACCESS_DENIED");
         }
         problem(f.ownerB.browser().get(path(f.orgA,product)),404,"RESOURCE_NOT_FOUND");
         problem(owner.get(path(f.orgB,product)),404,"RESOURCE_NOT_FOUND");
@@ -179,25 +179,41 @@ class ProductManagementTest extends InfrastructureTestBase {
     }
 
     @Test
-    void categoryCorrectionUsesExpectedVersionDurableReplayAndImmutableAuditEvidence() throws Exception {
+    void operatorCategoryConfirmationUsesSourceEvidenceVersionedReplayAndImmutableAudit() throws Exception {
         var owner=f.ownerA.browser();
-        var product=create(owner,"CATEGORY-CORRECTION");
+        var product=create(owner,"CATEGORY-CONFIRMATION");
         var request=UUID.randomUUID();
-        var correction=categoryCorrection(request,0,"BAKERY");
-        var saved=owner.write("POST",path(f.orgA,product)+"/category-corrections",correction);
-        assertThat(saved.statusCode()).as(saved.body()).isEqualTo(200);
+        var confirmation=categoryConfirmation(request,0,"BAKERY");
+        var endpoint=path(f.orgA,product)+"/classification-evidence/operator-confirmations";
+        var saved=owner.write("POST",endpoint,confirmation);
+        assertThat(saved.statusCode()).as(saved.body()).isEqualTo(201);
         var expected=tree(saved);
-        assertThat(expected.path("category").asString()).isEqualTo("BAKERY");
-        assertThat(expected.path("version").asLong()).isEqualTo(1);
-        assertThat(tree(owner.write("POST",path(f.orgA,product)+"/category-corrections",correction))).isEqualTo(expected);
-        var changed=categoryCorrection(request,0,"UNCLASSIFIED");
-        problem(owner.write("POST",path(f.orgA,product)+"/category-corrections",changed),409,"CATALOG_CONFLICT");
-        problem(owner.write("POST",path(f.orgA,product)+"/category-corrections",categoryCorrection(UUID.randomUUID(),0,"UNCLASSIFIED")),409,"CATALOG_CONFLICT");
-        problem(owner.write("POST",path(f.orgB,product)+"/category-corrections",categoryCorrection(UUID.randomUUID(),0,"BAKERY")),404,"RESOURCE_NOT_FOUND");
-        assertThat(audits("PRODUCT_CATEGORY_CORRECTED")).isEqualTo(1);
+        assertThat(expected.path("product").path("category").asString()).isEqualTo("BAKERY");
+        assertThat(expected.path("product").path("version").asLong()).isEqualTo(1);
+        assertThat(expected.path("confirmation").path("originalCategory").asString()).isEqualTo("DAIRY");
+        assertThat(expected.path("confirmation").path("confirmedCategory").asString()).isEqualTo("BAKERY");
+        assertThat(expected.path("confirmation").path("productVersion").asLong()).isEqualTo(1);
+        assertThat(expected.path("confirmation").path("evidenceReference").asString()).isEqualTo("package:category-label");
+        assertThat(expected.path("status").asString()).isEqualTo("CURRENT_OPERATOR_CONFIRMED");
+        var confirmationId=UUID.fromString(expected.path("confirmation").path("id").asString());
+        for (var sql:List.of("UPDATE stockrescue.food_safety_product_classification_confirmation SET evidence_reference='rewritten' WHERE org_id=:org AND id=:id",
+                "DELETE FROM stockrescue.food_safety_product_classification_confirmation WHERE org_id=:org AND id=:id"))
+            assertThatThrownBy(() -> jdbc.sql(sql).param("org",f.orgA).param("id",confirmationId).update())
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        var missingSource=new HashMap<String,Object>();missingSource.put("requestId",UUID.randomUUID());missingSource.put("expectedProductVersion",1);
+        missingSource.put("category","DAIRY");missingSource.put("sourceType",null);missingSource.put("evidenceReference",null);
+        missingSource.put("reason","Source reference has not been recorded");
+        problem(owner.write("POST",endpoint,missingSource),422,"INVALID_REQUEST");
+        assertThat(tree(owner.get(path(f.orgA,product))).path("version").asLong()).isEqualTo(1);
+        assertThat(tree(owner.write("POST",endpoint,confirmation))).isEqualTo(expected);
+        var changed=categoryConfirmation(request,0,"UNCLASSIFIED");
+        problem(owner.write("POST",endpoint,changed),409,"CATALOG_CONFLICT");
+        problem(owner.write("POST",endpoint,categoryConfirmation(UUID.randomUUID(),0,"UNCLASSIFIED")),409,"CATALOG_CONFLICT");
+        problem(owner.write("POST",path(f.orgB,product)+"/classification-evidence/operator-confirmations",categoryConfirmation(UUID.randomUUID(),0,"BAKERY")),404,"RESOURCE_NOT_FOUND");
+        assertThat(audits("PRODUCT_CLASSIFICATION_CONFIRMED")).isEqualTo(1);
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:id
-                    AND action='PRODUCT_CATEGORY_CORRECTED' AND reason='Corrected from the package label'
+                    AND action='PRODUCT_CLASSIFICATION_CONFIRMED' AND reason='Confirmed from the package label'
                     AND changes#>>'{before,data,category}'='DAIRY'
                     AND changes#>>'{after,data,category}'='BAKERY'
                     AND changes#>>'{before,version}'='0' AND changes#>>'{after,version}'='1'
@@ -205,7 +221,30 @@ class ProductManagementTest extends InfrastructureTestBase {
         f.member(f.ownerB,f.orgA,"ORG_ADMIN",null);
         jdbc.sql("UPDATE stockrescue.membership SET state='REVOKED',revoked_at=clock_timestamp(),version=version+1 WHERE org_id=:org AND user_id=:actor")
                 .param("org",f.orgA).param("actor",f.ownerA.id).update();
-        problem(owner.write("POST",path(f.orgA,product)+"/category-corrections",categoryCorrection(UUID.randomUUID(),1,"UNCLASSIFIED")),404,"RESOURCE_NOT_FOUND");
+        problem(owner.write("POST",endpoint,categoryConfirmation(UUID.randomUUID(),1,"UNCLASSIFIED")),404,"RESOURCE_NOT_FOUND");
+    }
+
+    @Test
+    void concurrentClassificationEditsAgainstOneProductVersionLeaveOneCurrentConfirmation() throws Exception {
+        var first=f.ownerA.browser();
+        var second=new Browser(f.ownerA);
+        var product=create(first,"CLASSIFICATION-RACE");
+        var endpoint=path(f.orgA,product)+"/classification-evidence/operator-confirmations";
+        var outcomes=concurrent(
+                () -> first.write("POST",endpoint,categoryConfirmation(UUID.randomUUID(),0,"BAKERY")),
+                () -> second.write("POST",endpoint,categoryConfirmation(UUID.randomUUID(),0,"BAKERY")));
+
+        assertThat(outcomes.stream().map(HttpResponse::statusCode).toList()).containsExactlyInAnyOrder(201,409);
+        var conflict=outcomes.stream().filter(response -> response.statusCode()==409).findFirst().orElseThrow();
+        problem(conflict,409,"CATALOG_CONFLICT");
+        var current=tree(first.get(endpoint));
+        assertThat(current.path("product").path("category").asString()).isEqualTo("BAKERY");
+        assertThat(current.path("product").path("version").asLong()).isEqualTo(1);
+        assertThat(current.path("status").asString()).isEqualTo("CURRENT_OPERATOR_CONFIRMED");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.food_safety_product_classification_confirmation WHERE org_id=:org AND product_id=:product")
+                .param("org",f.orgA).param("product",product).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:product AND action='PRODUCT_CLASSIFICATION_CONFIRMED'")
+                .param("org",f.orgA).param("product",product).query(Long.class).single()).isEqualTo(1);
     }
 
     @Test
@@ -315,21 +354,24 @@ class ProductManagementTest extends InfrastructureTestBase {
     }
 
     @Test
-    void categoryCorrectionAuditFailureRollsBackTheProductVersionAndRetryReceipt() throws Exception {
+    void categoryConfirmationAuditFailureRollsBackProductEvidenceAndRetryReceipt() throws Exception {
         var owner=f.ownerA.browser();
         var product=create(owner,"CATEGORY-ROLLBACK");
-        var correction=categoryCorrection(UUID.randomUUID(),0,"BAKERY");
-        doThrow(new IllegalStateException("audit unavailable")).when(audit).securityChange(any(),eq(f.orgA),eq("product"),eq(product),eq("PRODUCT_CATEGORY_CORRECTED"),anyMap(),anyString());
-        problem(owner.write("POST",path(f.orgA,product)+"/category-corrections",correction),500,"INTERNAL_ERROR");
+        var confirmation=categoryConfirmation(UUID.randomUUID(),0,"BAKERY");
+        var endpoint=path(f.orgA,product)+"/classification-evidence/operator-confirmations";
+        doThrow(new IllegalStateException("audit unavailable")).when(audit).securityChange(any(),eq(f.orgA),eq("product"),eq(product),eq("PRODUCT_CLASSIFICATION_CONFIRMED"),anyMap(),anyString());
+        problem(owner.write("POST",endpoint,confirmation),500,"INTERNAL_ERROR");
         assertThat(tree(owner.get(path(f.orgA,product))).path("category").asString()).isEqualTo("DAIRY");
         assertThat(tree(owner.get(path(f.orgA,product))).path("version").asLong()).isZero();
         assertThat(count("product_command")).isEqualTo(1);
-        doCallRealMethod().when(audit).securityChange(any(),eq(f.orgA),eq("product"),eq(product),eq("PRODUCT_CATEGORY_CORRECTED"),anyMap(),anyString());
-        var retried=owner.write("POST",path(f.orgA,product)+"/category-corrections",correction);
-        assertThat(retried.statusCode()).as(retried.body()).isEqualTo(200);
-        assertThat(tree(retried).path("category").asString()).isEqualTo("BAKERY");
+        assertThat(count("food_safety_product_classification_confirmation")).isZero();
+        doCallRealMethod().when(audit).securityChange(any(),eq(f.orgA),eq("product"),eq(product),eq("PRODUCT_CLASSIFICATION_CONFIRMED"),anyMap(),anyString());
+        var retried=owner.write("POST",endpoint,confirmation);
+        assertThat(retried.statusCode()).as(retried.body()).isEqualTo(201);
+        assertThat(tree(retried).path("product").path("category").asString()).isEqualTo("BAKERY");
         assertThat(count("product_command")).isEqualTo(2);
-        assertThat(audits("PRODUCT_CATEGORY_CORRECTED")).isEqualTo(1);
+        assertThat(count("food_safety_product_classification_confirmation")).isEqualTo(1);
+        assertThat(audits("PRODUCT_CLASSIFICATION_CONFIRMED")).isEqualTo(1);
     }
 
     @Test
@@ -446,7 +488,8 @@ class ProductManagementTest extends InfrastructureTestBase {
     private Map<String,Object> body(UUID request,String sku) { return new HashMap<>(Map.of("requestId",request,"sku",sku,"name","Fresh milk","gtin","036000291452","baseUnit","EA","category","DAIRY","temperatureClass","CHILLED")); }
     private Map<String,Object> bodyWithoutGtin(UUID request,String sku) { var body=body(request,sku);body.remove("gtin");return body; }
     private Map<String,Object> archive(UUID request,long version) { return new HashMap<>(Map.of("requestId",request,"expectedVersion",version,"reason","Discontinued product reviewed")); }
-    private Map<String,Object> categoryCorrection(UUID request,long version,String category) { return new HashMap<>(Map.of("requestId",request,"expectedVersion",version,"category",category,"reason","Corrected from the package label")); }
+    private Map<String,Object> categoryConfirmation(UUID request,long version,String category) { return new HashMap<>(Map.of("requestId",request,"expectedProductVersion",version,"category",category,
+            "sourceType","ORIGINAL_PACKAGE","evidenceReference","package:category-label","reason","Confirmed from the package label")); }
     private UUID create(Browser browser,String sku) throws Exception { return create(browser,f.orgA,sku); }
     private UUID create(Browser browser,UUID org,String sku) throws Exception { var result=browser.write("POST",base(org),bodyWithoutGtin(UUID.randomUUID(),sku)); assertThat(result.statusCode()).as(result.body()).isEqualTo(201); return UUID.fromString(tree(result).path("id").asString()); }
     private UUID createWithGtin(Browser browser,UUID org,String sku) throws Exception {

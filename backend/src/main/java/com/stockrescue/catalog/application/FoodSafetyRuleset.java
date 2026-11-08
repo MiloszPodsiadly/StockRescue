@@ -5,27 +5,32 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Objects;
+import com.stockrescue.catalog.application.FoodSafetyEvaluation.Operation;
+import com.stockrescue.catalog.domain.ProductCategory;
+import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-/** Immutable, reviewable identity for the semantics an external policy approval attests. */
+/** Immutable, reviewable identity for the platform's bounded food-safety checks. */
 @Component
 public final class FoodSafetyRuleset {
-    public static final String CURRENT_ID="food-safety-conservative-pilot-v1";
+    public static final String CURRENT_ID="food-safety-bakery-ambient-v1";
     private static final String CURRENT_MANIFEST=String.join("\n",
-            "operations=SALE,TRANSFER",
-            "category=exact-product-category-and-policy-category;UNCLASSIFIED-never-allows",
-            "temperature=exact-product-policy-and-active-storage-zone-class",
-            "dates=only-validated-day-precision-USE_BY-and-BEST_BEFORE-have-cutoffs",
+            "scope=BAKERY/AMBIENT-only;all-other-category-temperature-pairs-require-review",
+            "operations=SALE,TRANSFER-as-assessment-context-only;never-operation-authorization",
+            "category=exact-current-product-category;UNCLASSIFIED-and-unsupported-categories-never-allow",
+            "temperature=AMBIENT-product-and-active-AMBIENT-storage-only",
+            "dates=original-source-attributed-valid-day-precision-USE_BY-or-BEST_BEFORE",
             "date-zone=store-local-calendar-date;DST-from-IANA-zone-rules",
-            "partial-dates=month-and-year-remain-review;never-infer-normalized-cutoff",
-            "lot=manufacturer-identity-confirmed;date-label-and-referenced-provenance-required",
-            "status=recall-and-damage-unknown-require-review;reported-status-needs-reference",
+            "partial-dates=month-and-year-remain-review;never-infer-a-cutoff",
+            "lot=manufacturer-identity-confirmed;original-date-label-and-referenced-provenance-required",
+            "status=recall-and-damage-unknown-require-review;NOT_REPORTED-is-only-what-the-reviewed-evidence-says",
             "blocks=recalled,damaged,archived-lot,product,store,zone,location,expired-date,temperature-mismatch",
-            "storage=active-zone-must-match-product-temperature;non-ambient-cold-chain-evidence-unverified",
-            "classification=independent-product-category-attestation-for-exact-org-product-sku-category-version",
+            "storage=active-AMBIENT-zone-must-match-product-temperature;non-ambient-cold-chain-evidence-unverified",
+            "classification=source-attributed-current-operator-confirmation-or-current-verified-external-evidence",
             "missing-evidence=fail-closed-to-review;hard-blocks-take-precedence",
-            "result=point-in-time-metadata-assessment;never-an-executable-stock-operation-permission");
+            "tenant-policy=never-weakens-or-replaces-this-platform-ruleset",
+            "result=limited-point-in-time-evidence-check;not-certification-or-permission-to-sell-donate-transfer-or-move-stock");
 
     private final String id;
     private final String manifest;
@@ -49,6 +54,11 @@ public final class FoodSafetyRuleset {
     public String manifest() { return manifest; }
     public String digestHex() { return digestHex; }
     public byte[] digest() { return HexFormat.of().parseHex(digestHex); }
+
+    public boolean supports(ProductCategory category,TemperatureClass temperatureClass,Operation operation) {
+        return category==ProductCategory.BAKERY && temperatureClass==TemperatureClass.AMBIENT
+                && (operation==Operation.SALE || operation==Operation.TRANSFER);
+    }
 
     public boolean matches(String signedId,byte[] signedDigest) {
         return Objects.equals(id,signedId) && signedDigest!=null

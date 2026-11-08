@@ -14,7 +14,7 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class ProductRepository {
-    public enum Operation { CREATE, ARCHIVE, RECLASSIFY }
+    public enum Operation { CREATE, ARCHIVE, CONFIRM_CLASSIFICATION }
     public record Receipt(UUID productId, long resultVersion, byte[] digest) { }
     public record GtinMatch(UUID productId,String sku,String name,String gtin,boolean active) { }
     private final JdbcClient jdbc;
@@ -115,7 +115,7 @@ public class ProductRepository {
                 """).param("org",org).param("id",id).param("version",version).query((row,index) -> product(row)).optional();
     }
 
-    public Optional<Product> reclassify(UUID org, UUID id, long version, ProductCategory category) {
+    public Optional<Product> confirmCategory(UUID org, UUID id, long version, ProductCategory category) {
         return jdbc.sql("""
                 UPDATE stockrescue.product SET category=:category,version=version+1
                 WHERE org_id=:org AND id=:id AND version=:version AND active RETURNING *

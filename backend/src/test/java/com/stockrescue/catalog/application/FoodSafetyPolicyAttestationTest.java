@@ -16,8 +16,8 @@ class FoodSafetyPolicyAttestationTest {
     @Test
     void currentRulesetManifestHasAnExplicitVersionedDigest() {
         var ruleset=new FoodSafetyRuleset();
-        assertThat(ruleset.id()).isEqualTo("food-safety-conservative-pilot-v1");
-        assertThat(ruleset.digestHex()).isEqualTo("17e0dcd0f82f7f469e2a76b7d18f5279f8c64c9b0f37456a7550ce764ac6fd97");
+        assertThat(ruleset.id()).isEqualTo("food-safety-bakery-ambient-v1");
+        assertThat(ruleset.digestHex()).isEqualTo("95e5d9260dd9c37f655723b12681e03bae753153399f773a5420676f3e487ad0");
     }
 
     @Test
@@ -56,8 +56,8 @@ class FoodSafetyPolicyAttestationTest {
                 "AMBIENT",
                 "SALE,TRANSFER",
                 "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-                "food-safety-conservative-pilot-v1",
-                "17e0dcd0f82f7f469e2a76b7d18f5279f8c64c9b0f37456a7550ce764ac6fd97",
+                "food-safety-bakery-ambient-v1",
+                "95e5d9260dd9c37f655723b12681e03bae753153399f773a5420676f3e487ad0",
                 "registry-issuer",
                 "ed25519-key",
                 "2026-11-07T12:00:00Z",

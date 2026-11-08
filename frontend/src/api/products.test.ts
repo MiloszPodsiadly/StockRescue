@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { clearCsrf } from './client'
-import { archiveProduct, correctProductCategory, createProduct, isValidGtin, reviewProductGtin } from './products'
+import { archiveProduct, confirmOperatorClassification, createProduct, getOperatorClassificationConfirmation, isValidGtin, reviewProductGtin } from './products'
 
 afterEach(() => { clearCsrf(); vi.unstubAllGlobals() })
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
@@ -32,15 +32,27 @@ it('exposes an archive conflict without another write or a new retry key', async
   expect(await (fetcher.mock.calls[1][0] as Request).json()).toEqual(body)
 })
 
-it('sends a reviewed category correction as one captured command', async () => {
+it('sends a source-bound operator classification command with the expected product version', async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(json({ token: 'csrf' }))
-    .mockResolvedValueOnce(json({ id: 'product', category: 'BAKERY', version: 1 }))
+    .mockResolvedValueOnce(json({ product: { id: 'product', category: 'BAKERY', version: 1 }, confirmation: { evidenceReference: 'package:category-label' }, status: 'CURRENT_OPERATOR_CONFIRMED' }, 201))
   vi.stubGlobal('fetch', fetcher)
-  const body = { requestId: 'category-correction', expectedVersion: 0, category: 'BAKERY', reason: 'Package label reviewed' } as const
-  const result = await correctProductCategory('organization', 'product', body, new AbortController().signal)
-  expect(result.category).toBe('BAKERY')
-  expect((fetcher.mock.calls[1][0] as Request).url).toContain('/products/product/category-corrections')
+  const body = { requestId: 'classification-confirmation', expectedProductVersion: 0, category: 'BAKERY', sourceType: 'ORIGINAL_PACKAGE', evidenceReference: 'package:category-label', reason: 'Package label reviewed' } as const
+  const result = await confirmOperatorClassification('organization', 'product', body, new AbortController().signal)
+  expect(result.product.category).toBe('BAKERY')
+  expect(result.status).toBe('CURRENT_OPERATOR_CONFIRMED')
+  expect((fetcher.mock.calls[1][0] as Request).url).toContain('/products/product/classification-evidence/operator-confirmations')
   expect(await (fetcher.mock.calls[1][0] as Request).json()).toEqual(body)
+})
+
+it('reads the latest operator confirmation and preserves the not-recorded status', async () => {
+  const fetcher = vi.fn().mockResolvedValue(json({ product: { id: 'product', category: 'BAKERY', version: 1 }, confirmation: null, status: 'NOT_RECORDED' }))
+  vi.stubGlobal('fetch', fetcher)
+  const result = await getOperatorClassificationConfirmation('organization', 'product', new AbortController().signal)
+  expect(result.status).toBe('NOT_RECORDED')
+  const request = fetcher.mock.calls[0][0] as Request
+  expect(request.url).toContain('/products/product/classification-evidence/operator-confirmations')
+  expect(request.method).toBe('GET')
+  expect(fetcher).toHaveBeenCalledTimes(1)
 })
 
 it('reviews exact GTINs as text and preserves leading zeroes in the scoped request', async () => {
