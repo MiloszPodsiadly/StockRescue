@@ -7127,6 +7127,10 @@ components:
       properties:
         classification:
           type: string
+          description: "INDEPENDENTLY_VERIFIED means only that a signed product category\
+            \ was verified for its organization, product, SKU and exact revision.\
+            \ It does not verify declared temperature, product profile, source document\
+            \ contents or a physical lot."
           enum:
           - MISSING
           - RECORDED_UNVERIFIED
@@ -8339,6 +8343,10 @@ components:
       - verification
     ProductClassificationEvidenceResponse:
       type: object
+      description: "Cryptographic verification of the signed product category bound\
+        \ to its organization, product, SKU and exact product revision. It does not\
+        \ verify declared storage temperature, product profile, source document contents\
+        \ or a physical lot."
       properties:
         attestationId:
           type:

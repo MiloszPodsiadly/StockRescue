@@ -171,6 +171,7 @@ public class FoodSafetyProductClassificationController {
         }
     }
 
+    @Schema(description="Cryptographic verification of the signed product category bound to its organization, product, SKU and exact product revision. It does not verify declared storage temperature, product profile, source document contents or a physical lot.")
     public record ProductClassificationEvidenceResponse(
             @Schema(types={"string","null"},format="uuid",requiredMode=Schema.RequiredMode.REQUIRED) UUID attestationId,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyProductClassificationVerification.Outcome outcome,

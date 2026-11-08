@@ -214,7 +214,9 @@ public class FoodSafetyController {
     public record EligibilityEvidenceResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) DateEvidenceStatus date,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) StatusEvidenceStatus recall,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) StatusEvidenceStatus damage,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) StorageEvidenceStatus storage,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) PolicyEvidenceStatus policy,
-            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) FoodSafetyEvaluation.ProductClassificationEvidenceStatus classification,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,
+                    description="INDEPENDENTLY_VERIFIED means only that a signed product category was verified for its organization, product, SKU and exact revision. It does not verify declared temperature, product profile, source document contents or a physical lot.")
+            FoodSafetyEvaluation.ProductClassificationEvidenceStatus classification,
             @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) EvidenceProvenanceResponse manufacturerSource,
             @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) EvidenceProvenanceResponse dateLabelSource,
             @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) EvidenceProvenanceResponse safetyStatusSource) { }

@@ -1221,7 +1221,10 @@ export interface components {
             validationStatus: "VALID" | "INCOMPLETE" | "INVALID";
         };
         EligibilityEvidenceResponse: {
-            /** @enum {string} */
+            /**
+             * @description INDEPENDENTLY_VERIFIED means only that a signed product category was verified for its organization, product, SKU and exact revision. It does not verify declared temperature, product profile, source document contents or a physical lot.
+             * @enum {string}
+             */
             classification: "MISSING" | "RECORDED_UNVERIFIED" | "OPERATOR_CONFIRMED" | "INDEPENDENTLY_VERIFIED";
             /** @enum {string} */
             damage: "UNKNOWN" | "NOT_REPORTED_IN_REVIEWED_EVIDENCE" | "BLOCK_RECORDED";
@@ -1635,6 +1638,7 @@ export interface components {
             approvalId: string | null;
             verification: components["schemas"]["ApprovalVerificationResponse"];
         };
+        /** @description Cryptographic verification of the signed product category bound to its organization, product, SKU and exact product revision. It does not verify declared storage temperature, product profile, source document contents or a physical lot. */
         ProductClassificationEvidenceResponse: {
             /** Format: uuid */
             attestationId: string | null;
