@@ -49,7 +49,7 @@ public class FoodSafetyPolicyRepository {
     }
     private FoodSafetyPolicyVersion version(ResultSet row) throws SQLException {
         return new FoodSafetyPolicyVersion(row.getObject("id",UUID.class),row.getObject("profile_id",UUID.class),ProductCategory.valueOf(row.getString("product_category")),TemperatureClass.valueOf(row.getString("temperature_class")),
-                row.getLong("version"),PartialDateRule.valueOf(row.getString("partial_date_rule")),ApprovalStatus.valueOf(row.getString("approval_status")),
+                row.getLong("version"),PartialDateRule.valueOf(row.getString("partial_date_rule")),ReviewStatus.valueOf(row.getString("review_status")),
                 new EvidenceProvenance(row.getString("review_source"),row.getString("review_reference")),row.getObject("recorded_by_membership_id",UUID.class),
                 row.getTimestamp("recorded_at").toInstant(),row.getString("reason"));
     }

@@ -1,15 +1,14 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { FoodSafetyPolicyVersion, PolicyApprovalEvidence } from '@/api/food-safety'
+import type { FoodSafetyPolicyVersion } from '@/api/food-safety'
 import type { Organization } from '@/api/organizations'
 import { OrganizationContext } from '../organizations/organization-context'
 import { TenantScope } from '../organizations/tenant-requests'
 import { PolicyPanel } from './policy-panel'
 
-const api = vi.hoisted(() => ({ list: vi.fn(), approval: vi.fn() }))
+const api = vi.hoisted(() => ({ list: vi.fn() }))
 vi.mock('@/api/food-safety', () => ({
-  getFoodSafetyPolicyApprovalEvidence: api.approval,
   listFoodSafetyPolicyVersions: api.list,
   recordFoodSafetyPolicyReview: vi.fn(),
   recordLotSafetyEvidence: vi.fn(),
@@ -17,16 +16,12 @@ vi.mock('@/api/food-safety', () => ({
 
 const organization: Organization = { id: 'org', name: 'Cooperative', membershipId: 'membership', role: 'ORG_ADMIN', createdAt: '2026-11-01T00:00:00Z' }
 const policy: FoodSafetyPolicyVersion = { id: 'policy-v1', profileId: 'profile', productCategory: 'BAKERY', temperatureClass: 'AMBIENT', version: 1,
-  partialDateRule: 'NO_NORMALIZATION', approvalStatus: 'UNVERIFIED', reviewProvenance: { source: 'Review', reference: 'policy-doc' }, recordedByMembershipId: 'membership',
+  partialDateRule: 'NO_NORMALIZATION', reviewStatus: 'RECORDED_UNVERIFIED', reviewProvenance: { source: 'Review', reference: 'policy-doc' }, recordedByMembershipId: 'membership',
   recordedAt: '2026-11-06T10:00:00Z', reason: 'Initial policy review' }
-const notSubmitted: PolicyApprovalEvidence = { approvalId: null, verification: { outcome: 'NOT_SUBMITTED', policyVersion: 1, policyDigest: '0'.repeat(64), issuerId: null, keyId: null,
-  allowedOperations: [], issuedAt: null, validFrom: null, validUntil: null, evidenceReference: null, recordedAt: null, revoked: false, revokedAt: null, revokedByMembershipId: null, revocationReason: null,
-  attestationVersion: null, signedRulesetId: null, signedRulesetDigest: null, activeRulesetId: 'food-safety-bakery-ambient-dry-packaged-v2', activeRulesetDigest: '1'.repeat(64) } }
 
 beforeEach(() => {
   vi.resetAllMocks()
   api.list.mockResolvedValue({ current: policy, items: [policy], hasMore: false })
-  api.approval.mockResolvedValue(notSubmitted)
 })
 afterEach(cleanup)
 
@@ -37,24 +32,9 @@ function panel() {
   </OrganizationContext></TenantScope></QueryClientProvider>)
 }
 
-it('labels evidence as independently verified only when the backend verification outcome is verified', async () => {
+it('shows policy reviews as source-attributed history that does not approve operations', async () => {
   panel()
-  expect(await screen.findByText('No signed approval evidence is recorded for this policy version.')).toBeVisible()
-  expect(screen.queryByText(/Cryptographic approval evidence is verified/)).not.toBeInTheDocument()
-
-  cleanup()
-  api.approval.mockResolvedValueOnce({ approvalId: 'approval', verification: { ...notSubmitted.verification, outcome: 'VERIFIED', issuerId: 'test-issuer', keyId: 'test-key',
-    allowedOperations: ['SALE'], issuedAt: '2026-11-06T10:00:00Z', validFrom: '2026-11-06T10:00:00Z', validUntil: '2026-11-07T10:00:00Z', evidenceReference: 'external-case:1', recordedAt: '2026-11-06T10:01:00Z' } })
-  panel()
-  expect(await screen.findByText(/Cryptographic approval evidence is verified for this exact policy version/)).toBeVisible()
-  expect(screen.getByText('test-issuer')).toBeVisible()
-})
-
-it('explains a ruleset mismatch as blocking approval evidence', async () => {
-  api.approval.mockResolvedValueOnce({ approvalId: 'approval', verification: { ...notSubmitted.verification, outcome: 'RULESET_MISMATCH',
-    attestationVersion: 2, signedRulesetId: 'food-safety-conservative-pilot-v0', signedRulesetDigest: '0'.repeat(64) } })
-  panel()
-  expect(await screen.findByText(/This signature verifies for a different evaluator ruleset/)).toBeVisible()
-  expect(screen.getByText('food-safety-conservative-pilot-v0')).toBeVisible()
-  expect(screen.getByText(/food-safety-bakery-ambient-dry-packaged-v2/)).toBeVisible()
+  expect(await screen.findByText('recorded unverified')).toBeVisible()
+  expect(screen.getByText(/They do not change the built-in rules or approve stock operations/)).toBeVisible()
+  expect(screen.getByText(/policy-doc/)).toBeVisible()
 })

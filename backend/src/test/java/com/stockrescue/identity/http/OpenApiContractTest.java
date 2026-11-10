@@ -64,16 +64,13 @@ class OpenApiContractTest extends InfrastructureTestBase {
         var policyInput=schemas.path("RecordFoodSafetyPolicyReviewRequest").path("properties");
         assertThat(policyInput.has("approvalStatus")).isFalse();
         assertThat(policyInput.has("allowExpiredUseBy")).isFalse();
-        assertThat(schemas.path("FoodSafetyPolicyVersionResponse").path("properties").path("approvalStatus").path("enum").toString()).isEqualTo("[\"UNVERIFIED\"]");
-        var signedApproval=schemas.path("SubmitPolicyApprovalEvidenceRequest");
-        for (var field:java.util.List.of("rulesetId","rulesetDigest")) {
-            assertThat(signedApproval.path("properties").has(field)).isTrue();
-            assertThat(signedApproval.path("required")).anyMatch(value -> value.asString().equals(field));
-        }
-        var approvalVerification=schemas.path("ApprovalVerificationResponse");
-        for (var field:java.util.List.of("attestationVersion","signedRulesetId","signedRulesetDigest","activeRulesetId","activeRulesetDigest"))
-            assertThat(approvalVerification.path("properties").has(field)).isTrue();
-        assertThat(approvalVerification.path("properties").path("outcome").path("enum").toString()).contains("LEGACY_ATTESTATION","RULESET_MISMATCH");
+        assertThat(schemas.path("FoodSafetyPolicyVersionResponse").path("properties").path("reviewStatus").path("enum").toString())
+                .isEqualTo("[\"RECORDED_UNVERIFIED\"]");
+        var policyVersionPath=policyPath+"/{policyVersionId}";
+        var approvalEvidencePath=policyVersionPath+"/approval-evidence";
+        assertThat(document.path("paths").has(approvalEvidencePath)).isFalse();
+        assertThat(schemas.has("SubmitPolicyApprovalEvidenceRequest")).isFalse();
+        assertThat(schemas.has("ApprovalVerificationResponse")).isFalse();
         assertThat(document.path("paths").path(correctionPath).path("post").path("operationId").asString()).isEqualTo("correctLotMetadata");
         assertThat(document.path("paths").path(correctionPath).path("get").path("operationId").asString()).isEqualTo("listLotCorrections");
         for (var field:java.util.List.of("requestId","expectedVersion","reason","evidenceReviewed"))
@@ -114,8 +111,7 @@ class OpenApiContractTest extends InfrastructureTestBase {
         assertThat(schemas.path("ProductResponse").path("properties").path("category").path("enum").toString()).isEqualTo("[\"UNCLASSIFIED\",\"DAIRY\",\"BAKERY\"]");
         assertThat(schemas.path("CreateProductRequest").path("required")).anyMatch(value -> value.asString().equals("category"));
         var classificationPath=productPath+"/{productId}/classification-evidence";
-        assertThat(document.path("paths").path(classificationPath).path("get").path("operationId").asString()).isEqualTo("getProductClassificationEvidence");
-        assertThat(document.path("paths").path(classificationPath).path("post").path("operationId").asString()).isEqualTo("submitProductClassificationEvidence");
+        assertThat(document.path("paths").has(classificationPath)).isFalse();
         var operatorConfirmationPath=classificationPath+"/operator-confirmations";
         assertThat(document.path("paths").path(operatorConfirmationPath).path("get").path("operationId").asString())
                 .isEqualTo("getOperatorProductClassificationConfirmation");
@@ -128,16 +124,16 @@ class OpenApiContractTest extends InfrastructureTestBase {
             assertThat(operatorConfirmationRequest.path("required")).anyMatch(value -> value.asString().equals(field));
         }
         assertThat(schemas.path("OperatorClassificationConfirmationResponse").path("description").asString())
-                .contains("not independent");
-        assertThat(document.path("paths").path(classificationPath+"/{attestationId}/revocation").path("post").path("operationId").asString())
-                .isEqualTo("revokeProductClassificationEvidence");
-        var classificationRequest=schemas.path("SubmitProductClassificationEvidenceRequest");
-        for (var field:java.util.List.of("requestId","expectedProductVersion","issuerId","keyId","issuedAt","validFrom","validUntil","evidenceReference","signatureBase64")) {
-            assertThat(classificationRequest.path("properties").has(field)).isTrue();
-            assertThat(classificationRequest.path("required")).anyMatch(value -> value.asString().equals(field));
-        }
-        assertThat(schemas.path("ProductClassificationEvidenceResponse").path("properties").has("signature")).isFalse();
-        assertThat(schemas.path("EligibilityResponse").path("properties").has("classificationVerification")).isTrue();
+                .contains("not independently verified");
+        assertThat(document.path("paths").has(classificationPath+"/{attestationId}/revocation")).isFalse();
+        assertThat(schemas.has("SubmitProductClassificationEvidenceRequest")).isFalse();
+        assertThat(schemas.has("ProductClassificationEvidenceResponse")).isFalse();
+        var eligibilityProperties=schemas.path("EligibilityResponse").path("properties");
+        assertThat(eligibilityProperties.has("classificationVerification")).isFalse();
+        assertThat(eligibilityProperties.has("approvalVerification")).isFalse();
+        assertThat(eligibilityProperties.path("assessmentBasis").path("enum").toString()).isEqualTo("[\"PLATFORM_RULESET\"]");
+        assertThat(eligibilityProperties.has("productSku")).isTrue();
+        assertThat(schemas.path("EligibilityResponse").path("required")).anyMatch(value -> value.asString().equals("productSku"));
         for (var field:java.util.List.of("productCategory","productTemperatureClass")) {
             assertThat(schemas.path("EligibilityResponse").path("properties").has(field)).isTrue();
             assertThat(schemas.path("EligibilityResponse").path("required")).anyMatch(value -> value.asString().equals(field));

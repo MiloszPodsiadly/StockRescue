@@ -29,17 +29,9 @@ public final class FoodSafetyEvaluator {
         public Context(ManufacturerLot lot,Product product,Store store,Zone zone,FoodSafetyPolicyVersion policy) { this(lot,product,store,zone,policy,null); }
     }
     public FoodSafetyEvaluation evaluate(Context context,Operation operation,Instant evaluatedAt) {
-        return evaluate(context,operation,evaluatedAt,null,null,null);
-    }
-    public FoodSafetyEvaluation evaluate(Context context,Operation operation,Instant evaluatedAt,FoodSafetyPolicyApprovalVerification approvalVerification) {
-        return evaluate(context,operation,evaluatedAt,approvalVerification,null,null);
+        return evaluate(context,operation,evaluatedAt,null);
     }
     public FoodSafetyEvaluation evaluate(Context context,Operation operation,Instant evaluatedAt,
-            FoodSafetyPolicyApprovalVerification approvalVerification,FoodSafetyProductClassificationVerification classificationVerification) {
-        return evaluate(context,operation,evaluatedAt,approvalVerification,classificationVerification,null);
-    }
-    public FoodSafetyEvaluation evaluate(Context context,Operation operation,Instant evaluatedAt,
-            FoodSafetyPolicyApprovalVerification approvalVerification,FoodSafetyProductClassificationVerification classificationVerification,
             FoodSafetyProductClassificationConfirmation operatorClassificationConfirmation) {
         Objects.requireNonNull(operation);Objects.requireNonNull(evaluatedAt);
         var lot=context.lot(); var product=context.product(); var store=context.store(); var zone=context.zone();
@@ -57,17 +49,14 @@ public final class FoodSafetyEvaluator {
         var sourceType=operatorClassificationConfirmation==null?null:operatorClassificationConfirmation.sourceType();
         if (!RULESET.supports(product.data().category(),product.data().temperatureClass(),profile,sourceType,operation))
             reasons.add(ReasonCode.PLATFORM_RULESET_SCOPE_UNSUPPORTED);
-        boolean externalClassificationVerified=classificationVerification!=null && classificationVerification.authorizes(product);
         var operatorClassificationStatus=operatorClassificationConfirmation==null
                 ?FoodSafetyProductClassificationConfirmation.Status.NOT_RECORDED
                 :operatorClassificationConfirmation.statusFor(product);
         boolean operatorClassificationConfirmed=operatorClassificationStatus
                 ==FoodSafetyProductClassificationConfirmation.Status.CURRENT_OPERATOR_CONFIRMED;
-        // Signed classification evidence binds the category only. The current source-backed operator record
-        // is still required to bind declared temperature and the narrow product profile to this exact revision.
         boolean classificationEstablished=operatorClassificationConfirmed;
         if (!classificationEstablished) {
-            if (operatorClassificationConfirmation==null) reasons.add(classificationReason(classificationVerification));
+            if (operatorClassificationConfirmation==null) reasons.add(ReasonCode.PRODUCT_CLASSIFICATION_MISSING);
             else if (operatorClassificationConfirmation.statusFor(product)==FoodSafetyProductClassificationConfirmation.Status.STALE)
                 reasons.add(ReasonCode.PRODUCT_CLASSIFICATION_OPERATOR_CONFIRMATION_STALE);
             else reasons.add(ReasonCode.PRODUCT_CLASSIFICATION_MISSING);
@@ -101,38 +90,19 @@ public final class FoodSafetyEvaluator {
                     :allowed?NextAction.NO_ADDITIONAL_ACTION:NextAction.REVIEW_LOT_EVIDENCE;
         var assessmentBasis=AssessmentBasis.PLATFORM_RULESET;
         return new FoodSafetyEvaluation(denied?Decision.DENIED:allowed?Decision.ALLOWED:Decision.REQUIRES_REVIEW,reasons.stream().toList(),operation,lot.id(),lot.version(),
-                product.id(),product.version(),store.id(),store.version(),zone==null?null:zone.id(),zone==null?null:zone.version(),
+                product.id(),product.data().sku().value(),product.version(),store.id(),store.version(),zone==null?null:zone.id(),zone==null?null:zone.version(),
                 context.location()==null?null:context.location().id(),context.location()==null?null:context.location().version(),
                 product.data().category(),product.data().temperatureClass(),
-                policy==null?null:new PolicyReference(policy.id(),policy.profileId(),policy.productCategory(),policy.version()),approvalVerification,classificationVerification,
+                policy==null?null:new PolicyReference(policy.id(),policy.profileId(),policy.productCategory(),policy.version()),
                 operatorClassificationConfirmation,
                 operatorClassificationStatus,
                 evaluatedAt,localDate,store.data().zoneId(),new EvidenceAssessment(date,recall(lot.recallState()),damage(lot.damageState()),storage,
-                        policy==null?PolicyEvidenceStatus.PLATFORM_RULESET:approvalVerification!=null && approvalVerification.authorizes(operation)
-                                ?PolicyEvidenceStatus.INDEPENDENTLY_VERIFIED:PolicyEvidenceStatus.RECORDED_UNVERIFIED,
+                        policy==null?PolicyEvidenceStatus.PLATFORM_RULESET:PolicyEvidenceStatus.RECORDED_UNVERIFIED,
                         operatorClassificationConfirmed?ProductClassificationEvidenceStatus.OPERATOR_CONFIRMED
-                                :externalClassificationVerified?ProductClassificationEvidenceStatus.INDEPENDENTLY_VERIFIED
-                                :operatorClassificationConfirmation==null
-                                        && (classificationVerification==null || classificationVerification.outcome()==FoodSafetyProductClassificationVerification.Outcome.NOT_SUBMITTED)
-                                    ?ProductClassificationEvidenceStatus.MISSING:ProductClassificationEvidenceStatus.RECORDED_UNVERIFIED,
+                                :operatorClassificationConfirmation==null?ProductClassificationEvidenceStatus.MISSING
+                                        :ProductClassificationEvidenceStatus.RECORDED_UNVERIFIED,
                         lot.data().manufacturerProvenance(),lot.data().dateMarking().provenance().orElse(null),lot.statusProvenance()),next,VERSION,
                 assessmentBasis,RULESET.id(),RULESET.digestHex(),allowed?FoodSafetyEvaluation.ALLOWED_NOTICE:null);
-    }
-    private ReasonCode classificationReason(FoodSafetyProductClassificationVerification verification) {
-        if (verification==null) return ReasonCode.PRODUCT_CLASSIFICATION_MISSING;
-        return switch (verification.outcome()) {
-            case NOT_SUBMITTED -> ReasonCode.PRODUCT_CLASSIFICATION_MISSING;
-            case TRUST_REGISTRY_DISABLED -> ReasonCode.PRODUCT_CLASSIFICATION_TRUST_DISABLED;
-            case TRUSTED_ISSUER_UNKNOWN -> ReasonCode.PRODUCT_CLASSIFICATION_ISSUER_UNTRUSTED;
-            case TRUSTED_KEY_DISABLED -> ReasonCode.PRODUCT_CLASSIFICATION_KEY_DISABLED;
-            case SIGNATURE_INVALID -> ReasonCode.PRODUCT_CLASSIFICATION_SIGNATURE_INVALID;
-            case NOT_YET_VALID -> ReasonCode.PRODUCT_CLASSIFICATION_NOT_YET_VALID;
-            case EXPIRED -> ReasonCode.PRODUCT_CLASSIFICATION_EXPIRED;
-            case REVOKED -> ReasonCode.PRODUCT_CLASSIFICATION_REVOKED;
-            case PRODUCT_SCOPE_MISMATCH -> ReasonCode.PRODUCT_CLASSIFICATION_SCOPE_MISMATCH;
-            // A valid category signature does not establish the separately required declared temperature and profile.
-            case VERIFIED -> ReasonCode.PRODUCT_CLASSIFICATION_MISSING;
-        };
     }
     private DateEvidenceStatus assessDate(DateMarking marking,LocalDate localDate,EnumSet<ReasonCode> reasons) {
         var assessment=DateLabelAssessment.assess(marking);

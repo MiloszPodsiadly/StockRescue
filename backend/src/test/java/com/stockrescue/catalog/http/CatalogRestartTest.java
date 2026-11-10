@@ -6,21 +6,12 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.Signature;
 import java.sql.DriverManager;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
-import java.util.Base64;
 import java.util.Map;
 import java.util.UUID;
 import com.stockrescue.StockRescueApplication;
-import com.stockrescue.catalog.application.FoodSafetyApprovalProperties;
-import com.stockrescue.catalog.application.FoodSafetyProductClassificationAttestation;
-import com.stockrescue.catalog.domain.ProductCategory;
-import com.stockrescue.catalog.persistence.ProductRepository;
 import com.github.dockerjava.api.model.ExposedPort;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.builder.SpringApplicationBuilder;
@@ -51,7 +42,7 @@ class CatalogRestartTest {
             var actor=UUID.randomUUID(); var org=UUID.randomUUID(); var membership=UUID.randomUUID();
             var email=actor+"@example.test"; var password="product-restart-test-passphrase";
             var request=UUID.randomUUID();
-            var body=Map.of("requestId",request,"sku","PERSISTED","name","Persisted product","gtin","036000291452","baseUnit","EA","category","DAIRY","temperatureClass","AMBIENT");
+            var body=Map.of("requestId",request,"sku","PERSISTED","name","Persisted product","gtin","036000291452","baseUnit","EA","category","BAKERY","temperatureClass","AMBIENT");
             UUID product;
             UUID lot;
             var store=UUID.randomUUID(); var zone=UUID.randomUUID();
@@ -60,9 +51,8 @@ class CatalogRestartTest {
             JsonNode correctionResult;
             Map<String,Object> policyRequest;
             JsonNode policyResult;
-            Map<String,Object> classificationRequest;
-            JsonNode classificationResult;
-            KeyPair classificationSigner;
+            Map<String,Object> classificationConfirmationRequest;
+            JsonNode classificationConfirmationResult;
             Map<String,Object> safetyEvidenceRequest;
             JsonNode safetyEvidenceResult;
             UUID location;
@@ -85,24 +75,14 @@ class CatalogRestartTest {
                 var created=write(base(org),body);
                 assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
                 product=UUID.fromString(tree(created).path("id").asString());
-                classificationSigner=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
-                trustClassificationIssuer(application,classificationSigner);
-                var productRecord=application.getBean(ProductRepository.class).detail(org,product,false).orElseThrow();
-                var issuedAt=Instant.now().truncatedTo(ChronoUnit.MICROS).minusSeconds(5);
-                var validUntil=issuedAt.plus(Duration.ofDays(1));
-                var evidenceReference="external-case:product-classification-restart";
-                var canonical=FoodSafetyProductClassificationAttestation.canonicalPayload(org,productRecord,ProductCategory.DAIRY,
-                        "restart-issuer","restart-key",issuedAt,issuedAt,validUntil,evidenceReference);
-                var classificationSignature=Signature.getInstance("Ed25519");
-                classificationSignature.initSign(classificationSigner.getPrivate());classificationSignature.update(canonical);
-                classificationRequest=Map.of("requestId",UUID.randomUUID(),"expectedProductVersion",productRecord.version(),
-                        "issuerId","restart-issuer","keyId","restart-key","issuedAt",issuedAt,"validFrom",issuedAt,
-                        "validUntil",validUntil,"evidenceReference",evidenceReference,
-                        "signatureBase64",Base64.getEncoder().encodeToString(classificationSignature.sign()));
-                var classification=write(classification(org,product),classificationRequest);
+                classificationConfirmationRequest=Map.of("requestId",UUID.randomUUID(),"expectedProductVersion",0,
+                        "category","BAKERY","temperatureClass","AMBIENT","productProfile","PACKAGED_SHELF_STABLE_DRY_BAKERY",
+                        "sourceType","ORIGINAL_PACKAGE","evidenceReference","package:product-label",
+                        "reason","Reviewed the source label for category, temperature and storage profile");
+                var classification=write(classificationConfirmations(org,product),classificationConfirmationRequest);
                 assertThat(classification.statusCode()).as(classification.body()).isEqualTo(201);
-                classificationResult=tree(classification);
-                assertThat(classificationResult.path("outcome").asString()).isEqualTo("VERIFIED");
+                classificationConfirmationResult=tree(classification);
+                assertThat(classificationConfirmationResult.path("status").asString()).isEqualTo("CURRENT_OPERATOR_CONFIRMED");
                 lotRequest=Map.of("requestId",UUID.randomUUID(),"productId",product,"lotCode","PERSISTED-LOT",
                         "identityState","CONFIRMED","manufacturerIdentityKey","registry:maker-a","manufacturerVerified",true,
                         "manufacturerProvenance",Map.of("source","Reviewed manufacturer registry","reference","registry-17"),
@@ -147,7 +127,6 @@ class CatalogRestartTest {
                 } catch (java.sql.SQLException unavailable) { throw new AssertionError("PostgreSQL reconnect failed: "+unavailable.getSQLState(),unavailable); }
             });
             try (var application=application(restartedUrl)) {
-                trustClassificationIssuer(application,classificationSigner);
                 port=((WebServerApplicationContext)application).getWebServer().getPort();
                 assertThat(get("/api/v1/auth/me").statusCode()).isEqualTo(200);
                 var detail=get(base(org)+"/"+product);
@@ -157,11 +136,12 @@ class CatalogRestartTest {
                 var retry=write(base(org),body);
                 assertThat(retry.statusCode()).as(retry.body()).isEqualTo(200);
                 assertThat(tree(retry)).isEqualTo(tree(detail));
-                var classificationAfterRestart=get(classification(org,product));
+                var classificationAfterRestart=get(classificationConfirmations(org,product));
                 assertThat(classificationAfterRestart.statusCode()).as(classificationAfterRestart.body()).isEqualTo(200);
-                assertThat(tree(classificationAfterRestart).path("outcome").asString()).isEqualTo("VERIFIED");
-                assertThat(tree(classificationAfterRestart).path("attestationId")).isEqualTo(classificationResult.path("attestationId"));
-                assertThat(classificationAfterRestart.body()).doesNotContain("signature","publicKey","privateKey");
+                assertThat(tree(classificationAfterRestart).path("status").asString()).isEqualTo("CURRENT_OPERATOR_CONFIRMED");
+                assertThat(tree(classificationAfterRestart).path("confirmation").path("id"))
+                        .isEqualTo(classificationConfirmationResult.path("confirmation").path("id"));
+                assertThat(tree(classificationAfterRestart).path("confirmation").path("sku").asString()).isEqualTo("PERSISTED");
                 var registered=get(lots(org)+"/"+lot);
                 assertThat(registered.statusCode()).as(registered.body()).isEqualTo(200);
                 assertThat(tree(registered).path("dateMarking").path("labeledValue").asString()).isEqualTo(" 2027-05 ");
@@ -190,7 +170,9 @@ class CatalogRestartTest {
                 var evaluated=tree(get(lots(org)+"/"+lot+"/eligibility?operation=SALE&storeId="+store+"&locationId="+location));
                 assertThat(evaluated.path("decision").asString()).isEqualTo("DENIED");
                 assertThat(evaluated.path("reasonCodes").get(0).asString()).isEqualTo("LOT_RECALLED");
-                assertThat(evaluated.path("classificationVerification").path("outcome").asString()).isEqualTo("VERIFIED");
+                assertThat(evaluated.path("productSku").asString()).isEqualTo("PERSISTED");
+                assertThat(evaluated.path("operatorClassificationStatus").asString()).isEqualTo("CURRENT_OPERATOR_CONFIRMED");
+                assertThat(evaluated.path("assessmentBasis").asString()).isEqualTo("PLATFORM_RULESET");
                 assertThat(evaluated.path("policy").path("id")).isEqualTo(policyResult.path("id"));
                 assertThat(evaluated.path("locationId").asString()).isEqualTo(location.toString());
                 assertThat(evaluated.path("zoneId").asString()).isEqualTo(zone.toString());
@@ -201,14 +183,14 @@ class CatalogRestartTest {
                 assertThat(tree(lotReplay)).isEqualTo(tree(registered));
                 assertThat(write(sources(org,lot),sourceRequest).statusCode()).isEqualTo(200);
                 assertThat(tree(get(sources(org,lot))).path("items")).hasSize(2);
-                var archive=Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"reason","Reviewed discontinuation after restart");
+                var archive=Map.of("requestId",UUID.randomUUID(),"expectedVersion",1,"reason","Reviewed discontinuation after restart");
                 var archived=write(base(org)+"/"+product+"/archive",archive);
                 assertThat(archived.statusCode()).as(archived.body()).isEqualTo(200);
                 assertThat(tree(archived).path("active").asBoolean()).isFalse();
                 assertThat(tree(write(base(org)+"/"+product+"/archive",archive))).isEqualTo(tree(archived));
                 var jdbc=application.getBean(JdbcClient.class);
-                assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.product_command WHERE org_id=:org").param("org",org).query(Long.class).single()).isEqualTo(2);
-                assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:id").param("org",org).param("id",product).query(Long.class).single()).isEqualTo(2);
+                assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.product_command WHERE org_id=:org").param("org",org).query(Long.class).single()).isEqualTo(3);
+                assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:id").param("org",org).param("id",product).query(Long.class).single()).isEqualTo(3);
                 assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lot_registration WHERE org_id=:org").param("org",org).query(Long.class).single()).isEqualTo(1);
                 assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.consignment_registration WHERE org_id=:org").param("org",org).query(Long.class).single()).isEqualTo(2);
                 assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.lot_correction WHERE org_id=:org").param("org",org).query(Long.class).single()).isEqualTo(2);
@@ -220,12 +202,6 @@ class CatalogRestartTest {
         }
     }
 
-    private void trustClassificationIssuer(ConfigurableApplicationContext application,KeyPair signer) {
-        var issuer=new FoodSafetyApprovalProperties.TrustedIssuer();issuer.setIssuerId("restart-issuer");
-        issuer.setPublicKeyX509(Base64.getEncoder().encodeToString(signer.getPublic().getEncoded()));issuer.setEnabled(true);
-        var properties=application.getBean(FoodSafetyApprovalProperties.class);
-        properties.setEnabled(true);properties.setTrustedIssuers(Map.of("restart-key",issuer));
-    }
     private ConfigurableApplicationContext application(String databaseUrl) {
         return new SpringApplicationBuilder(StockRescueApplication.class).profiles("local").run(
                 "--server.port=0","--spring.datasource.url="+databaseUrl,
@@ -236,8 +212,8 @@ class CatalogRestartTest {
     private String base(UUID org) { return "/api/v1/organizations/"+org+"/products"; }
     private String lots(UUID org) { return "/api/v1/organizations/"+org+"/lots"; }
     private String sources(UUID org,UUID lot) { return lots(org)+"/"+lot+"/source-evidence"; }
-    private String policies(UUID org) { return "/api/v1/organizations/"+org+"/food-safety-profiles/DAIRY/AMBIENT/versions"; }
-    private String classification(UUID org,UUID product) { return base(org)+"/"+product+"/classification-evidence"; }
+    private String policies(UUID org) { return "/api/v1/organizations/"+org+"/food-safety-profiles/BAKERY/AMBIENT/versions"; }
+    private String classificationConfirmations(UUID org,UUID product) { return base(org)+"/"+product+"/classification-evidence/operator-confirmations"; }
     private String locations(UUID org,UUID store) { return "/api/v1/organizations/"+org+"/stores/"+store+"/storage-locations"; }
     private JsonNode tree(HttpResponse<String> response) { return json.readTree(response.body()); }
     private HttpResponse<String> get(String path) throws Exception { return send("GET",path,null,null); }

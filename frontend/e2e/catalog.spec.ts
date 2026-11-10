@@ -134,7 +134,7 @@ test('owner preserves original labels and independent sources, reviews safety ev
     const eligible = await (await owner.context.request.get(`${base}/lots/${lotId}/eligibility?storeId=${store.id}&locationId=${location.id}&operation=SALE`)).json() as components['schemas']['EligibilityResponse']
     expect(eligible.decision).toBe('ALLOWED')
     expect(eligible.reasonCodes).toEqual([])
-    expect(eligible.rulesetId).toBe('food-safety-bakery-ambient-dry-packaged-v2')
+    expect(eligible.rulesetId).toBe('food-safety-bakery-ambient-dry-packaged-v3')
     expect(eligible.assessmentNotice).toBe('Passed the limited StockRescue checks on the available evidence at this time. This point-in-time assessment does not authorize sale, donation, transfer or stock movement.')
     expect(eligible.evidence.classification).toBe('OPERATOR_CONFIRMED')
 

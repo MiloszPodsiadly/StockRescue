@@ -4,7 +4,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
-import java.util.Objects;
 import com.stockrescue.catalog.application.FoodSafetyEvaluation.Operation;
 import com.stockrescue.catalog.domain.ProductCategory;
 import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
@@ -14,7 +13,7 @@ import org.springframework.stereotype.Component;
 /** Immutable, reviewable identity for the platform's bounded food-safety checks. */
 @Component
 public final class FoodSafetyRuleset {
-    public static final String CURRENT_ID="food-safety-bakery-ambient-dry-packaged-v2";
+    public static final String CURRENT_ID="food-safety-bakery-ambient-dry-packaged-v3";
     private static final String CURRENT_MANIFEST=String.join("\n",
             "scope=BAKERY/AMBIENT/PACKAGED_SHELF_STABLE_DRY_BAKERY-only;all-other-category-temperature-profile-pairs-require-review",
             "profile=operator-confirms-sealed-packaged-shelf-stable-dry-bakery-from-original-package-or-supplier-document;uncertain-or-perishable-products-require-review",
@@ -28,9 +27,9 @@ public final class FoodSafetyRuleset {
             "status=recall-and-damage-unknown-require-review;NOT_REPORTED-is-only-what-the-reviewed-evidence-says",
             "blocks=recalled,damaged,archived-lot,product,store,zone,location,expired-date,temperature-mismatch",
             "storage=active-AMBIENT-zone-must-match-product-temperature;non-ambient-cold-chain-evidence-unverified",
-            "classification=source-attributed-current-operator-confirmation-of-category-temperature-profile-required;external-signatures-are-optional-category-evidence",
+            "classification=source-attributed-current-operator-confirmation-of-category-temperature-profile-required",
             "missing-evidence=fail-closed-to-review;hard-blocks-take-precedence",
-            "tenant-policy=never-weakens-or-replaces-this-platform-ruleset",
+            "tenant-policy=historical-review-only;never-approves-or-weakens-or-replaces-this-platform-ruleset",
             "result=limited-point-in-time-evidence-check;not-certification-or-permission-to-sell-donate-transfer-or-move-stock");
 
     private final String id;
@@ -64,11 +63,6 @@ public final class FoodSafetyRuleset {
                 && (sourceType==FoodSafetyProductClassificationConfirmation.SourceType.ORIGINAL_PACKAGE
                     || sourceType==FoodSafetyProductClassificationConfirmation.SourceType.SUPPLIER_DOCUMENT)
                 && (operation==Operation.SALE || operation==Operation.TRANSFER);
-    }
-
-    public boolean matches(String signedId,byte[] signedDigest) {
-        return Objects.equals(id,signedId) && signedDigest!=null
-                && MessageDigest.isEqual(digest(),signedDigest);
     }
 
     private static String digest(String manifest) {

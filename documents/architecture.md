@@ -106,12 +106,10 @@ reviewed evidence. Increased date precision requires an actual label and source
 reference. Corrections clear prior normalization so subsequent evaluation uses
 the revised evidence.
 
-Food-safety assessment combines distinct evidence: immutable platform rules,
-operator-entered observations, optional externally signed evidence, and any
-future public-source suggestions. An operator statement is attributed and
-auditable but never independently verified. A public match is only a suggestion;
-no matching alert does not establish absence of a recall. Missing or unavailable
-evidence stays unknown.
+Food-safety assessment combines immutable platform rules with operator-entered,
+source-attributed observations. These records are auditable but do not independently
+verify source contents. A public match is only a suggestion; no matching alert does
+not establish absence of a recall. Missing or unavailable evidence stays unknown.
 
 The local pilot is limited to sealed, packaged, shelf-stable dry bakery products
 whose original package or supplier document supports BAKERY, AMBIENT and that
@@ -132,12 +130,10 @@ decision and returns ordered reasons, evidence status, input versions, the activ
 ruleset identity and a next action. The platform selects rules only by an exact
 supported category, temperature and assessment operation; tenant policy records
 are supplementary evidence and never select a fallback or replace those rules.
-Platform rules are immutable and cannot be weakened by tenant policy. Hard denials
-take precedence over optional Ed25519 evidence. External signatures remain
-separately verifiable and revocable; trust registry configuration never gates the
-local baseline. Signature verification proves the key, not the issuer's
-professional qualifications. Declared zone compatibility describes configuration
-rather than continuous cold-chain verification.
+Platform rules are immutable and cannot be weakened by tenant policy. Tenant policy
+reviews preserve source-attributed history but do not approve stock operations,
+change these rules or select a fallback. Declared zone compatibility describes
+configuration rather than continuous cold-chain verification.
 
 Future `ProductReferenceProvider` and `SafetyAlertProvider` adapters remain
 optional, source-linked suggestions fetched outside the evaluator. Open Food Facts
@@ -152,7 +148,7 @@ evidence.
 | --- | --- | --- |
 | Source-confirmed packaged shelf-stable dry BAKERY / AMBIENT scope, complete attributed evidence, no known block | ALLOWED | Limited platform checks passed for this snapshot; no operation is authorized. |
 | Unknown, incomplete, stale or unsupported evidence/scope | REQUIRES_REVIEW | Resolve the named evidence gaps; do not infer safety. |
-| Known recall, damage, expiry, archive or incompatible storage | DENIED | A hard block remains even when optional signed evidence exists. |
+| Known recall, damage, expiry, archive or incompatible storage | DENIED | A hard block remains in every assessment. |
 
 Storage locations belong to one store and retain their code and zone identity.
 Administrators and assigned Store Managers configure names and archival; current
@@ -308,11 +304,11 @@ reuses its request identifier and reviewed values; confirmed changes refresh the
 saved result without a second write. Lot pages preserve original date labels and
 show source observations separately from manufacturer identity. Safety assessments
 show their evidence, reasons, policy version and store-local assessment date.
-Policy approvals bind the signed policy version to an immutable evaluator ruleset.
-Separate product-classification evidence binds organization, product, SKU, category
-and product revision; each assessment rechecks both signatures against deployment
-trust and current scope. Historical policy signatures without ruleset identity stay
-visible but cannot authorize an assessment.
+Policy reviews retain their source reference, author and history. Each remains an
+unverified review record and cannot approve stock operations or change the platform
+ruleset. Product category, declared temperature and profile are confirmed together
+by an operator for the exact product revision; assessments recheck the product ID,
+SKU, category, temperature and revision before using that confirmation.
 
 Business HTTP routes use `/api/v1`; service health uses `/api/health`. Backend
 models generate `contracts/http/openapi.yaml`, which generates the frontend's

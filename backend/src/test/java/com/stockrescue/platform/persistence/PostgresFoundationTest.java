@@ -70,7 +70,24 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertPublicSchemaContainsOnlyFlywayHistory(connection);
             var tables = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'stockrescue'");
             assertThat(tables.next()).isTrue();
-            assertThat(tables.getInt(1)).isEqualTo(36);
+            assertThat(tables.getInt(1)).isEqualTo(32);
+            var signedTables=statement.executeQuery("""
+                    SELECT table_name FROM information_schema.tables WHERE table_schema='stockrescue'
+                        AND table_name IN ('food_safety_policy_approval','food_safety_policy_approval_revocation',
+                            'food_safety_product_classification','food_safety_product_classification_revocation')
+                    """);
+            var signedTableNames=new ArrayList<String>();
+            while (signedTables.next()) signedTableNames.add(signedTables.getString(1));
+            assertThat(signedTableNames).isEmpty();
+            var retainedTables=statement.executeQuery("""
+                    SELECT table_name FROM information_schema.tables WHERE table_schema='stockrescue'
+                        AND table_name IN ('food_safety_policy_version','food_safety_product_classification_confirmation',
+                            'product_command','lot_correction','storage_location')
+                    """);
+            var retainedTableNames=new ArrayList<String>();
+            while (retainedTables.next()) retainedTableNames.add(retainedTables.getString(1));
+            assertThat(retainedTableNames).containsExactlyInAnyOrder("food_safety_policy_version","food_safety_product_classification_confirmation",
+                    "product_command","lot_correction","storage_location");
             var auditTimeDefault = statement.executeQuery("""
                     SELECT pg_get_expr(d.adbin,d.adrelid)
                     FROM pg_attrdef d
