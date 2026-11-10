@@ -45,12 +45,118 @@ JDBC repositories together:
 | `organizations` | Organization creation and the creator's durable onboarding result. |
 | `access` | Memberships, invitations, store assignments, revocation and authorization policy. |
 | `stores` | Store metadata, storage zones, directed transport lanes and cost revisions. |
+| `catalog` | Organization products, manufacturer lot registration and scoped source evidence. |
 | `platform` | HTTP/security adapters, sessions, transactions, correlation and audit persistence. |
 
 Controllers validate and translate requests. Application services own command
 transactions and delegate SQL to repositories. Organization creation calls the
 access use case to establish initial ownership in the same transaction. Store
 commands obtain authorization through the shared access policy.
+
+## Catalog identity decisions
+
+Product identity is organization-scoped with a stable UUID and canonical SKU.
+SKU input trims ASCII spaces, accepts up to 64 ASCII letters, digits, `.`, `_`,
+`/` and `-`, and uppercases letters with `Locale.ROOT`; non-ASCII identifiers
+are rejected rather than Unicode-normalized. GTIN remains text, preserving
+leading zeroes, and its 8, 12, 13 or 14 digits include a validated check digit.
+The initial unit is `EA`.
+
+Duplicate GTINs remain separate product identities. Creation previews active and
+archived organization matches and requires explicit operator confirmation against
+the complete match-set revision; a per-organization/GTIN transaction lock rejects
+stale reviews. The revision guards freshness and does not grant authorization.
+
+Active organization members can read catalog metadata through `READ_CATALOG`;
+Org Admins manage it through `MANAGE_CATALOG`. Product creation and archival use
+actor/organization/operation-scoped request identifiers and canonical payload
+digests. Product, recorded outcome and audit commit atomically. An unchanged
+retry returns the recorded product identity with its current state after checking
+current access. Archival retains the UUID and reserved SKU.
+
+Manufacturer lot codes alone are not globally unique. Lot identity remains
+organization/product-scoped; unverified manufacturer evidence cannot merge
+candidates. Each source or consignment observation has its own identity and does
+not represent received quantity or physical custody. Store associations describe
+metadata only.
+
+Confirmed lot identity requires an exact manufacturer reference, explicit review
+and recorded evidence; the server records the confirming membership and time.
+Store Managers and Inventory Operators register source observations for assigned
+active stores. Administrators can also register organization-level sources.
+Source reads filter documents by current grants and active stores; administrators
+retain organization-wide history. Trace pages state their visibility scope and
+describe recorded evidence rather than exact per-unit origin. Unknown supplier
+details remain null.
+
+Date markings retain the original label, type, precision and available source.
+Partial or unknown dates do not receive an inferred cutoff. A normalized cutoff
+is separate evidence tied to an explicit policy version and normalization rule.
+Label parsing recognizes explicit ISO day, month and year formats and reports
+VALID, INCOMPLETE or INVALID evidence while retaining the original text.
+
+Administrators correct lot metadata against an expected version after reviewing
+replacement evidence and providing a reason. Each correction preserves exact
+before/after rows, the acting membership and server time alongside its durable
+request result. Metadata, immutable history and audit commit together. Replays
+return the recorded correction with the current lot state; conflicting edits
+require another review. Stable lot and source identities survive corrections.
+Known manufacturer identity is protected; candidate confirmation requires explicit
+reviewed evidence. Increased date precision requires an actual label and source
+reference. Corrections clear prior normalization so subsequent evaluation uses
+the revised evidence.
+
+Food-safety assessment combines immutable platform rules with operator-entered,
+source-attributed observations. These records are auditable but do not independently
+verify source contents. A public match is only a suggestion; no matching alert does
+not establish absence of a recall. Missing or unavailable evidence stays unknown.
+
+The local pilot is limited to sealed, packaged, shelf-stable dry bakery products
+whose original package or supplier document supports BAKERY, AMBIENT and that
+specific profile. Perishable, cream-filled, refrigeration-dependent or uncertain
+products remain under review. A positive assessment also requires a confirmed
+manufacturer lot, a complete original day-precision label with source reference,
+referenced recall and damage observations, and active compatible storage context.
+The source-backed category, declared temperature and product profile are
+recorded together against a new product version. The result is a point-in-time
+check of recorded evidence, not certification or permission to sell, donate,
+transfer or move stock. `NOT_REPORTED` means only that no issue was reported in
+the evidence reviewed. Missing evidence remains under review; known recalled,
+damaged, expired or archived records and incompatible storage are denied.
+
+Eligibility uses an injected clock, the store's time zone and a coherent snapshot
+of lot, product, store, zone and policy versions. Each request recomputes the
+decision and returns ordered reasons, evidence status, input versions, the active
+ruleset identity and a next action. The platform selects rules only by an exact
+supported category, temperature and assessment operation; tenant policy records
+are supplementary evidence and never select a fallback or replace those rules.
+Platform rules are immutable and cannot be weakened by tenant policy. Tenant policy
+reviews preserve source-attributed history but do not approve stock operations,
+change these rules or select a fallback. Declared zone compatibility describes
+configuration rather than continuous cold-chain verification.
+
+Future `ProductReferenceProvider` and `SafetyAlertProvider` adapters remain
+optional, source-linked suggestions fetched outside the evaluator. Open Food Facts
+requires license, attribution and quota review; RASFF and GIS matches cannot prove
+that a lot is not recalled, and a stable GIS feed must be established first; GS1
+identity checks require acceptable commercial terms. Persist source identity,
+fetch/publication times, raw-data hash, freshness and match explanation. The
+current assessment stays offline and never promotes an external match to verified
+evidence.
+
+| Evidence state | Assessment | Meaning |
+| --- | --- | --- |
+| Source-confirmed packaged shelf-stable dry BAKERY / AMBIENT scope, complete attributed evidence, no known block | ALLOWED | Limited platform checks passed for this snapshot; no operation is authorized. |
+| Unknown, incomplete, stale or unsupported evidence/scope | REQUIRES_REVIEW | Resolve the named evidence gaps; do not infer safety. |
+| Known recall, damage, expiry, archive or incompatible storage | DENIED | A hard block remains in every assessment. |
+
+Storage locations belong to one store and retain their code and zone identity.
+Administrators and assigned Store Managers configure names and archival; current
+store grants control reads. Active locations prevent zone archival through a
+PostgreSQL foreign key to the active zone identity and appear in its impact
+preview. Store archival retains location history while making its configuration
+unusable. Eligibility resolves the selected location's zone and rejects archived
+locations or inactive parents.
 
 ## Accounts and sessions
 
@@ -85,8 +191,8 @@ Memberships and store assignments have independent scopes:
 | Role | Authority |
 | --- | --- |
 | Org Admin | Manage the organization's members, invitations, stores, zones, lanes and costs; inspect archived store history. |
-| Store Manager | Read assigned active stores and edit their metadata and storage zones. |
-| Inventory Operator | Read assigned active stores and their configuration. |
+| Store Manager | Read assigned active stores, edit their metadata and storage zones, and register source evidence. |
+| Inventory Operator | Read assigned active stores and their configuration, and register source evidence. |
 | Read-only Analyst | Read assigned active stores and their configuration. |
 
 Every protected operation resolves the current account, active organization
@@ -182,7 +288,8 @@ business records.
 ## Workspace and HTTP contracts
 
 The shared workspace connects account details, organization selection, stores,
-storage zones, member access, lanes, cost history and settings. Store and member
+storage zones and locations, catalog products, lot evidence, food-safety reviews,
+member access, lanes, cost history and settings. Store and member
 responses provide allowed operations for the interface; commands validate current
 authority when submitted.
 
@@ -191,6 +298,17 @@ Switching organizations closes the previous feature boundary, cancels requests
 and clears its private cache. Role changes replace that boundary. Session expiry
 closes private views, and cross-tab login/logout signals trigger session
 revalidation. Focus and periodic reads refresh current authority.
+
+Catalog forms preserve one captured command after an uncertain response. Recovery
+reuses its request identifier and reviewed values; confirmed changes refresh their
+saved result without a second write. Lot pages preserve original date labels and
+show source observations separately from manufacturer identity. Safety assessments
+show their evidence, reasons, policy version and store-local assessment date.
+Policy reviews retain their source reference, author and history. Each remains an
+unverified review record and cannot approve stock operations or change the platform
+ruleset. Product category, declared temperature and profile are confirmed together
+by an operator for the exact product revision; assessments recheck the product ID,
+SKU, category, temperature and revision before using that confirmation.
 
 Business HTTP routes use `/api/v1`; service health uses `/api/health`. Backend
 models generate `contracts/http/openapi.yaml`, which generates the frontend's

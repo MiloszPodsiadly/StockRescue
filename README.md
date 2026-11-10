@@ -62,15 +62,6 @@ Your account reference is available on the account page for invitation review.
 
 ## Project status
 
-SR-001 provides the runnable technical foundation: migrations, service health,
-Java-to-Python communication, an explicit Kafka producer/consumer smoke check,
-and a responsive web shell showing real backend readiness. Account registration,
-sign-in/sign-out, persisted sessions, CSRF protection, organization onboarding and
-membership-validated organization selection, reviewed invitations and audited
-access management, store creation/editing/deactivation, storage zones and
-transport lanes with immutable cost revisions are implemented.
-Inventory, transfers and forecasting are still being built.
-
 See the [architecture notes](documents/architecture.md) for service boundaries
 and [contributor instructions](CONTRIBUTING.md) for development checks.
 

@@ -97,13 +97,16 @@ class StoreManagementTest extends InfrastructureTestBase {
     void storeManagersEditOnlyAssignedMetadataAndReadRolesCannotMutate() throws Exception {
         var manager = f.manager.browser();
         var assigned = tree(manager.get(path(f.orgA, f.a1)));
-        assertThat(assigned.path("allowedActions").toString()).contains("EDIT_STORE").doesNotContain("ARCHIVE_STORE");
+        assertThat(assigned.path("allowedActions").toString()).contains("EDIT_STORE","REGISTER_STORE_LOT").doesNotContain("ARCHIVE_STORE");
+        assertThat(tree(manager.get(base(f.orgA))).path("canRegisterCandidateLots").asBoolean()).isTrue();
         var changed = manager.write("PATCH", path(f.orgA, f.a1), update(0, "Renamed North", "Europe/Berlin"));
         assertThat(changed.statusCode()).as(changed.body()).isEqualTo(200);
         assertThat(tree(changed).path("code").asString()).isEqualTo("NORTH");
         assertThat(tree(changed).path("version").asLong()).isEqualTo(1);
         for (var user : List.of(f.operator, f.analyst)) {
-            assertThat(tree(user.browser().get(path(f.orgA, f.a1))).path("allowedActions").toString()).isEqualTo("[\"READ_STORE\"]");
+            assertThat(tree(user.browser().get(base(f.orgA))).path("canRegisterCandidateLots").asBoolean()).isFalse();
+            assertThat(tree(user.browser().get(path(f.orgA, f.a1))).path("allowedActions").toString())
+                    .isEqualTo(user==f.operator?"[\"READ_STORE\",\"REGISTER_SOURCE_EVIDENCE\"]":"[\"READ_STORE\"]");
             problem(user.browser().write("PATCH", path(f.orgA, f.a1), update(1, "Forbidden", "UTC")), 403, "ACCESS_DENIED");
             problem(user.browser().write("POST", path(f.orgA, f.a1) + "/archive", version(1)), 403, "ACCESS_DENIED");
         }
@@ -127,6 +130,7 @@ class StoreManagementTest extends InfrastructureTestBase {
         assertThat(page.path("items")).hasSize(1);
         assertThat(page.path("hasMore").asBoolean()).isTrue();
         assertThat(page.path("canCreate").asBoolean()).isTrue();
+        assertThat(page.path("canRegisterCandidateLots").asBoolean()).isTrue();
         var manager = tree(f.manager.browser().get(base(f.orgA) + "?limit=1&state=ALL&organizationId=" + f.orgB + "&actorId=" + f.ownerB.id));
         assertThat(manager.path("items")).hasSize(1);
         assertThat(manager.path("hasMore").asBoolean()).isFalse();

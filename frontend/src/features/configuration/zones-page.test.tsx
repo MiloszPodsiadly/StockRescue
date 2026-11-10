@@ -26,7 +26,7 @@ const zone: Zone = {
   createdAt: '2026-10-31T12:00:00Z', updatedAt: '2026-10-31T12:00:00Z',
 }
 const preview: ZoneArchiveImpact = {
-  activeLaneCount: 2, inactiveLaneCount: 1, futureScheduledRevisionCount: 3, zoneVersion: 4,
+  activeLaneCount: 2, inactiveLaneCount: 1, futureScheduledRevisionCount: 3, activeLocationCount: 0, zoneVersion: 4,
   impactFingerprint: 'A'.repeat(43), asOf: '2026-10-31T12:00:00Z',
 }
 
@@ -95,4 +95,19 @@ it('requires another confirmation after PostgreSQL reports that the preview impa
   await user.click(screen.getByRole('button', { name: 'Confirm zone deactivation' }))
   await waitFor(() => expect(api.archiveZone).toHaveBeenCalledTimes(2))
   expect(api.archiveZone).toHaveBeenLastCalledWith('org', 'store', zone, 'Reviewed route impact and carrier plans', refreshedPreview, expect.any(AbortSignal))
+})
+
+it('explains active locations and prevents confirmation until they are archived', async () => {
+  api.getZoneArchiveImpact.mockResolvedValue({ ...preview, activeLocationCount: 2 })
+  const user = renderZones()
+  await screen.findByRole('heading', { name: 'Ambient' })
+  await user.click(screen.getByRole('button', { name: 'Edit Ambient' }))
+  await user.type(screen.getByLabelText('Reason for deactivation'), 'Reviewed location configuration')
+  await user.click(screen.getByRole('button', { name: 'Review impact before deactivation' }))
+  const impact = await screen.findByRole('region', { name: 'Zone archive impact' })
+  expect(impact).toHaveTextContent(/Active storage locations\s*2/)
+  expect(screen.getByRole('alert')).toHaveTextContent('Archive active storage locations before deactivating this zone.')
+  await user.click(screen.getByLabelText('I reviewed this impact and confirm permanent deactivation.'))
+  expect(screen.getByRole('button', { name: 'Confirm zone deactivation' })).toBeDisabled()
+  expect(api.archiveZone).not.toHaveBeenCalled()
 })

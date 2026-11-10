@@ -49,7 +49,9 @@ public class StoreService {
         var permissions = access.permissions(actor, org);
         var rows = stores.list(org, permissions.organization().membershipId(), permissions.allStoreActions().contains(StoreAction.READ_STORE), state.name(), search.strip(), offset, limit + 1);
         return new Page(rows.stream().limit(limit).map(store -> view(permissions, store)).toList(), rows.size() > limit,
-                permissions.organizationActions().contains(OrganizationAction.CREATE_STORE));
+                permissions.organizationActions().contains(OrganizationAction.CREATE_STORE),
+                permissions.organizationActions().contains(OrganizationAction.MANAGE_CATALOG)
+                        || permissions.storeGrants().stream().anyMatch(grant -> grant.actions().contains(StoreAction.REGISTER_STORE_LOT)));
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -91,5 +93,5 @@ public class StoreService {
     private void conflict() { throw new StoreFailure(StoreFailure.Kind.CONFLICT); }
     public record View(Store store, List<StoreAction> allowedActions) { }
     public record Creation(View view, boolean created) { }
-    public record Page(List<View> items, boolean hasMore, boolean canCreate) { }
+    public record Page(List<View> items, boolean hasMore, boolean canCreate, boolean canRegisterCandidateLots) { }
 }

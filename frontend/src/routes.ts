@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from '@tanstack/react-router'
 import { RootLayout } from './root-layout'
 import { MissingPage, RouteFailure } from './components/route-failure'
 import { App } from './App'
@@ -25,5 +25,9 @@ const zones = createRoute({ getParentRoute: () => root, path: '/organizations/$o
 const lanes = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/transport-lanes', component: LanesPage })
 const lane = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/transport-lanes/$laneId', component: LanePage })
 const settings = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/settings', component: SettingsPage })
+const catalog = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/catalog', component: lazyRouteComponent(() => import('./features/catalog/catalog-page'), 'CatalogPage') })
+const product = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/catalog/products/$productId', component: lazyRouteComponent(() => import('./features/catalog/catalog-page'), 'ProductPage') })
+const lot = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/catalog/lots/$lotId', component: lazyRouteComponent(() => import('./features/catalog/lot-page'), 'LotPage') })
+const locations = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/stores/$storeId/storage-locations', component: lazyRouteComponent(() => import('./features/catalog/locations-panel'), 'LocationsPage') })
 
-export const router = createRouter({ routeTree: root.addChildren([home, signIn, signUp, account, members, acceptInvitation, stores, store, zones, lanes, lane, settings]) })
+export const router = createRouter({ routeTree: root.addChildren([home, signIn, signUp, account, members, acceptInvitation, stores, store, zones, lanes, lane, settings, catalog, product, lot, locations]) })

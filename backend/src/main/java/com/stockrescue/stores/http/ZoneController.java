@@ -59,7 +59,7 @@ public class ZoneController {
         return ZoneResponse.from(zones.rename(actor(actor),organizationId,storeId,zoneId,request.name(),request.version(),request.reason()));
     }
     @GetMapping("/{zoneId}/archive-impact")
-    @Operation(operationId="previewStorageZoneArchiveImpact",summary="Preview scoped active-lane and future-schedule counts before irreversible zone archival")
+    @Operation(operationId="previewStorageZoneArchiveImpact",summary="Preview scoped lanes, future schedules and active locations before irreversible zone archival")
     @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=ZoneArchiveImpactResponse.class)))
     public ZoneArchiveImpactResponse archiveImpact(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID storeId,@PathVariable UUID zoneId) {
         return ZoneArchiveImpactResponse.from(zones.archiveImpact(actor(actor),organizationId,storeId,zoneId));
@@ -82,10 +82,11 @@ public class ZoneController {
     public record ZoneArchiveImpactResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) int activeLaneCount,
                                             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) int inactiveLaneCount,
                                             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) int futureScheduledRevisionCount,
+                                            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) int activeLocationCount,
                                             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long zoneVersion,
                                             @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Opaque scoped snapshot; send unchanged when confirming archival.") String impactFingerprint,
                                             @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="PostgreSQL wall-clock instant used to count future active revisions.") Instant asOf) {
-        static ZoneArchiveImpactResponse from(ZoneArchiveImpact impact) { return new ZoneArchiveImpactResponse(impact.activeLaneCount(),impact.inactiveLaneCount(),impact.futureScheduledRevisionCount(),impact.zoneVersion(),impact.impactFingerprint(),impact.asOf()); }
+        static ZoneArchiveImpactResponse from(ZoneArchiveImpact impact) { return new ZoneArchiveImpactResponse(impact.activeLaneCount(),impact.inactiveLaneCount(),impact.futureScheduledRevisionCount(),impact.activeLocationCount(),impact.zoneVersion(),impact.impactFingerprint(),impact.asOf()); }
     }
     public record ZoneResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,
                                 @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String name,
