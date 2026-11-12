@@ -53,11 +53,19 @@ tasks.processResources {
         include("*.schema.json")
         into("contracts")
     }
+    from("../contracts") {
+        include("events/**/*.schema.json")
+        into("contracts")
+    }
 }
 
 tasks.processTestResources {
     from("../contracts/fixtures") {
         into("contracts/fixtures")
+    }
+    from("../contracts/events") {
+        include("**/fixtures/*.json")
+        into("contracts/events")
     }
 }
 

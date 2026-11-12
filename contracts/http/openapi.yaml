@@ -4045,6 +4045,1878 @@ paths:
         \ or history"
       tags:
       - store-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/available-by-lot:
+    get:
+      operationId: listInventoryAvailableByLot
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: productId
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: lotId
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: locationId
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvailableByLotPageResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Read availability by lot and storage position; unknown quantities stay
+        null
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/commands/{operation}/{requestId}:
+    get:
+      operationId: getInventoryCommandOutcome
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: operation
+        required: true
+        schema:
+          type: string
+          enum:
+          - RECEIVE
+          - RESERVE
+          - RELEASE
+          - ADJUST
+          - WRITE_OFF
+          - QUARANTINE
+          - HOLD
+          - RELEASE_HOLD
+          - SALE
+          - VERIFY_ZERO
+          - RECONCILE
+          - REMEDIATE
+      - in: path
+        name: requestId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Recover an actor-scoped committed result after an uncertain response
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions:
+    get:
+      operationId: listInventoryPositions
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: productId
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: lotId
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: locationId
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockPageResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Read a bounded store-scoped page of recorded inventory positions
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}:
+    get:
+      operationId: getInventorySnapshot
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockSnapshotResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Read an authoritative versioned PostgreSQL stock position
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/adjustments:
+    post:
+      operationId: adjustInventoryStock
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockCommandRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Record a reasoned version-aware stock adjustment
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/allocations:
+    get:
+      operationId: listInventoryAllocations
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllocationPageResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Read current reservation and hold status for one position
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/holds:
+    post:
+      operationId: holdInventoryStock
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockCommandRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Move available stock into an other-blocked allocation
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/holds/{allocationId}/release:
+    post:
+      operationId: releaseInventoryHold
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: allocationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockCommandRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Release a blocked allocation after current eligibility review
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/movements:
+    get:
+      operationId: listInventoryMovements
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: afterVersion
+        required: false
+        schema:
+          type: integer
+          format: int64
+          default: 0
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MovementPageResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Read bounded immutable movement history after a position version
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/quarantines:
+    post:
+      operationId: quarantineInventoryStock
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockCommandRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Move available stock into a quarantine allocation
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/reservations:
+    post:
+      operationId: reserveInventoryStock
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockCommandRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Reserve available stock against an expected position version
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/reservations/{allocationId}/release:
+    post:
+      operationId: releaseInventoryReservation
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: allocationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockCommandRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Release an owned or manager-authorized reservation
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/sales:
+    post:
+      operationId: recordInventorySale
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockCommandRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Record a manual sale after server-side eligibility checks
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/write-offs:
+    post:
+      operationId: writeOffInventoryStock
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WriteOffRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Write off available or explicitly allocated blocked stock
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/receipts:
+    post:
+      operationId: receiveInventoryGoods
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReceiptRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Commit physical receipt and retry result in PostgreSQL
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/reconciliations:
+    get:
+      operationId: listInventoryReconciliations
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReconciliationPageResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Read bounded immutable reconciliation history
+      tags:
+      - inventory-controller
+    post:
+      operationId: reconcileInventory
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReconciliationResponse"
+          description: Created
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Reconstruct store stock from immutable inventory evidence
+      tags:
+      - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/reconciliations/{runId}/findings:
+    get:
+      operationId: listInventoryReconciliationFindings
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: runId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FindingPageResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Read bounded findings for one authorized reconciliation run
+      tags:
+      - inventory-controller
+  ? /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/reconciliations/{runId}/positions/{positionId}/projection-repair
+  : post:
+      operationId: repairInventoryProjection
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: runId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: positionId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectionRepairRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryCommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid inventory command or page
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Organization, store or inventory record unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale position, insufficient stock, changed retry, duplicate\
+            \ receipt or frozen stock"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid request values or current lot evidence do not permit
+            the requested operation
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Request failed
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Inventory dependency temporarily unavailable
+      security:
+      - session: []
+      summary: Rebuild a frozen position only from validated immutable ledger and
+        allocation evidence
+      tags:
+      - inventory-controller
   /api/v1/organizations/{organizationId}/stores/{storeId}/storage-locations:
     get:
       operationId: listStorageLocations
@@ -5753,6 +7625,56 @@ components:
           pattern: "[A-Za-z0-9_-]{43}"
       required:
       - token
+    AllocationPageResponse:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationResponse"
+      required:
+      - hasMore
+      - items
+    AllocationResponse:
+      type: object
+      properties:
+        bucket:
+          type: string
+          enum:
+          - RESERVED
+          - QUARANTINED
+          - OTHER_BLOCKED
+        id:
+          type: string
+          format: uuid
+        ownedByCurrentUser:
+          type: boolean
+        positionId:
+          type: string
+          format: uuid
+        remaining:
+          type: integer
+          format: int64
+        state:
+          type: string
+          enum:
+          - ACTIVE
+          - RELEASED
+          - WRITTEN_OFF
+          - CONSUMED
+        version:
+          type: integer
+          format: int64
+      required:
+      - bucket
+      - id
+      - ownedByCurrentUser
+      - positionId
+      - remaining
+      - state
+      - version
     ApiProblem:
       type: object
       properties:
@@ -5762,6 +7684,7 @@ components:
           - ACCESS_DENIED
           - ACCESS_CONFLICT
           - ACCESS_RATE_LIMITED
+          - ALLOCATION_UNAVAILABLE
           - AUTH_RATE_LIMITED
           - AUTH_REQUIRED
           - CSRF_INVALID
@@ -5771,15 +7694,23 @@ components:
           - CONFIGURATION_CONFLICT
           - CONFIGURATION_INACTIVE
           - INCOMPATIBLE_ZONES
+          - IDEMPOTENCY_CONFLICT
+          - INSUFFICIENT_STOCK
           - INTERNAL_ERROR
           - INVALID_CORRELATION_ID
           - INVALID_CREDENTIALS
           - INVALID_REQUEST
           - INVITATION_UNAVAILABLE
+          - INVENTORY_CONFLICT
+          - INVENTORY_FROZEN
+          - INVENTORY_INACTIVE
+          - INVENTORY_NOT_INITIALIZED
+          - LOT_NOT_ELIGIBLE
           - NO_FUTURE_REVISIONS
           - ONBOARDING_CONFLICT
           - ORGANIZATION_REQUIRED
           - REQUEST_TOO_LARGE
+          - RECEIPT_ALREADY_RECORDED
           - RESOURCE_NOT_FOUND
           - SERVICE_UNAVAILABLE
           - SCHEDULED_REVISIONS_PENDING
@@ -5915,6 +7846,72 @@ components:
       - impactFingerprint
       - reason
       - version
+    AvailableByLotPageResponse:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AvailableByLotResponse"
+        observedAt:
+          type: string
+          format: date-time
+      required:
+      - hasMore
+      - items
+      - observedAt
+    AvailableByLotResponse:
+      type: object
+      properties:
+        available:
+          type:
+          - integer
+          - "null"
+          format: int64
+        initialization:
+          type: string
+          enum:
+          - NOT_INITIALIZED
+          - INITIALIZED
+        locationId:
+          type: string
+          format: uuid
+        lotId:
+          type: string
+          format: uuid
+        observedAt:
+          type: string
+          format: date-time
+        positionId:
+          type: string
+          format: uuid
+        positionVersion:
+          type: integer
+          format: int64
+        productId:
+          type: string
+          format: uuid
+        trust:
+          type: string
+          enum:
+          - UNVERIFIED
+          - CLEAN
+          - FROZEN
+        unit:
+          type: string
+      required:
+      - available
+      - initialization
+      - locationId
+      - lotId
+      - observedAt
+      - positionId
+      - positionVersion
+      - productId
+      - trust
+      - unit
     CancelScheduledRevisionsRequest:
       type: object
       properties:
@@ -6703,6 +8700,46 @@ components:
       required:
       - reference
       - source
+    FindingPageResponse:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FindingResponse"
+      required:
+      - hasMore
+      - items
+    FindingResponse:
+      type: object
+      properties:
+        code:
+          type: string
+        expected:
+          type:
+          - string
+          - "null"
+        observed:
+          type:
+          - string
+          - "null"
+        positionId:
+          type: string
+          format: uuid
+        positionVersion:
+          type: integer
+          format: int64
+        severity:
+          type: string
+      required:
+      - code
+      - expected
+      - observed
+      - positionId
+      - positionVersion
+      - severity
     FoodSafetyPolicyHistoryResponse:
       type: object
       properties:
@@ -6896,6 +8933,54 @@ components:
       - matchSetRevision
       - matches
       - offset
+    InventoryCommandResponse:
+      type: object
+      properties:
+        allocationId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        available:
+          type: integer
+          format: int64
+        movementId:
+          type: string
+          format: uuid
+        onHand:
+          type: integer
+          format: int64
+        otherBlocked:
+          type: integer
+          format: int64
+        positionId:
+          type: string
+          format: uuid
+        positionVersion:
+          type: integer
+          format: int64
+        quarantined:
+          type: integer
+          format: int64
+        receiptId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        reserved:
+          type: integer
+          format: int64
+      required:
+      - allocationId
+      - available
+      - movementId
+      - onHand
+      - otherBlocked
+      - positionId
+      - positionVersion
+      - quarantined
+      - receiptId
+      - reserved
     InvitationClaimResponse:
       type: object
       properties:
@@ -7356,6 +9441,72 @@ components:
       - state
       - userId
       - version
+    MovementPageResponse:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MovementResponse"
+      required:
+      - hasMore
+      - items
+    MovementResponse:
+      type: object
+      properties:
+        deltaOnHand:
+          type: integer
+          format: int64
+        deltaOtherBlocked:
+          type: integer
+          format: int64
+        deltaQuarantined:
+          type: integer
+          format: int64
+        deltaReserved:
+          type: integer
+          format: int64
+        evidenceReference:
+          type: string
+        id:
+          type: string
+          format: uuid
+        operation:
+          type: string
+          enum:
+          - RECEIVE
+          - RESERVE
+          - RELEASE
+          - ADJUST
+          - WRITE_OFF
+          - QUARANTINE
+          - HOLD
+          - RELEASE_HOLD
+          - SALE
+          - VERIFY_ZERO
+          - RECONCILE
+          - REMEDIATE
+        positionVersion:
+          type: integer
+          format: int64
+        reason:
+          type: string
+        recordedAt:
+          type: string
+          format: date-time
+      required:
+      - deltaOnHand
+      - deltaOtherBlocked
+      - deltaQuarantined
+      - deltaReserved
+      - evidenceReference
+      - id
+      - operation
+      - positionVersion
+      - reason
+      - recordedAt
     OnboardingRequest:
       type: object
       properties:
@@ -7548,6 +9699,17 @@ components:
             - REGISTER_SOURCE_EVIDENCE
             - MANAGE_STORAGE_LOCATIONS
             - REGISTER_STORE_LOT
+            - READ_INVENTORY
+            - RECEIVE_STOCK
+            - RESERVE_STOCK
+            - RELEASE_RESERVATION
+            - ADJUST_STOCK
+            - WRITE_OFF_STOCK
+            - QUARANTINE_STOCK
+            - RECORD_SALE
+            - MANAGE_INVENTORY_ALLOCATIONS
+            - RECONCILE_INVENTORY
+            - REMEDIATE_INVENTORY
         organization:
           $ref: "#/components/schemas/OrganizationResponse"
         organizationActions:
@@ -7690,6 +9852,142 @@ components:
       - temperatureClass
       - updatedAt
       - version
+    ProjectionRepairRequest:
+      type: object
+      properties:
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - evidenceReference
+      - expectedVersion
+      - reason
+      - requestId
+    ReceiptRequest:
+      type: object
+      properties:
+        documentLineReference:
+          type: string
+          maxLength: 64
+          minLength: 0
+        documentReference:
+          type: string
+          maxLength: 200
+          minLength: 0
+        documentType:
+          type: string
+          maxLength: 32
+          minLength: 0
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        locationId:
+          type: string
+          format: uuid
+        lotId:
+          type: string
+          format: uuid
+        physicallyReceivedAt:
+          type: string
+          format: date-time
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          format: int64
+          exclusiveMinimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        supplierKey:
+          type: string
+          maxLength: 200
+          minLength: 0
+      required:
+      - documentLineReference
+      - documentReference
+      - documentType
+      - evidenceReference
+      - expectedVersion
+      - locationId
+      - lotId
+      - physicallyReceivedAt
+      - productId
+      - quantity
+      - reason
+      - requestId
+      - supplierKey
+    ReconciliationPageResponse:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReconciliationResponse"
+      required:
+      - hasMore
+      - items
+    ReconciliationResponse:
+      type: object
+      properties:
+        checkedPositions:
+          type: integer
+          format: int32
+        completedAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        severity:
+          type: string
+          enum:
+          - CLEAN
+          - WARN
+          - CRITICAL
+        startedAt:
+          type: string
+          format: date-time
+        storeId:
+          type: string
+          format: uuid
+      required:
+      - checkedPositions
+      - completedAt
+      - id
+      - organizationId
+      - severity
+      - startedAt
+      - storeId
     RecordFoodSafetyPolicyReviewRequest:
       type: object
       properties:
@@ -8147,6 +10445,124 @@ components:
       - items
       - lotId
       - visibilityScope
+    StockCommandRequest:
+      type: object
+      properties:
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        quantity:
+          type: integer
+          format: int64
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - evidenceReference
+      - expectedVersion
+      - quantity
+      - reason
+      - requestId
+    StockPageResponse:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StockSnapshotResponse"
+        observedAt:
+          type: string
+          format: date-time
+      required:
+      - hasMore
+      - items
+      - observedAt
+    StockSnapshotResponse:
+      type: object
+      properties:
+        available:
+          type:
+          - integer
+          - "null"
+          format: int64
+        id:
+          type: string
+          format: uuid
+        initialization:
+          type: string
+          enum:
+          - NOT_INITIALIZED
+          - INITIALIZED
+        locationId:
+          type: string
+          format: uuid
+        lotId:
+          type: string
+          format: uuid
+        observedAt:
+          type: string
+          format: date-time
+        onHand:
+          type:
+          - integer
+          - "null"
+          format: int64
+        otherBlocked:
+          type:
+          - integer
+          - "null"
+          format: int64
+        productId:
+          type: string
+          format: uuid
+        quarantined:
+          type:
+          - integer
+          - "null"
+          format: int64
+        reserved:
+          type:
+          - integer
+          - "null"
+          format: int64
+        trust:
+          type: string
+          enum:
+          - UNVERIFIED
+          - CLEAN
+          - FROZEN
+        unit:
+          type: string
+        version:
+          type: integer
+          format: int64
+      required:
+      - available
+      - id
+      - initialization
+      - locationId
+      - lotId
+      - observedAt
+      - onHand
+      - otherBlocked
+      - productId
+      - quarantined
+      - reserved
+      - trust
+      - unit
+      - version
     StorageLocationPage:
       type: object
       properties:
@@ -8278,6 +10694,17 @@ components:
             - REGISTER_SOURCE_EVIDENCE
             - MANAGE_STORAGE_LOCATIONS
             - REGISTER_STORE_LOT
+            - READ_INVENTORY
+            - RECEIVE_STOCK
+            - RESERVE_STOCK
+            - RELEASE_RESERVATION
+            - ADJUST_STOCK
+            - WRITE_OFF_STOCK
+            - QUARANTINE_STOCK
+            - RECORD_SALE
+            - MANAGE_INVENTORY_ALLOCATIONS
+            - RECONCILE_INVENTORY
+            - REMEDIATE_INVENTORY
         role:
           type: string
           enum:
@@ -8312,6 +10739,17 @@ components:
             - REGISTER_SOURCE_EVIDENCE
             - MANAGE_STORAGE_LOCATIONS
             - REGISTER_STORE_LOT
+            - READ_INVENTORY
+            - RECEIVE_STOCK
+            - RESERVE_STOCK
+            - RELEASE_RESERVATION
+            - ADJUST_STOCK
+            - WRITE_OFF_STOCK
+            - QUARANTINE_STOCK
+            - RECORD_SALE
+            - MANAGE_INVENTORY_ALLOCATIONS
+            - RECONCILE_INVENTORY
+            - REMEDIATE_INVENTORY
         city:
           type:
           - string
@@ -8448,6 +10886,16 @@ components:
       required:
       - reason
       - version
+    WriteOffRequest:
+      type: object
+      properties:
+        allocationId:
+          type: string
+          format: uuid
+        stock:
+          $ref: "#/components/schemas/StockCommandRequest"
+      required:
+      - stock
     ZoneArchiveImpactResponse:
       type: object
       properties:

@@ -29,15 +29,20 @@ class KafkaFoundationTest extends InfrastructureTestBase {
     private KafkaHealthIndicator health;
 
     @Autowired
+    private InventoryMessagingHealthIndicator messagingHealth;
+
+    @Autowired
     private ApplicationContext application;
 
     @Test
     void defaultRuntimeNeedsNoSmokeTopicAndDiagnosticsDoNotProvisionTopics() throws Exception {
-        assertThat(application.getBeansOfType(NewTopic.class)).isEmpty();
+        assertThat(application.getBeansOfType(NewTopic.class)).hasSize(1);
         try (var admin = Admin.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
             var before = admin.listTopics().names().get(3, TimeUnit.SECONDS);
             assertThat(before).doesNotContain("stockrescue.infrastructure.smoke.v1");
+            assertThat(before).contains("stockrescue.inventory.events.v1");
             assertThat(health.health().getStatus()).isEqualTo(Status.UP);
+            assertThat(messagingHealth.health().getStatus()).isEqualTo(Status.UP);
             assertThat(admin.listTopics().names().get(3, TimeUnit.SECONDS)).isEqualTo(before);
         }
     }

@@ -70,7 +70,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertPublicSchemaContainsOnlyFlywayHistory(connection);
             var tables = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'stockrescue'");
             assertThat(tables.next()).isTrue();
-            assertThat(tables.getInt(1)).isEqualTo(32);
+            assertThat(tables.getInt(1)).isEqualTo(49);
             var signedTables=statement.executeQuery("""
                     SELECT table_name FROM information_schema.tables WHERE table_schema='stockrescue'
                         AND table_name IN ('food_safety_policy_approval','food_safety_policy_approval_revocation',

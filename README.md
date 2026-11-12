@@ -39,6 +39,10 @@ PostgreSQL, Kafka and private Python service. The example credentials are for
 local development only. Stop with `docker compose --env-file .env.example down`;
 the PostgreSQL development volume is preserved.
 
+The backend pool targets 2 idle database connections and allows up to 10 per
+instance. Configure `DATABASE_POOL_MIN_IDLE` and `DATABASE_POOL_MAX_SIZE` in the
+environment to tune this pool within the database's total connection budget.
+
 Use **Sign in** to register an account, then sign in with its email and password.
 Registration gives no organization or store access. The local Compose profile
 uses HTTP cookies for development; other profiles require Secure cookies and

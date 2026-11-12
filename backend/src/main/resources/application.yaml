@@ -11,7 +11,8 @@ spring:
       schema: stockrescue
       connection-timeout: 2000
       validation-timeout: 1000
-      maximum-pool-size: 5
+      maximum-pool-size: ${DATABASE_POOL_MAX_SIZE:10}
+      minimum-idle: ${DATABASE_POOL_MIN_IDLE:2}
       data-source-properties:
         logServerErrorDetail: false
   flyway:
@@ -21,6 +22,23 @@ spring:
     baseline-on-migrate: false
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        request.timeout.ms: 3000
+        delivery.timeout.ms: 10000
+    consumer:
+      group-id: stockrescue-inventory-change-projection-v1
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        isolation.level: read_committed
+    listener:
+      ack-mode: manual
     admin:
       properties:
         request.timeout.ms: 2000
@@ -57,7 +75,7 @@ management:
       discovery:
         enabled: false
       exposure:
-        include: health
+        include: health,metrics
   endpoint:
     health:
       show-details: never
@@ -68,9 +86,20 @@ management:
         readiness:
           include: readinessState,db
         integration:
-          include: kafka,intelligence
+          include: kafka,intelligence,inventoryMessaging
 
 stockrescue:
+  inventory:
+    messaging:
+      topic: ${INVENTORY_EVENTS_TOPIC:stockrescue.inventory.events.v1}
+      consumer-name: inventory-change-projection-v1
+    outbox-relay:
+      enabled: ${INVENTORY_OUTBOX_RELAY_ENABLED:true}
+      fixed-delay: ${INVENTORY_OUTBOX_RELAY_DELAY:1000}
+      claim-size: ${INVENTORY_OUTBOX_CLAIM_SIZE:5}
+      lease-duration: ${INVENTORY_OUTBOX_LEASE_DURATION:30s}
+      retry-base: 1s
+      retry-maximum: 5m
   security:
     secure-cookie: true
     maximum-session-age-seconds: 43200
