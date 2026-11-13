@@ -11,6 +11,8 @@ import java.time.Instant;
 
 import com.stockrescue.inventory.domain.InventoryWriteConflict;
 import com.stockrescue.inventory.domain.InventoryFailure;
+import com.stockrescue.inventory.domain.InventoryOperation;
+import com.stockrescue.platform.correlation.CorrelationIds;
 import com.stockrescue.access.application.OrganizationUnavailableException;
 import com.stockrescue.inventory.domain.StockBuckets;
 import com.stockrescue.inventory.domain.StockPosition;
@@ -25,11 +27,8 @@ import tools.jackson.databind.ObjectMapper;
 /** Transaction primitives. Application commands must authorize before taking inventory locks. */
 @Repository
 public class InventoryRepository {
-    public enum Operation { RECEIVE, RESERVE, RELEASE, ADJUST, WRITE_OFF, QUARANTINE, HOLD, RELEASE_HOLD,
-        SALE, VERIFY_ZERO, RECONCILE, REMEDIATE }
-
     public record CommandReceipt(UUID id, UUID organizationId, UUID storeId, UUID actorId, UUID membershipId,
-            Operation operation, UUID requestId, byte[] payloadDigest, String outcome) {
+            InventoryOperation operation, UUID requestId, byte[] payloadDigest, String outcome) {
         public CommandReceipt { payloadDigest = payloadDigest.clone(); }
         @Override public byte[] payloadDigest() { return payloadDigest.clone(); }
     }
@@ -40,9 +39,9 @@ public class InventoryRepository {
     public InventoryRepository(JdbcClient jdbc, ObjectMapper json) { this.jdbc=jdbc; this.json=json; }
 
     public record Allocation(UUID id,UUID positionId,String bucket,UUID ownerId,long remaining,String state,long version) {}
-    public record Movement(UUID id,Operation operation,long positionVersion,StockBuckets.Delta delta,String reason,String evidenceReference,Instant recordedAt) {}
+    public record Movement(UUID id,InventoryOperation operation,long positionVersion,StockBuckets.Delta delta,String reason,String evidenceReference,Instant recordedAt) {}
 
-    public void lockRequest(UUID org,UUID actor,Operation operation,UUID request) {
+    public void lockRequest(UUID org,UUID actor,InventoryOperation operation,UUID request) {
         requireWriteTransaction();
         jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))")
                 .param("key",org+":"+actor+":"+operation+":"+request).query((row,index)->true).single();
@@ -123,7 +122,7 @@ public class InventoryRepository {
                 WHERE l.org_id=:org AND l.store_id=:store AND l.position_id=:position AND l.position_version>:after
                 ORDER BY l.position_version LIMIT :limit
                 """).param("org",org).param("store",store).param("position",position).param("after",afterVersion).param("limit",limit)
-                .query((row,index)->new Movement(row.getObject("id",UUID.class),Operation.valueOf(row.getString("operation")),row.getLong("position_version"),
+                .query((row,index)->new Movement(row.getObject("id",UUID.class),InventoryOperation.valueOf(row.getString("operation")),row.getLong("position_version"),
                         new StockBuckets.Delta(row.getLong("delta_on_hand"),row.getLong("delta_reserved"),row.getLong("delta_quarantined"),row.getLong("delta_other_blocked")),
                         row.getString("reason"),row.getString("evidence_reference"),row.getTimestamp("recorded_at").toInstant())).list();
     }
@@ -202,7 +201,7 @@ public class InventoryRepository {
         return positionByIdentity(org,store,location,lot).orElseThrow();
     }
 
-    public Optional<CommandReceipt> command(UUID org, UUID actor, Operation operation, UUID requestId) {
+    public Optional<CommandReceipt> command(UUID org, UUID actor, InventoryOperation operation, UUID requestId) {
         return jdbc.sql("""
                 SELECT * FROM stockrescue.inventory_command_receipt
                 WHERE org_id=:org AND actor_user_id=:actor AND operation=:operation AND request_id=:request
@@ -299,6 +298,7 @@ public class InventoryRepository {
 
     private void recordEvent(UUID movement, StockPosition position, StockBuckets.Delta delta) {
         var event=UUID.randomUUID();
+        String correlationId=CorrelationIds.requireValidOrNull(MDC.get("correlationId"));
         var recordedAt=jdbc.sql("SELECT recorded_at FROM stockrescue.stock_movement WHERE org_id=:org AND store_id=:store AND id=:id")
                 .param("org",position.organizationId()).param("store",position.storeId()).param("id",movement)
                 .query((row,index)->row.getTimestamp(1).toInstant()).single();
@@ -306,7 +306,7 @@ public class InventoryRepository {
                 "organizationId",position.organizationId(),"storeId",position.storeId(),"positionId",position.id(),
                 "aggregateVersion",position.version(),"movementId",movement,"occurredAt",recordedAt,
                 "change",Map.of("unit","EA","delta",delta,"position",position)));
-        envelope.put("correlationId",MDC.get("correlationId"));
+        envelope.put("correlationId",correlationId);
         var payload=json.writeValueAsString(envelope);
         jdbc.sql("""
                 INSERT INTO stockrescue.inventory_outbox_event(id,org_id,store_id,movement_id,position_id,aggregate_version,
@@ -314,7 +314,7 @@ public class InventoryRepository {
                 VALUES (:id,:org,:store,:movement,:position,:version,'InventoryStockChanged',1,CAST(:payload AS jsonb),:correlation)
                 """).param("id",event).param("org",position.organizationId()).param("store",position.storeId())
                 .param("movement",movement).param("position",position.id()).param("version",position.version()).param("payload",payload)
-                .param("correlation",MDC.get("correlationId"),java.sql.Types.VARCHAR).update();
+                .param("correlation",correlationId,java.sql.Types.VARCHAR).update();
         jdbc.sql("INSERT INTO stockrescue.inventory_outbox_delivery(event_id,org_id,store_id) VALUES (:id,:org,:store)")
                 .param("id",event).param("org",position.organizationId()).param("store",position.storeId()).update();
     }

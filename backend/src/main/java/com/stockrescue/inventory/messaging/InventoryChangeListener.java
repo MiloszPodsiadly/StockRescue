@@ -28,7 +28,8 @@ public class InventoryChangeListener {
     }
 
     @KafkaListener(id="inventory-change-projection",topics="${stockrescue.inventory.messaging.topic}",
-            groupId="${spring.kafka.consumer.group-id}",containerFactory="inventoryKafkaListenerContainerFactory")
+            groupId="${spring.kafka.consumer.group-id}",containerFactory="inventoryKafkaListenerContainerFactory",
+            autoStartup="false")
     public void consume(ConsumerRecord<String,String> record,Acknowledgment acknowledgment) {
         try {
             var outcome=processor.process(record.key(),record.value());
@@ -38,11 +39,13 @@ public class InventoryChangeListener {
                 case DUPLICATE -> metrics.duplicate();
             }
         } catch(InventoryEventContractException invalid) {
+            if(!invalid.isPermanentContractFailure()) throw invalid;
             parked.record(consumer,record.topic(),record.partition(),record.offset(),codec.eventIdOrNull(record.value()),
                     digest(record.value()),invalid.code());
             metrics.consumerParked();
         }
         acknowledgment.acknowledge();
+        metrics.consumerRetryRecovered(record);
     }
 
     private static byte[] digest(String payload) {

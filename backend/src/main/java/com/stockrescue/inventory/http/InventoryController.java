@@ -12,12 +12,10 @@ import com.stockrescue.inventory.application.InventoryCommands.Result;
 import com.stockrescue.inventory.application.InventoryCommands.StockChange;
 import com.stockrescue.inventory.application.InventoryReconciliationService;
 import com.stockrescue.inventory.application.InventoryService;
+import com.stockrescue.inventory.application.InventoryReadModels.Allocation;
+import com.stockrescue.inventory.application.InventoryReadModels.Movement;
+import com.stockrescue.inventory.domain.InventoryOperation;
 import com.stockrescue.inventory.domain.StockPosition;
-import com.stockrescue.inventory.persistence.InventoryReconciliationRepository.Finding;
-import com.stockrescue.inventory.persistence.InventoryReconciliationRepository.Run;
-import com.stockrescue.inventory.persistence.InventoryRepository.Allocation;
-import com.stockrescue.inventory.persistence.InventoryRepository.Movement;
-import com.stockrescue.inventory.persistence.InventoryRepository.Operation;
 import com.stockrescue.platform.http.ApiProblem;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -114,9 +112,8 @@ public class InventoryController {
     public AllocationPageResponse allocations(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID storeId,
             @PathVariable UUID positionId,@RequestParam(defaultValue="0") @Min(0) @Max(10000) int offset,
             @RequestParam(defaultValue="25") @Min(1) @Max(100) int limit) {
-        UUID actorId=actor(actor);
-        var page=inventory.allocations(actorId,organizationId,storeId,positionId,offset,limit);
-        return new AllocationPageResponse(page.items().stream().map(allocation->AllocationResponse.from(allocation,actorId)).toList(),page.hasMore());
+        var page=inventory.allocations(actor(actor),organizationId,storeId,positionId,offset,limit);
+        return new AllocationPageResponse(page.items().stream().map(AllocationResponse::from).toList(),page.hasMore());
     }
 
     @PostMapping(value="/receipts",consumes=MediaType.APPLICATION_JSON_VALUE)
@@ -200,7 +197,7 @@ public class InventoryController {
     @io.swagger.v3.oas.annotations.Operation(operationId="getInventoryCommandOutcome",summary="Recover an actor-scoped committed result after an uncertain response")
     @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=InventoryCommandResponse.class)))
     public InventoryCommandResponse commandOutcome(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID storeId,
-            @PathVariable Operation operation,@PathVariable UUID requestId) {
+            @PathVariable InventoryOperation operation,@PathVariable UUID requestId) {
         return command(inventory.commandOutcome(actor(actor),organizationId,storeId,operation,requestId));
     }
 
@@ -302,7 +299,7 @@ public class InventoryController {
     public record MovementPageResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) List<MovementResponse> items,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) boolean hasMore) { }
     public record MovementResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,
-            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Operation operation,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) long positionVersion,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) InventoryOperation operation,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) long positionVersion,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long deltaOnHand,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) long deltaReserved,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long deltaQuarantined,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) long deltaOtherBlocked,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String reason,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) String evidenceReference,
@@ -322,9 +319,9 @@ public class InventoryController {
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long remaining,
             @Schema(allowableValues={"ACTIVE","RELEASED","WRITTEN_OFF","CONSUMED"},requiredMode=Schema.RequiredMode.REQUIRED) String state,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long version,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) boolean ownedByCurrentUser) {
-        static AllocationResponse from(Allocation allocation,UUID actor) {
+        static AllocationResponse from(Allocation allocation) {
             return new AllocationResponse(allocation.id(),allocation.positionId(),allocation.bucket(),allocation.remaining(),
-                    allocation.state(),allocation.version(),allocation.ownerId().equals(actor));
+                    allocation.state(),allocation.version(),allocation.ownedByCurrentActor());
         }
     }
 
@@ -349,7 +346,7 @@ public class InventoryController {
             @Schema(allowableValues={"CLEAN","WARN","CRITICAL"},requiredMode=Schema.RequiredMode.REQUIRED) String severity,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) int checkedPositions,@Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant startedAt,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant completedAt) {
-        static ReconciliationResponse from(Run run) {
+        static ReconciliationResponse from(InventoryReconciliationService.ReconciliationRun run) {
             return new ReconciliationResponse(run.id(),run.organizationId(),run.storeId(),run.severity(),run.checkedPositions(),run.startedAt(),run.completedAt());
         }
     }
@@ -360,7 +357,7 @@ public class InventoryController {
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String code,
             @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String expected,
             @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED) String observed) {
-        static FindingResponse from(Finding finding) {
+        static FindingResponse from(InventoryReconciliationService.ReconciliationFinding finding) {
             return new FindingResponse(finding.positionId(),finding.positionVersion(),finding.severity(),finding.code(),finding.expected(),finding.observed());
         }
     }

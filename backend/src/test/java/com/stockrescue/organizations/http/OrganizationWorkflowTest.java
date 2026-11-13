@@ -111,7 +111,7 @@ class OrganizationWorkflowTest extends InfrastructureTestBase {
         assertThat(freshSession.select(id).statusCode()).isEqualTo(200);
         var permissions = tree(freshSession.get("/api/v1/auth/me/effective-permissions"));
         assertThat(permissions.path("organizationActions").toString()).contains("MANAGE_ACCESS", "CREATE_STORE");
-        assertThat(permissions.path("allStoreActions").toString()).contains("ARCHIVE_STORE");
+        assertThat(permissions.path("allStoreActions").toString()).isEqualTo("[\"READ_STORE\",\"EDIT_STORE\",\"ARCHIVE_STORE\",\"MANAGE_STORAGE_ZONES\",\"REGISTER_SOURCE_EVIDENCE\",\"MANAGE_STORAGE_LOCATIONS\",\"REGISTER_STORE_LOT\",\"READ_INVENTORY\",\"RECEIVE_STOCK\",\"RESERVE_STOCK\",\"RELEASE_RESERVATION\",\"ADJUST_STOCK\",\"WRITE_OFF_STOCK\",\"QUARANTINE_STOCK\",\"RECORD_SALE\",\"MANAGE_INVENTORY_ALLOCATIONS\",\"RECONCILE_INVENTORY\",\"REMEDIATE_INVENTORY\"]");
         assertThat(permissions.path("storeGrants").isEmpty()).isTrue();
         assertThat(logs.getAll()).doesNotContain(name, browser.email, PASSWORD);
     }
@@ -195,7 +195,7 @@ class OrganizationWorkflowTest extends InfrastructureTestBase {
         assertThat(manager.toString()).doesNotContain(unassigned.toString(), foreign.toString());
         jdbc.sql("UPDATE stockrescue.store_grant SET role='READ_ONLY_ANALYST',version=version+1 WHERE id=:id").param("id", grant).update();
         var analyst = tree(actor.get("/api/v1/auth/me/effective-permissions"));
-        assertThat(analyst.path("storeGrants").get(0).path("actions").toString()).isEqualTo("[\"READ_STORE\"]");
+        assertThat(analyst.path("storeGrants").get(0).path("actions").toString()).isEqualTo("[\"READ_STORE\",\"READ_INVENTORY\"]");
         jdbc.sql("UPDATE stockrescue.store_grant SET state='REVOKED',revoked_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=:id").param("id", grant).update();
         assertThat(tree(actor.get("/api/v1/auth/me/effective-permissions")).path("storeGrants").isEmpty()).isTrue();
         jdbc.sql("UPDATE stockrescue.membership SET state='REVOKED',revoked_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=:id").param("id", membershipB).update();

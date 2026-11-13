@@ -10,6 +10,7 @@ import com.stockrescue.inventory.messaging.InventoryStockChangedEvent.Data;
 import com.stockrescue.inventory.messaging.InventoryStockChangedEvent.Delta;
 import com.stockrescue.inventory.messaging.InventoryStockChangedEvent.Position;
 import com.stockrescue.inventory.persistence.InventoryOutboxRepository.OutboxEvent;
+import com.stockrescue.platform.correlation.CorrelationIds;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -26,7 +27,11 @@ public class InventoryEventCodec {
     private final ObjectMapper json;
     public InventoryEventCodec(ObjectMapper json) { this.json=json; }
 
-    public String encode(InventoryStockChangedEvent event) { return json.writeValueAsString(event); }
+    public String encode(InventoryStockChangedEvent event) {
+        String payload=json.writeValueAsString(event);
+        decode(payload);
+        return payload;
+    }
 
     public InventoryStockChangedEvent decode(String payload) {
         final JsonNode root;
@@ -43,7 +48,8 @@ public class InventoryEventCodec {
         try { occurredAt=Instant.parse(text(root.get("occurredAt"))); }
         catch(DateTimeParseException invalid) { throw failure("MALFORMED_EVENT"); }
         UUID eventId=uuid(root.get("eventId")),tenant=uuid(root.get("tenantId")),aggregate=uuid(root.get("aggregateId"));
-        UUID correlation=nullableUuid(root.get("correlationId")),causation=uuid(root.get("causationId"));
+        String correlation=correlationId(root.get("correlationId"));
+        UUID causation=uuid(root.get("causationId"));
         long version=longValue(root.get("aggregateVersion"));
         if(version<1) throw failure("MALFORMED_EVENT");
         JsonNode dataNode=root.get("data");requireObject(dataNode,DATA_FIELDS);
@@ -71,13 +77,14 @@ public class InventoryEventCodec {
         final JsonNode stored;
         try { stored=json.readTree(row.payload()); }
         catch(JacksonException invalid) { throw failure("OUTBOX_CONTRACT_INVALID"); }
+        String correlation=outboxCorrelationId(row.correlationId());
         if(stored==null || !stored.isObject() || !stored.path("eventId").isTextual() || !stored.path("eventId").asText().equals(row.id().toString())
                 || !row.eventType().equals("InventoryStockChanged") || row.schemaVersion()!=1
                 || !stored.path("eventType").asText().equals("InventoryStockChanged") || stored.path("schemaVersion").asInt(-1)!=1
                 || !sameUuid(stored.get("organizationId"),row.organizationId()) || !sameUuid(stored.get("storeId"),row.storeId())
                 || !sameUuid(stored.get("positionId"),row.positionId()) || stored.path("aggregateVersion").asLong(-1)!=row.aggregateVersion()
                 || !sameUuid(stored.get("movementId"),row.movementId()) || !sameInstant(stored.get("occurredAt"),row.occurredAt())
-                || !sameNullableUuid(stored.get("correlationId"),correlationUuid(row.correlationId()))) throw failure("OUTBOX_CONTRACT_INVALID");
+                || !sameNullableText(stored.get("correlationId"),correlation)) throw failure("OUTBOX_CONTRACT_INVALID");
         JsonNode change=stored.path("change");
         if(!change.isObject() || !change.path("unit").asText().equals("EA")) throw failure("OUTBOX_CONTRACT_INVALID");
         JsonNode oldDelta=change.get("delta"),oldPosition=change.get("position");
@@ -87,7 +94,6 @@ public class InventoryEventCodec {
         JsonNode oldBuckets=oldPosition.get("buckets");
         if(oldBuckets==null || !oldBuckets.isObject()) throw failure("OUTBOX_CONTRACT_INVALID");
         try {
-            UUID correlation=correlationUuid(row.correlationId());
             var event=new InventoryStockChangedEvent(row.id(),"InventoryStockChanged",1,row.occurredAt(),row.organizationId(),
                     "INVENTORY_POSITION",row.positionId(),row.aggregateVersion(),correlation,row.movementId(),"INTERNAL",
                     new Data(row.storeId(),row.movementId(),"EA",
@@ -110,21 +116,21 @@ public class InventoryEventCodec {
         try { String text=text(value);UUID result=UUID.fromString(text);if(!result.toString().equals(text)) throw failure("MALFORMED_EVENT");return result; }
         catch(IllegalArgumentException invalid) { throw failure("MALFORMED_EVENT"); }
     }
-    private static UUID nullableUuid(JsonNode value) { return value!=null&&value.isNull()?null:uuid(value); }
+    private static String correlationId(JsonNode value) {
+        if(value!=null&&value.isNull()) return null;
+        if(value==null || !value.isTextual() || !CorrelationIds.isValid(value.asText())) throw failure("MALFORMED_EVENT");
+        return value.asText();
+    }
+    private static String outboxCorrelationId(String value) {
+        if(value!=null&&!CorrelationIds.isValid(value)) throw failure("OUTBOX_CONTRACT_INVALID");
+        return value;
+    }
     private static boolean sameUuid(JsonNode value,UUID expected) {
         try { return expected.equals(uuid(value)); } catch(InventoryEventContractException invalid) { return false; }
     }
-    private static boolean sameNullableUuid(JsonNode value,UUID expected) {
+    private static boolean sameNullableText(JsonNode value,String expected) {
         if(expected==null) return value!=null&&value.isNull();
-        return sameUuid(value,expected);
-    }
-    private static UUID correlationUuid(String value) {
-        if(value==null) return null;
-        try {
-            UUID parsed=UUID.fromString(value);
-            if(!parsed.toString().equals(value)) throw failure("OUTBOX_CONTRACT_INVALID");
-            return parsed;
-        } catch(IllegalArgumentException invalid) { throw failure("OUTBOX_CONTRACT_INVALID"); }
+        return value!=null&&value.isTextual()&&expected.equals(value.asText());
     }
     private static boolean sameInstant(JsonNode value,Instant expected) {
         try { return Instant.parse(text(value)).equals(expected); } catch(DateTimeParseException|InventoryEventContractException invalid) { return false; }

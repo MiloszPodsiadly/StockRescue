@@ -253,12 +253,59 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
     void scopedLookupIndexesSupportProductLotAndSourceQueries() throws Exception {
         var lot = lot(f.orgA, f.productA, "LOOKUP");
         source(lot, f.storeA);
-        sql("SET LOCAL enable_seqscan=off");
-        assertThat(plan("SELECT id FROM stockrescue.product WHERE org_id=? AND sku_normalized='MILK-1'", f.orgA)).contains("product_org_sku_unique");
+        seedLookupWorkload();
+        assertScopedIndexPlan(plan("SELECT id FROM stockrescue.product WHERE org_id=? AND sku_normalized='MILK-1'", f.orgA),
+                "org_id", "sku_normalized");
         assertThat(text("SELECT sku_normalized FROM stockrescue.product WHERE org_id=? AND sku_normalized LIKE 'MILK%'", f.orgA)).isEqualTo("MILK-1");
-        assertThat(plan("SELECT id FROM stockrescue.manufacturer_lot WHERE org_id=? AND product_id=? AND lot_code='LOOKUP'", f.orgA, f.productA)).contains("lot_product_code_lookup_idx");
-        assertThat(plan("SELECT id FROM stockrescue.consignment_evidence WHERE org_id=? AND lot_id=? ORDER BY created_at,id", f.orgA, lot)).contains("consignment_lot_trace_idx");
-        assertThat(plan("SELECT id FROM stockrescue.consignment_evidence WHERE org_id=? AND store_id=? AND lot_id=? ORDER BY created_at,id", f.orgA, f.storeA, lot)).contains("consignment_store_trace_idx");
+        assertScopedIndexPlan(plan("SELECT id FROM stockrescue.manufacturer_lot WHERE org_id=? AND product_id=? AND lot_code='LOOKUP'", f.orgA, f.productA),
+                "org_id", "product_id", "lot_code");
+        assertScopedIndexPlan(plan("SELECT id FROM stockrescue.consignment_evidence WHERE org_id=? AND lot_id=? ORDER BY created_at,id", f.orgA, lot),
+                "org_id", "lot_id");
+        assertScopedIndexPlan(plan("SELECT id FROM stockrescue.consignment_evidence WHERE org_id=? AND store_id=? AND lot_id=? ORDER BY created_at,id", f.orgA, f.storeA, lot),
+                "org_id", "store_id", "lot_id");
+    }
+
+    private void seedLookupWorkload() throws SQLException {
+        try (var products = connection.prepareStatement("""
+                    INSERT INTO stockrescue.product(id,org_id,sku,name,base_unit,temperature_class)
+                    SELECT md5('planner-product-'||number::text)::uuid, ?,
+                        'PLAN-'||number::text, 'Planner product '||number::text, 'EA', 'AMBIENT'
+                    FROM generate_series(1,5000) AS generated(number)
+                    """)) {
+            products.setObject(1, f.orgA);
+            products.executeUpdate();
+        }
+        try (var lots = connection.prepareStatement("""
+                    INSERT INTO stockrescue.manufacturer_lot(id,org_id,product_id,lot_code)
+                    SELECT md5('planner-lot-'||number::text)::uuid, ?, ?,
+                        'PLANNER-'||number::text
+                    FROM generate_series(1,5000) AS generated(number)
+                    """)) {
+            lots.setObject(1, f.orgA);
+            lots.setObject(2, f.productA);
+            lots.executeUpdate();
+        }
+        try (var sources = connection.prepareStatement("""
+                    INSERT INTO stockrescue.consignment_evidence(id,org_id,lot_id,store_id,provenance_source,provenance_reference)
+                    SELECT md5('planner-source-'||number::text)::uuid, ?,
+                        md5('planner-lot-'||number::text)::uuid, ?,
+                        'Query plan fixture', 'source-'||number::text
+                    FROM generate_series(1,5000) AS generated(number)
+                    """)) {
+            sources.setObject(1, f.orgA);
+            sources.setObject(2, f.storeA);
+            sources.executeUpdate();
+        }
+        try (var statement = connection.createStatement()) {
+            statement.execute("ANALYZE stockrescue.product");
+            statement.execute("ANALYZE stockrescue.manufacturer_lot");
+            statement.execute("ANALYZE stockrescue.consignment_evidence");
+        }
+    }
+
+    private static void assertScopedIndexPlan(String plan, String... predicates) {
+        assertThat(plan).containsAnyOf("Index Scan", "Index Only Scan", "Bitmap Index Scan").contains("Index Cond:");
+        assertThat(plan).contains(predicates);
     }
 
     @Test

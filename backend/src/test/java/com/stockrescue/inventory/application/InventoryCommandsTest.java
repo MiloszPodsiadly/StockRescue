@@ -7,8 +7,11 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -31,20 +34,27 @@ import com.stockrescue.inventory.domain.InventoryFailure.Kind;
 import com.stockrescue.inventory.domain.StockBuckets;
 import com.stockrescue.inventory.persistence.InventoryRepository;
 import com.stockrescue.inventory.persistence.InventoryRepository.CommandReceipt;
-import com.stockrescue.inventory.persistence.InventoryRepository.Movement;
-import com.stockrescue.inventory.persistence.InventoryRepository.Operation;
+import com.stockrescue.inventory.application.InventoryReadModels.Movement;
+import com.stockrescue.inventory.domain.InventoryOperation;
 import com.stockrescue.inventory.messaging.InventoryChangeListener;
 import com.stockrescue.inventory.messaging.InventoryEventCodec;
 import com.stockrescue.inventory.messaging.InventoryMessagingMetrics;
 import com.stockrescue.inventory.messaging.InventoryOutboxRelay;
 import com.stockrescue.inventory.messaging.InventoryStockChangedEvent;
 import com.stockrescue.inventory.persistence.InventoryOutboxRepository;
+import com.stockrescue.platform.kafka.InventoryMessagingHealthIndicator;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.TopicPartition;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.support.Acknowledgment;
+import org.springframework.kafka.support.SendResult;
 import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
 import com.stockrescue.support.InfrastructureTestBase;
 import org.junit.jupiter.api.AfterEach;
@@ -90,11 +100,14 @@ class InventoryCommandsTest extends InfrastructureTestBase {
     @Autowired private InventoryEventCodec eventCodec;
     @Autowired private InventoryOutboxRepository outbox;
     @Autowired private InventoryMessagingMetrics messagingMetrics;
+    @Autowired private InventoryMessagingHealthIndicator inventoryMessagingHealth;
     @MockitoSpyBean private KafkaTemplate kafka;
     @Autowired private KafkaListenerEndpointRegistry listeners;
     @Autowired private InventoryOutboxRelay relay;
     @Autowired private InventoryChangeListener changeListener;
     @MockitoSpyBean private DataSource dataSource;
+    @org.springframework.beans.factory.annotation.Value("${stockrescue.inventory.messaging.topic}") private String inventoryTopic;
+    @org.springframework.beans.factory.annotation.Value("${spring.kafka.consumer.group-id}") private String inventoryConsumerGroup;
     private Fixture f;
 
     @BeforeEach void prepare() {
@@ -344,7 +357,7 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         var received=receive(2);
         transactions.executeWithoutResult(status->{
             access.requireStore(f.owner,f.org,f.store,StoreAction.RECONCILE_INVENTORY,true);
-            var command=new CommandReceipt(UUID.randomUUID(),f.org,f.store,f.owner,f.ownerMember,Operation.RECONCILE,UUID.randomUUID(),new byte[32],"{}");
+            var command=new CommandReceipt(UUID.randomUUID(),f.org,f.store,f.owner,f.ownerMember,InventoryOperation.RECONCILE,UUID.randomUUID(),new byte[32],"{}");
             inventory.recordCommand(command);var movement=UUID.randomUUID();inventory.recordMovement(movement,command,"Investigate discrepancy","reconciliation-run");
             inventory.postLine(f.org,f.store,movement,received.positionId(),received.positionVersion(),new StockBuckets.Delta(0,0,0,0),com.stockrescue.inventory.domain.StockPosition.Trust.FROZEN);
         });
@@ -404,7 +417,7 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         assertThat(frozen.trust()).isEqualTo(com.stockrescue.inventory.domain.StockPosition.Trust.FROZEN);
         fails(Kind.POSITION_FROZEN,()->service.recordSale(f.owner,f.org,f.store,change(damaged.positionId(),1)));
         assertThatThrownBy(()->transactions.executeWithoutResult(status->{
-            var command=new CommandReceipt(UUID.randomUUID(),f.org,f.store,f.owner,f.ownerMember,Operation.ADJUST,UUID.randomUUID(),new byte[32],"{}");
+            var command=new CommandReceipt(UUID.randomUUID(),f.org,f.store,f.owner,f.ownerMember,InventoryOperation.ADJUST,UUID.randomUUID(),new byte[32],"{}");
             inventory.recordCommand(command);var movement=UUID.randomUUID();inventory.recordMovement(movement,command,"Attempt ordinary database write","direct-command");
             inventory.postLine(f.org,f.store,movement,damaged.positionId(),frozen.version(),new StockBuckets.Delta(0,0,0,0),
                     com.stockrescue.inventory.domain.StockPosition.Trust.UNVERIFIED);
@@ -416,6 +429,7 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         var received=receive(4);
         var held=service.hold(f.operator,f.org,f.store,change(received.positionId(),1));
         var originalHistory=service.history(f.analyst,f.org,f.store,received.positionId(),0,100).items();
+        assertThat(reconciliation.reconcile(f.manager,f.org,f.store).severity()).isEqualTo("CLEAN");
         corruptProjection(received.positionId(),"other_blocked",0);
         var critical=reconciliation.reconcile(f.owner,f.org,f.store);
         assertThat(critical.severity()).isEqualTo("CRITICAL");
@@ -433,7 +447,7 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         assertThat(count("stock_movement")).isEqualTo(afterFirstRepair);
         var currentHistory=service.history(f.analyst,f.org,f.store,received.positionId(),0,100).items();
         assertThat(currentHistory.subList(0,originalHistory.size())).isEqualTo(originalHistory);
-        assertThat(currentHistory).extracting(Movement::operation).contains(Operation.RECONCILE,Operation.REMEDIATE);
+        assertThat(currentHistory).extracting(Movement::operation).contains(InventoryOperation.RECONCILE,InventoryOperation.REMEDIATE);
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_projection_repair WHERE org_id=:org AND store_id=:store AND position_id=:position")
                 .param("org",f.org).param("store",f.store).param("position",received.positionId()).query(Long.class).single()).isEqualTo(1);
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_id=:position AND action='INVENTORY_PROJECTION_REBUILT'")
@@ -581,10 +595,12 @@ class InventoryCommandsTest extends InfrastructureTestBase {
                 trusted.causationId(),trusted.dataClassification(),trusted.data());
         var key=spoofed.tenantId()+":"+spoofed.aggregateType()+":"+spoofed.aggregateId();
         var unsupported=eventCodec.encode(trusted).replaceFirst("\"schemaVersion\"\\s*:\\s*1","\"schemaVersion\":2");
+        var invalidCorrelation=eventCodec.encode(trusted).replaceFirst("\"correlationId\"\\s*:\\s*\"[^\"]*\"","\"correlationId\":7");
         var records=List.of(
                 new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_001L,key,eventCodec.encode(spoofed)),
                 new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_002L,"invalid",unsupported),
-                new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_003L,"invalid","not-json"));
+                new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_003L,"invalid","not-json"),
+                new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_004L,key,invalidCorrelation));
         MessageListenerContainer container=listeners.getListenerContainer("inventory-change-projection");
         container.stop();
         try {
@@ -598,9 +614,9 @@ class InventoryCommandsTest extends InfrastructureTestBase {
             await().atMost(Duration.ofSeconds(10)).until(container::isRunning);
         }
         assertThat(jdbc.sql("SELECT failure_code FROM stockrescue.inventory_consumer_parked_event WHERE record_offset>=8000000001 ORDER BY record_offset")
-                .query(String.class).list()).containsExactly("OUTBOX_EVENT_MISMATCH","UNSUPPORTED_SCHEMA_VERSION","MALFORMED_EVENT");
+                .query(String.class).list()).containsExactly("OUTBOX_EVENT_MISMATCH","UNSUPPORTED_SCHEMA_VERSION","MALFORMED_EVENT","MALFORMED_EVENT");
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_consumer_parked_event WHERE record_offset>=8000000001 AND octet_length(payload_digest)=32")
-                .query(Long.class).single()).isEqualTo(3);
+                .query(Long.class).single()).isEqualTo(4);
         assertThat(inboxCount(source.id())).isZero();
         assertThat(feedCount(source.id())).isZero();
         assertThat(snapshot(received).buckets().onHand()).isEqualTo(2);
@@ -657,6 +673,70 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         assertThat(snapshot(received).buckets().onHand()).isEqualTo(2);
     }
 
+    @Test void opaqueCorrelationSurvivesOutboxKafkaAndConsumerWithoutDuplicateStock() {
+        String correlationId="inventory-review-123";
+        Result received;
+        try(var ignored=MDC.putCloseable("correlationId",correlationId)) {
+            received=receive(2);
+        }
+        var source=outboxFor(received.positionId(),1);
+        var committed=snapshot(received);
+        assertThat(source.correlationId()).isEqualTo(correlationId);
+        assertThat(source.payload()).contains(correlationId);
+        var publishedRecord=new AtomicReference<ProducerRecord<?,?>>();
+        doAnswer(invocation->{
+            ProducerRecord<?,?> record=invocation.getArgument(0);
+            if(source.id().equals(eventCodec.eventIdOrNull(String.valueOf(record.value())))) publishedRecord.set(record);
+            return invocation.callRealMethod();
+        }).when(kafka).send(org.mockito.ArgumentMatchers.any(ProducerRecord.class));
+
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();
+            assertThat(publishedAt(source.id())).isNotNull();
+            assertThat(inboxCount(source.id())).isEqualTo(1);
+            assertThat(projectionVersion(received.positionId())).isEqualTo(1);
+        });
+
+        assertThat(publishedRecord).hasValueSatisfying(record->
+                assertThat(eventCodec.eventIdOrNull(String.valueOf(record.value()))).isEqualTo(source.id()));
+        var published=publishedRecord.get();
+        String key=String.valueOf(published.key()),payload=String.valueOf(published.value());
+        var decoded=eventCodec.decode(payload);
+        assertThat(decoded.correlationId()).isEqualTo(correlationId);
+        assertThat(changeProcessor.process(key,payload)).isEqualTo(InventoryChangeProcessor.Outcome.DUPLICATE);
+        assertThat(inboxCount(source.id())).isEqualTo(1);
+        assertThat(feedCount(source.id())).isEqualTo(1);
+        assertThat(snapshot(received)).isEqualTo(committed);
+    }
+
+    @Test void invalidInternalCorrelationRollsBackTheStockAndOutboxTransaction() {
+        try(var ignored=MDC.putCloseable("correlationId","invalid correlation")) {
+            assertThatThrownBy(()->receive(2)).isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThat(count("stock_movement")).isZero();
+        assertThat(count("inventory_outbox_event")).isZero();
+    }
+
+    @Test void outboxCorrelationMustBeSafeAndMatchItsImmutablePayload() {
+        var received=receive(2);
+        var source=outboxFor(received.positionId(),1);
+        var mismatchedPayload=new InventoryOutboxRepository.OutboxEvent(source.id(),source.organizationId(),source.storeId(),
+                source.movementId(),source.positionId(),source.aggregateVersion(),source.eventType(),source.schemaVersion(),
+                source.payload().replace(source.correlationId(),"inventory-review-123"),source.correlationId(),source.occurredAt(),
+                source.leaseOwner(),source.claimVersion(),source.attemptCount(),source.leaseUntil());
+        assertThatThrownBy(()->eventCodec.fromOutbox(mismatchedPayload))
+                .isInstanceOfSatisfying(com.stockrescue.inventory.messaging.InventoryEventContractException.class,
+                        error->assertThat(error.code()).isEqualTo("OUTBOX_CONTRACT_INVALID"));
+
+        var unsafeCorrelation=new InventoryOutboxRepository.OutboxEvent(source.id(),source.organizationId(),source.storeId(),
+                source.movementId(),source.positionId(),source.aggregateVersion(),source.eventType(),source.schemaVersion(),
+                source.payload(),"invalid correlation",source.occurredAt(),source.leaseOwner(),source.claimVersion(),
+                source.attemptCount(),source.leaseUntil());
+        assertThatThrownBy(()->eventCodec.fromOutbox(unsafeCorrelation))
+                .isInstanceOfSatisfying(com.stockrescue.inventory.messaging.InventoryEventContractException.class,
+                        error->assertThat(error.code()).isEqualTo("OUTBOX_CONTRACT_INVALID"));
+    }
+
     @Test void inventoryConsumerContinuesProcessingAfterItsGroupRebalances() {
         var container=listeners.getListenerContainer("inventory-change-projection");
         assertThat(container).isNotNull();
@@ -675,6 +755,155 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         });
         assertThat(feedCount(event.id())).isEqualTo(1);
         assertThat(snapshot(received).buckets().onHand()).isEqualTo(2);
+    }
+
+    @Test void databaseRecoveryRetriesTheSameOffsetAndAppliesLaterVersionsInOrder() throws Exception {
+        var received=receive(3);
+        service.recordSale(f.owner,f.org,f.store,change(received.positionId(),1));
+        var first=outboxFor(received.positionId(),1);
+        var second=outboxFor(received.positionId(),2);
+        var committed=snapshot(received);
+        var container=listeners.getListenerContainer("inventory-change-projection");
+        assertThat(container).isInstanceOf(ConcurrentMessageListenerContainer.class);
+        var concurrentContainer=(ConcurrentMessageListenerContainer<?,?>)container;
+        assertThat(concurrentContainer.getContainers()).hasSize(3);
+        var metadata=captureOutboxMetadata();
+        var databaseUnavailable=new AtomicBoolean();
+        container.stop();
+        doAnswer(invocation->{
+            if(databaseUnavailable.get()) throw new java.sql.SQLException("injected PostgreSQL connection outage");
+            return invocation.callRealMethod();
+        }).when(dataSource).getConnection();
+        try {
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
+                relay.dispatchOnce();
+                assertThat(metadata).containsKeys(first.id(),second.id());
+                assertThat(publishedAt(first.id())).isNotNull();
+                assertThat(publishedAt(second.id())).isNotNull();
+            });
+            var firstMetadata=metadata.get(first.id());
+            var secondMetadata=metadata.get(second.id());
+            assertThat(firstMetadata.partition()).isEqualTo(secondMetadata.partition());
+            assertThat(firstMetadata.offset()).isLessThan(secondMetadata.offset());
+
+            double retriesBefore=messagingMetrics.consumerRetryCount();
+            databaseUnavailable.set(true);
+            container.start();
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
+                assertThat(container.isRunning()).isTrue();
+                assertThat(concurrentContainer.isChildRunning()).isTrue();
+                assertThat(messagingMetrics.retryingRecordCount()).isPositive();
+                assertThat(inventoryMessagingHealth.health().getStatus().getCode()).isEqualTo("DOWN");
+            });
+            var partition=new TopicPartition(firstMetadata.topic(),firstMetadata.partition());
+            Thread.sleep(Duration.ofMillis(2600));
+            assertThat(messagingMetrics.consumerRetryCount()-retriesBefore).isBetween(1d,6d);
+            assertThat(container.isRunning()).isTrue();
+            assertThat(directCommittedOffset(partition)).isLessThanOrEqualTo(firstMetadata.offset());
+            assertThat(directEventCount("inventory_inbox",first.id())).isZero();
+            assertThat(directEventCount("inventory_change_feed",first.id())).isZero();
+            assertThat(directProjectionVersion(received.positionId())).isZero();
+
+            databaseUnavailable.set(false);
+            await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+                assertThat(inboxCount(first.id())).isEqualTo(1);
+                assertThat(inboxCount(second.id())).isEqualTo(1);
+                assertThat(feedCount(first.id())).isEqualTo(1);
+                assertThat(feedCount(second.id())).isEqualTo(1);
+                assertThat(projectionVersion(received.positionId())).isEqualTo(2);
+                assertThat(directCommittedOffset(partition)).isGreaterThan(secondMetadata.offset());
+            });
+            assertThat(jdbc.sql("SELECT aggregate_version FROM stockrescue.inventory_change_feed "
+                    +"WHERE consumer_name='inventory-change-projection-v1' AND position_id=:position ORDER BY aggregate_version")
+                    .param("position",received.positionId()).query(Integer.class).list()).containsExactly(1,2);
+            assertThat(snapshot(received)).isEqualTo(committed);
+            for(UUID eventId:List.of(first.id(),second.id())) {
+                assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_inbox WHERE event_id=:event AND org_id<>:org")
+                        .param("event",eventId).param("org",f.org).query(Long.class).single()).isZero();
+                assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_change_projection WHERE event_id=:event AND org_id<>:org")
+                        .param("event",eventId).param("org",f.org).query(Long.class).single()).isZero();
+            }
+            assertThat(messagingMetrics.retryingRecordCount()).isZero();
+            assertThat(inventoryMessagingHealth.health().getStatus().getCode()).isEqualTo("UP");
+        } finally {
+            databaseUnavailable.set(false);
+            doCallRealMethod().when(dataSource).getConnection();
+            if(!container.isRunning()) {
+                container.start();
+                await().atMost(Duration.ofSeconds(15)).until(container::isRunning);
+            }
+        }
+    }
+
+    @Test void failedPoisonParkingInsertKeepsItsOffsetUncommittedUntilDurableAndThenContinues() throws Exception {
+        var received=receive(2);
+        var source=outboxFor(received.positionId(),1);
+        var event=eventCodec.fromOutbox(source);
+        String key=event.tenantId()+":"+event.aggregateType()+":"+event.aggregateId();
+        var container=listeners.getListenerContainer("inventory-change-projection");
+        var metadata=captureOutboxMetadata();
+        var parkingUnavailable=new AtomicBoolean();
+        container.stop();
+        doAnswer(invocation->{
+            var connection=(java.sql.Connection)invocation.callRealMethod();
+            return java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{java.sql.Connection.class},(proxy,method,args)->{
+                if(method.getName().equals("prepareStatement") && parkingUnavailable.get() && args!=null && args.length>0
+                        && String.valueOf(args[0]).toLowerCase(java.util.Locale.ROOT)
+                                .contains("insert into stockrescue.inventory_consumer_parked_event")) {
+                    throw new java.sql.SQLException("injected parked-event persistence failure");
+                }
+                try { return method.invoke(connection,args); }
+                catch(java.lang.reflect.InvocationTargetException failure) { throw failure.getCause(); }
+            });
+        }).when(dataSource).getConnection();
+        try {
+            relay.dispatchOnce();
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
+                assertThat(metadata).containsKey(source.id());
+                assertThat(publishedAt(source.id())).isNotNull();
+            });
+            var validMetadata=metadata.get(source.id());
+            var poison=(SendResult<?,?>)kafka.send(new ProducerRecord<>(inventoryTopic,"malformed-"+UUID.randomUUID(),"not-json"))
+                    .get(10,TimeUnit.SECONDS);
+            var poisonMetadata=poison.getRecordMetadata();
+            var poisonPartition=new TopicPartition(poisonMetadata.topic(),poisonMetadata.partition());
+
+            parkingUnavailable.set(true);
+            double retriesBefore=messagingMetrics.consumerRetryCount();
+            container.start();
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
+                assertThat(container.isRunning()).isTrue();
+                assertThat(messagingMetrics.retryingRecordCount()).isPositive();
+                assertThat(inventoryMessagingHealth.health().getStatus().getCode()).isEqualTo("DOWN");
+            });
+            Thread.sleep(Duration.ofMillis(2200));
+            assertThat(messagingMetrics.consumerRetryCount()-retriesBefore).isBetween(1d,5d);
+            await().atMost(Duration.ofSeconds(10)).untilAsserted(()->assertThat(inboxCount(source.id())).isEqualTo(1));
+            assertThat(directParkedEventCount(poisonPartition.topic(),poisonPartition.partition(),poisonMetadata.offset())).isZero();
+            assertThat(directCommittedOffset(poisonPartition)).isLessThanOrEqualTo(poisonMetadata.offset());
+
+            parkingUnavailable.set(false);
+            await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+                assertThat(directParkedEventCount(poisonPartition.topic(),poisonPartition.partition(),poisonMetadata.offset())).isEqualTo(1);
+                assertThat(inboxCount(source.id())).isEqualTo(1);
+                assertThat(feedCount(source.id())).isEqualTo(1);
+                assertThat(directCommittedOffset(poisonPartition)).isGreaterThan(poisonMetadata.offset());
+            });
+            assertThat(validMetadata).isNotNull();
+            assertThat(jdbc.sql("SELECT failure_code FROM stockrescue.inventory_consumer_parked_event "
+                    +"WHERE topic=:topic AND partition_id=:partition AND record_offset=:offset")
+                    .param("topic",poisonPartition.topic()).param("partition",poisonPartition.partition())
+                    .param("offset",poisonMetadata.offset()).query(String.class).single()).isEqualTo("MALFORMED_EVENT");
+            assertThat(messagingMetrics.retryingRecordCount()).isZero();
+            assertThat(inventoryMessagingHealth.health().getStatus().getCode()).isEqualTo("UP");
+        } finally {
+            parkingUnavailable.set(false);
+            doCallRealMethod().when(dataSource).getConnection();
+            if(!container.isRunning()) {
+                container.start();
+                await().atMost(Duration.ofSeconds(15)).until(container::isRunning);
+            }
+        }
     }
 
     @Test void expiredRelayLeaseFencesTheOldOwnerFromPublishingRetryingOrParking() {
@@ -783,6 +1012,18 @@ class InventoryCommandsTest extends InfrastructureTestBase {
     }
 
     @Test void storeRolesEnforceWriteOffAdjustmentAndReadBoundaries() {
+        assertThat(access.permissions(f.owner,f.org).allStoreActions()).containsExactly(StoreAction.values());
+        assertThat(access.permissions(f.manager,f.org).storeGrants().getFirst().actions()).containsExactly(
+                StoreAction.READ_STORE,StoreAction.EDIT_STORE,StoreAction.MANAGE_STORAGE_ZONES,StoreAction.REGISTER_SOURCE_EVIDENCE,
+                StoreAction.MANAGE_STORAGE_LOCATIONS,StoreAction.REGISTER_STORE_LOT,StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,
+                StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.ADJUST_STOCK,StoreAction.WRITE_OFF_STOCK,
+                StoreAction.QUARANTINE_STOCK,StoreAction.RECORD_SALE,StoreAction.MANAGE_INVENTORY_ALLOCATIONS,StoreAction.RECONCILE_INVENTORY);
+        assertThat(access.permissions(f.manager,f.org).storeGrants().getFirst().actions()).doesNotContain(StoreAction.REMEDIATE_INVENTORY);
+        assertThat(access.permissions(f.operator,f.org).storeGrants().getFirst().actions()).containsExactly(
+                StoreAction.READ_STORE,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,
+                StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.RECORD_SALE,StoreAction.QUARANTINE_STOCK);
+        assertThat(access.permissions(f.analyst,f.org).storeGrants().getFirst().actions())
+                .containsExactly(StoreAction.READ_STORE,StoreAction.READ_INVENTORY);
         var received=receive(4);
         assertThat(service.snapshot(f.analyst,f.org,f.store,received.positionId()).buckets().onHand()).isEqualTo(4);
         assertThatThrownBy(()->service.reserveStock(f.analyst,f.org,f.store,change(received.positionId(),1))).isInstanceOf(AccessDeniedException.class);
@@ -819,6 +1060,51 @@ class InventoryCommandsTest extends InfrastructureTestBase {
     private long projectionVersion(UUID position) {
         return jdbc.sql("SELECT aggregate_version FROM stockrescue.inventory_change_projection WHERE consumer_name='inventory-change-projection-v1' AND org_id=:org AND store_id=:store AND position_id=:position")
                 .param("org",f.org).param("store",f.store).param("position",position).query(Long.class).single();
+    }
+    private Map<UUID,RecordMetadata> captureOutboxMetadata() {
+        var metadata=new ConcurrentHashMap<UUID,RecordMetadata>();
+        doAnswer(invocation->{
+            @SuppressWarnings("unchecked")
+            var future=(CompletableFuture<SendResult<String,String>>)invocation.callRealMethod();
+            future.thenAccept(sent->{
+                UUID eventId=eventCodec.eventIdOrNull(sent.getProducerRecord().value());
+                if(eventId!=null) metadata.put(eventId,sent.getRecordMetadata());
+            });
+            return future;
+        }).when(kafka).send(org.mockito.ArgumentMatchers.any(ProducerRecord.class));
+        return metadata;
+    }
+    private long directCommittedOffset(TopicPartition partition) throws Exception {
+        try(var admin=AdminClient.create(Map.<String,Object>of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,KAFKA.getBootstrapServers()))) {
+            var offsets=admin.listConsumerGroupOffsets(inventoryConsumerGroup).partitionsToOffsetAndMetadata()
+                    .get(10,TimeUnit.SECONDS);
+            var committed=offsets.get(partition);
+            return committed==null?-1:committed.offset();
+        }
+    }
+    private long directEventCount(String table,UUID event) throws Exception {
+        if(!List.of("inventory_inbox","inventory_change_feed").contains(table)) throw new IllegalArgumentException("Unexpected inventory table");
+        try(var connection=java.sql.DriverManager.getConnection(POSTGRES.getJdbcUrl(),"stockrescue_app","test-app-password");
+            var statement=connection.prepareStatement("SELECT count(*) FROM stockrescue."+table+" WHERE event_id=?")) {
+            statement.setObject(1,event);
+            try(var result=statement.executeQuery()) { result.next();return result.getLong(1); }
+        }
+    }
+    private long directProjectionVersion(UUID position) throws Exception {
+        try(var connection=java.sql.DriverManager.getConnection(POSTGRES.getJdbcUrl(),"stockrescue_app","test-app-password");
+            var statement=connection.prepareStatement("SELECT aggregate_version FROM stockrescue.inventory_change_projection "
+                    +"WHERE consumer_name='inventory-change-projection-v1' AND position_id=?")) {
+            statement.setObject(1,position);
+            try(var result=statement.executeQuery()) { return result.next()?result.getLong(1):0; }
+        }
+    }
+    private long directParkedEventCount(String topic,int partition,long offset) throws Exception {
+        try(var connection=java.sql.DriverManager.getConnection(POSTGRES.getJdbcUrl(),"stockrescue_app","test-app-password");
+            var statement=connection.prepareStatement("SELECT count(*) FROM stockrescue.inventory_consumer_parked_event "
+                    +"WHERE topic=? AND partition_id=? AND record_offset=?")) {
+            statement.setString(1,topic);statement.setInt(2,partition);statement.setLong(3,offset);
+            try(var result=statement.executeQuery()) { result.next();return result.getLong(1); }
+        }
     }
     private java.time.Instant publishedAt(UUID event) {
         return jdbc.sql("SELECT published_at FROM stockrescue.inventory_outbox_delivery WHERE event_id=:event")

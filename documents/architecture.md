@@ -187,6 +187,14 @@ jittered delays, and operators can observe pending count, oldest age, attempts,
 errors and projection staleness through authenticated metrics. Poison events are
 parked and block later versions of their aggregate for review; the consumer stores
 an idempotent receipt and a monotonic derived view without changing stock balances.
+The projection consumer manually acknowledges only after its database transaction
+or durable poison parking commits. Other processing failures retry the same offset
+every second without a retry limit; retrying records and their age are exposed as
+metrics, and integration health becomes DOWN until they recover. This keeps
+aggregate order while avoiding a hot retry loop.
+Event correlation IDs are nullable opaque strings using the same safe 1-to-64
+character syntax accepted by HTTP; UUID values remain valid, while event, tenant,
+aggregate and causation identities remain UUIDs.
 
 Inventory commands lock current store authority before catalog context and stock
 positions. Product and lot locks serialize safety-evidence changes with stock
@@ -244,16 +252,21 @@ Memberships and store assignments have independent scopes:
 
 | Role | Authority |
 | --- | --- |
-| Org Admin | Manage the organization's members, invitations, stores, zones, lanes and costs; inspect archived store history. |
-| Store Manager | Read assigned active stores, edit their metadata and storage zones, and register source evidence. |
-| Inventory Operator | Read assigned active stores and their configuration, and register source evidence. |
-| Read-only Analyst | Read assigned active stores and their configuration. |
+| Org Admin | All organization and store actions, including inventory reconciliation and privileged, audited inventory remediation; may inspect archived history. |
+| Store Manager | Assigned active stores; edit metadata, zones and locations, register lot/source evidence, and perform inventory operations including reconciliation and managing other users' allocations. |
+| Inventory Operator | Assigned active stores; read configuration and inventory, register source evidence, receive, reserve/release owned allocations, record sales, and quarantine/hold stock. |
+| Read-only Analyst | Read assigned active stores and inventory. |
 
 Every protected operation resolves the current account, active organization
 membership and relevant store assignment. Organization selection identifies the
 workspace being viewed; authorization comes from persisted membership and grants.
 Resource queries include organization scope, and composite foreign keys preserve
 that relationship during writes.
+
+Store roles apply only to assigned active stores. Org Admins retain read access to
+archived store history, while inventory writes require an active store. Store
+Managers may not remediate a frozen inventory projection; that action remains with
+Org Admins and is recorded in audit history.
 
 An invitation contains the intended email address and administrator-selected
 store assignments. Its 32-byte random secret is shared through a private link;

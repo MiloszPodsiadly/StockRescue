@@ -30,7 +30,7 @@ import com.stockrescue.inventory.persistence.InventoryReconciliationRepository.J
 import com.stockrescue.inventory.persistence.InventoryReconciliationRepository.Run;
 import com.stockrescue.inventory.persistence.InventoryRepository;
 import com.stockrescue.inventory.persistence.InventoryRepository.CommandReceipt;
-import com.stockrescue.inventory.persistence.InventoryRepository.Operation;
+import com.stockrescue.inventory.domain.InventoryOperation;
 import com.stockrescue.platform.audit.AuditWriter;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -40,6 +40,9 @@ import tools.jackson.databind.ObjectMapper;
 @Service
 public class InventoryReconciliationService {
     public record Page<T>(List<T> items,boolean hasMore) { public Page { items=List.copyOf(items); } }
+    public record ReconciliationRun(UUID id,UUID organizationId,UUID storeId,String severity,int checkedPositions,
+            Instant startedAt,Instant completedAt) { }
+    public record ReconciliationFinding(UUID positionId,long positionVersion,String severity,String code,String expected,String observed) { }
     public record RepairRequest(UUID requestId,UUID runId,UUID positionId,long expectedVersion,String reason,String evidenceReference) {}
 
     private final AccessPolicy access;
@@ -55,7 +58,7 @@ public class InventoryReconciliationService {
     }
 
     @Transactional(isolation=Isolation.READ_COMMITTED)
-    public Run reconcile(UUID actor,UUID org,UUID store) {
+    public ReconciliationRun reconcile(UUID actor,UUID org,UUID store) {
         var member=access.requireStore(actor,org,store,StoreAction.RECONCILE_INVENTORY,true);
         inventory.lockStoreForReconciliation(org,store);
         Instant started=clock.instant();
@@ -76,8 +79,8 @@ public class InventoryReconciliationService {
                 UUID requestId=UUID.randomUUID();
                 String evidence="reconciliation-run:"+runId;
                 String reason="Freeze position after critical ledger reconciliation";
-                var digest=InventoryFingerprint.of(store,Operation.RECONCILE,runId,position.id(),analysis.code());
-                var command=new CommandReceipt(UUID.randomUUID(),org,store,actor,member.membershipId(),Operation.RECONCILE,
+                var digest=InventoryFingerprint.of(store,InventoryOperation.RECONCILE,runId,position.id(),analysis.code());
+                var command=new CommandReceipt(UUID.randomUUID(),org,store,actor,member.membershipId(),InventoryOperation.RECONCILE,
                         requestId,digest,json.writeValueAsString(Map.of("runId",runId,"positionId",position.id(),"finding",analysis.code())));
                 inventory.recordCommand(command);
                 UUID movement=UUID.randomUUID();
@@ -97,7 +100,7 @@ public class InventoryReconciliationService {
         audit.securityChange(actor,org,"inventory-reconciliation",runId,"INVENTORY_RECONCILIATION",
                 Map.of("severity",severity,"checkedPositions",positions.size(),"criticalPositions",findings.stream().filter(f->f.severity().equals("CRITICAL")).count()),
                 "Reconcile committed inventory history");
-        return run;
+        return readModel(run);
     }
 
     @Transactional
@@ -106,9 +109,9 @@ public class InventoryReconciliationService {
         if(request==null || request.requestId()==null || request.runId()==null || request.positionId()==null
                 || request.expectedVersion()<0 || request.expectedVersion()==Long.MAX_VALUE) throw failure(Kind.INVALID_REQUEST);
         String reason=text(request.reason(),500),evidence=text(request.evidenceReference(),256);
-        var digest=InventoryFingerprint.of(store,Operation.REMEDIATE,request.runId(),request.positionId(),request.expectedVersion(),reason,evidence);
-        inventory.lockRequest(org,actor,Operation.REMEDIATE,request.requestId());
-        var previous=inventory.command(org,actor,Operation.REMEDIATE,request.requestId());
+        var digest=InventoryFingerprint.of(store,InventoryOperation.REMEDIATE,request.runId(),request.positionId(),request.expectedVersion(),reason,evidence);
+        inventory.lockRequest(org,actor,InventoryOperation.REMEDIATE,request.requestId());
+        var previous=inventory.command(org,actor,InventoryOperation.REMEDIATE,request.requestId());
         if(previous.isPresent()) {
             var receipt=previous.orElseThrow();
             if(!receipt.storeId().equals(store) || !MessageDigest.isEqual(receipt.payloadDigest(),digest)) throw failure(Kind.IDEMPOTENCY_CONFLICT);
@@ -130,7 +133,7 @@ public class InventoryReconciliationService {
         long version=Math.incrementExact(before.version());
         UUID movement=UUID.randomUUID();
         var result=new Result(movement,before.id(),version,afterBuckets,null,null);
-        var command=new CommandReceipt(UUID.randomUUID(),org,store,actor,member.membershipId(),Operation.REMEDIATE,
+        var command=new CommandReceipt(UUID.randomUUID(),org,store,actor,member.membershipId(),InventoryOperation.REMEDIATE,
                 request.requestId(),digest,json.writeValueAsString(result));
         if(!inventory.recordCommand(command)) throw failure(Kind.IDEMPOTENCY_CONFLICT);
         inventory.recordMovement(movement,command,reason,evidence);
@@ -142,20 +145,28 @@ public class InventoryReconciliationService {
     }
 
     @Transactional(readOnly=true)
-    public Page<Run> runs(UUID actor,UUID org,UUID store,int offset,int limit) {
+    public Page<ReconciliationRun> runs(UUID actor,UUID org,UUID store,int offset,int limit) {
         access.requireStoreIncludingArchived(actor,org,store,StoreAction.READ_INVENTORY,false);
         validatePage(offset,limit);
         var rows=reconciliations.runs(org,store,offset,limit+1);
-        return new Page<>(rows.stream().limit(limit).toList(),rows.size()>limit);
+        return new Page<>(rows.stream().limit(limit).map(InventoryReconciliationService::readModel).toList(),rows.size()>limit);
     }
 
     @Transactional(readOnly=true)
-    public Page<Finding> findings(UUID actor,UUID org,UUID store,UUID run,int offset,int limit) {
+    public Page<ReconciliationFinding> findings(UUID actor,UUID org,UUID store,UUID run,int offset,int limit) {
         access.requireStoreIncludingArchived(actor,org,store,StoreAction.READ_INVENTORY,false);
         validatePage(offset,limit);
         reconciliations.run(org,store,run).orElseThrow(OrganizationUnavailableException::new);
         var rows=reconciliations.findings(org,store,run,offset,limit+1);
-        return new Page<>(rows.stream().limit(limit).toList(),rows.size()>limit);
+        return new Page<>(rows.stream().limit(limit).map(InventoryReconciliationService::readModel).toList(),rows.size()>limit);
+    }
+
+    private static ReconciliationRun readModel(Run run) {
+        return new ReconciliationRun(run.id(),run.organizationId(),run.storeId(),run.severity(),run.checkedPositions(),run.startedAt(),run.completedAt());
+    }
+
+    private static ReconciliationFinding readModel(Finding finding) {
+        return new ReconciliationFinding(finding.positionId(),finding.positionVersion(),finding.severity(),finding.code(),finding.expected(),finding.observed());
     }
 
     private Analysis analyze(StockPosition position,List<JournalLine> lines,List<Allocation> allocations,List<AllocationTransition> transitions) {

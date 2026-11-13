@@ -12,13 +12,16 @@ import com.stockrescue.inventory.domain.StockPosition;
 import com.stockrescue.inventory.domain.StockPosition.Initialization;
 import com.stockrescue.inventory.domain.StockPosition.Trust;
 import com.stockrescue.inventory.persistence.InventoryRepository.CommandReceipt;
-import com.stockrescue.inventory.persistence.InventoryRepository.Operation;
+import com.stockrescue.inventory.domain.InventoryOperation;
+import com.stockrescue.inventory.messaging.InventoryEventCodec;
+import com.stockrescue.inventory.persistence.InventoryOutboxRepository;
 import com.stockrescue.platform.audit.AuditWriter;
 import com.stockrescue.support.MigrationAssertions;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -117,10 +120,10 @@ class InventoryPersistenceTest {
 
     @Test void bucketsRejectOverdrawUnsupportedUnitsAndOverflowWithoutAQuantitySetter() {
         within(f->{
-            var first=post(f,Operation.RECEIVE,new Delta(Long.MAX_VALUE,0,0,0));
+            var first=post(f,InventoryOperation.RECEIVE,new Delta(Long.MAX_VALUE,0,0,0));
             assertThat(first.position.buckets().available()).isEqualTo(Long.MAX_VALUE);
-            rejectJava(ArithmeticException.class,()->post(f,Operation.RECEIVE,new Delta(1,0,0,0)));
-            rejectJava(IllegalArgumentException.class,()->post(f,Operation.RESERVE,new Delta(0,Long.MAX_VALUE,1,0)));
+            rejectJava(ArithmeticException.class,()->post(f,InventoryOperation.RECEIVE,new Delta(1,0,0,0)));
+            rejectJava(IllegalArgumentException.class,()->post(f,InventoryOperation.RESERVE,new Delta(0,Long.MAX_VALUE,1,0)));
             reject("23514",()->sql("UPDATE stockrescue.stock_position SET on_hand=0,version=version+1 WHERE id=?",f.position));
             reject("23514",()->sql("UPDATE stockrescue.stock_position SET version=version+2 WHERE id=?",f.position));
             reject("23514",()->sql("INSERT INTO stockrescue.stock_position(id,org_id,store_id,location_id,product_id,lot_id,unit) VALUES (?,?,?,?,?,?,'KG')",UUID.randomUUID(),f.org,f.store,f.location,f.product,f.lot));
@@ -132,18 +135,18 @@ class InventoryPersistenceTest {
 
     @Test void physicalAndDisjointBucketHistoryReconstructsAfterPartialReleaseAndBlockedWriteOff() {
         within(f->{
-            post(f,Operation.RECEIVE,new Delta(10,0,0,0));
-            var reservation=post(f,Operation.RESERVE,new Delta(0,4,0,0));
+            post(f,InventoryOperation.RECEIVE,new Delta(10,0,0,0));
+            var reservation=post(f,InventoryOperation.RESERVE,new Delta(0,4,0,0));
             var reserved=openAllocation(f,reservation,"RESERVED",4);
-            var quarantine=post(f,Operation.QUARANTINE,new Delta(0,0,3,0));
+            var quarantine=post(f,InventoryOperation.QUARANTINE,new Delta(0,0,3,0));
             openAllocation(f,quarantine,"QUARANTINED",3);
-            var hold=post(f,Operation.HOLD,new Delta(0,0,0,1));
+            var hold=post(f,InventoryOperation.HOLD,new Delta(0,0,0,1));
             var held=openAllocation(f,hold,"OTHER_BLOCKED",1);
-            var release=post(f,Operation.RELEASE,new Delta(0,-2,0,0));
+            var release=post(f,InventoryOperation.RELEASE,new Delta(0,-2,0,0));
             transition(f,release,reserved,"RESERVED",1,4,2,"ACTIVE","RELEASE");
-            var writeOff=post(f,Operation.WRITE_OFF,new Delta(-1,0,0,-1));
+            var writeOff=post(f,InventoryOperation.WRITE_OFF,new Delta(-1,0,0,-1));
             transition(f,writeOff,held,"OTHER_BLOCKED",1,1,0,"WRITTEN_OFF","WRITE_OFF");
-            var sale=post(f,Operation.SALE,new Delta(-2,0,0,0));
+            var sale=post(f,InventoryOperation.SALE,new Delta(-2,0,0,0));
             assertThat(sale.position.buckets()).isEqualTo(new StockBuckets(7,2,3,0));
             assertThat(sale.position.buckets().available()).isEqualTo(2);
             assertThat(number("SELECT sum(delta_on_hand) FROM stockrescue.stock_movement_line WHERE position_id=?",f.position)).isEqualTo(7);
@@ -159,11 +162,11 @@ class InventoryPersistenceTest {
 
     @Test void databaseChecksRejectInvalidBucketsEvenWithMatchingMovementDeltas() {
         within(f->{
-            post(f,Operation.RECEIVE,new Delta(3,0,0,0));
+            post(f,InventoryOperation.RECEIVE,new Delta(3,0,0,0));
             for (var values:List.of(new long[]{-1,0,0,0},new long[]{3,-1,0,0},new long[]{3,0,-1,0},
                     new long[]{3,0,0,-1},new long[]{3,2,2,0},new long[]{3,0,0,4})) {
                 reject("23514",()->{
-                    var command=command(f,Operation.ADJUST); repository.recordCommand(command);
+                    var command=command(f,InventoryOperation.ADJUST); repository.recordCommand(command);
                     var movement=UUID.randomUUID(); repository.recordMovement(movement,command,"Physical correction","count-sheet");
                     sql("INSERT INTO stockrescue.stock_movement_line(org_id,store_id,movement_id,position_id,position_version,delta_on_hand,delta_reserved,delta_quarantined,delta_other_blocked,initialization_after,trust_after) VALUES (?,?,?,?,2,?,?,?,?,'INITIALIZED','UNVERIFIED')",f.org,f.store,movement,f.position,values[0]-3,values[1],values[2],values[3]);
                     sql("UPDATE stockrescue.stock_position SET on_hand=?,reserved=?,quarantined=?,other_blocked=?,version=2 WHERE id=?",values[0],values[1],values[2],values[3],f.position);
@@ -175,18 +178,18 @@ class InventoryPersistenceTest {
 
     @Test void unfinishedCommandsAndMismatchedAllocationEvidenceCannotCommit() {
         within(f->{
-            reject("23514",()->{ repository.recordCommand(command(f,Operation.RECEIVE)); constraints(); });
-            post(f,Operation.RECEIVE,new Delta(3,0,0,0));
+            reject("23514",()->{ repository.recordCommand(command(f,InventoryOperation.RECEIVE)); constraints(); });
+            post(f,InventoryOperation.RECEIVE,new Delta(3,0,0,0));
             reject("23514",()->{
-                var reserve=post(f,Operation.RESERVE,new Delta(0,2,0,0));
+                var reserve=post(f,InventoryOperation.RESERVE,new Delta(0,2,0,0));
                 openAllocation(f,reserve,"RESERVED",1);
                 constraints();
             });
-            var reserve=post(f,Operation.RESERVE,new Delta(0,2,0,0));
+            var reserve=post(f,InventoryOperation.RESERVE,new Delta(0,2,0,0));
             var allocation=openAllocation(f,reserve,"RESERVED",2);
             constraints();
             reject("23503",()->{
-                var release=post(f,Operation.RELEASE,new Delta(0,-1,0,0));
+                var release=post(f,InventoryOperation.RELEASE,new Delta(0,-1,0,0));
                 transition(f,release,allocation,"RESERVED",1,3,1,"ACTIVE","RELEASE");
                 constraints();
             });
@@ -201,10 +204,10 @@ class InventoryPersistenceTest {
             }
             reject("23503",()->sql("INSERT INTO stockrescue.inventory_command_receipt(id,org_id,store_id,actor_user_id,membership_id,operation,request_id,payload_digest,outcome) VALUES (?,?,?,?,?,'RECEIVE',?,?,'{}')",UUID.randomUUID(),f.otherOrg,f.otherStore,f.user,f.member,UUID.randomUUID(),new byte[32]));
             reject("23514",()->{
-                var command=command(f,Operation.RECEIVE); repository.recordCommand(command);
+                var command=command(f,InventoryOperation.RECEIVE); repository.recordCommand(command);
                 repository.recordMovement(UUID.randomUUID(),command," ","proof");
             });
-            var posted=post(f,Operation.RECEIVE,new Delta(1,0,0,0));
+            var posted=post(f,InventoryOperation.RECEIVE,new Delta(1,0,0,0));
             var receipt=UUID.randomUUID(); receipt(f,posted,receipt,"document-check");
             reject("23514",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',0,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position));
             reject("23514",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',1,'RESERVED')",f.org,f.store,receipt,posted.movement,f.position));
@@ -215,12 +218,12 @@ class InventoryPersistenceTest {
 
     @Test void zeroVerificationAndProjectionUpdatesRequireDurableJournalEvidence() {
         within(f->{
-            var zero=post(f,Operation.VERIFY_ZERO,new Delta(0,0,0,0));
+            var zero=post(f,InventoryOperation.VERIFY_ZERO,new Delta(0,0,0,0));
             assertThat(zero.position.initialization()).isEqualTo(Initialization.INITIALIZED);
             assertThat(zero.position.buckets()).isEqualTo(StockBuckets.ZERO);
             reject("23514",()->sql("UPDATE stockrescue.stock_position SET initialization_state='NOT_INITIALIZED',version=version+1 WHERE id=?",f.position));
             reject("23514",()->{
-                var command=command(f,Operation.RECEIVE);
+                var command=command(f,InventoryOperation.RECEIVE);
                 repository.recordCommand(command); var movement=UUID.randomUUID(); repository.recordMovement(movement,command,"Delivery","delivery-1");
                 sql("INSERT INTO stockrescue.stock_movement_line(org_id,store_id,movement_id,position_id,position_version,delta_on_hand,delta_reserved,delta_quarantined,delta_other_blocked,initialization_after,trust_after) VALUES (?,?,?,?,2,1,0,0,0,'INITIALIZED','UNVERIFIED')",f.org,f.store,movement,f.position);
                 constraints();
@@ -231,9 +234,9 @@ class InventoryPersistenceTest {
 
     @Test void reservationsCannotCommitWithoutTheirMatchingImmutableLifecycle() {
         within(f->{
-            post(f,Operation.RECEIVE,new Delta(5,0,0,0));
-            reject("23514",()->{ post(f,Operation.RESERVE,new Delta(0,1,0,0)); constraints(); });
-            var reserve=post(f,Operation.RESERVE,new Delta(0,2,0,0));
+            post(f,InventoryOperation.RECEIVE,new Delta(5,0,0,0));
+            reject("23514",()->{ post(f,InventoryOperation.RESERVE,new Delta(0,1,0,0)); constraints(); });
+            var reserve=post(f,InventoryOperation.RESERVE,new Delta(0,2,0,0));
             var allocation=openAllocation(f,reserve,"RESERVED",2);
             constraints();
             reject("23514",()->sql("UPDATE stockrescue.stock_allocation SET remaining_quantity=-1,version=version+1 WHERE id=?",allocation));
@@ -241,7 +244,7 @@ class InventoryPersistenceTest {
                 sql("UPDATE stockrescue.stock_allocation SET remaining_quantity=1,version=version+1 WHERE id=?",allocation);
                 constraints();
             });
-            var release=post(f,Operation.RELEASE,new Delta(0,-1,0,0));
+            var release=post(f,InventoryOperation.RELEASE,new Delta(0,-1,0,0));
             transition(f,release,allocation,"RESERVED",1,2,1,"ACTIVE","RELEASE");
             constraints();
         });
@@ -249,14 +252,14 @@ class InventoryPersistenceTest {
 
     @Test void commandAndPhysicalDocumentDeduplicationHaveIndependentScopedIdentities() {
         within(f->{
-            var posted=post(f,Operation.RECEIVE,new Delta(2,0,0,0));
+            var posted=post(f,InventoryOperation.RECEIVE,new Delta(2,0,0,0));
             assertThat(repository.recordCommand(posted.command)).isFalse();
-            var recorded=repository.command(f.org,f.user,Operation.RECEIVE,posted.command.requestId()).orElseThrow();
+            var recorded=repository.command(f.org,f.user,InventoryOperation.RECEIVE,posted.command.requestId()).orElseThrow();
             assertThat(recorded.id()).isEqualTo(posted.command.id());
             assertThat(recorded.payloadDigest()).isEqualTo(posted.command.payloadDigest());
             var receipt=UUID.randomUUID(); receipt(f,posted,receipt,"delivery-24");
             sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',2,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position);
-            var newRequest=post(f,Operation.RECEIVE,new Delta(1,0,0,0));
+            var newRequest=post(f,InventoryOperation.RECEIVE,new Delta(1,0,0,0));
             reject("23505",()->receipt(f,newRequest,UUID.randomUUID(),"delivery-24"));
             reject("23505",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',1,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position));
             reject("23503",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'2',1,'AVAILABLE')",f.otherOrg,f.otherStore,receipt,posted.movement,f.position));
@@ -267,10 +270,10 @@ class InventoryPersistenceTest {
 
     @Test void historyAndDerivedEvidenceRejectUpdateDeleteAndTruncate() {
         within(f->{
-            var posted=post(f,Operation.RECEIVE,new Delta(3,0,0,0));
+            var posted=post(f,InventoryOperation.RECEIVE,new Delta(3,0,0,0));
             var receipt=UUID.randomUUID(); receipt(f,posted,receipt,"immutable-delivery");
             sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',3,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position);
-            var reservation=post(f,Operation.RESERVE,new Delta(0,1,0,0)); openAllocation(f,reservation,"RESERVED",1);
+            var reservation=post(f,InventoryOperation.RESERVE,new Delta(0,1,0,0)); openAllocation(f,reservation,"RESERVED",1);
             var run=UUID.randomUUID();
             sql("INSERT INTO stockrescue.inventory_reconciliation_run(id,org_id,store_id,actor_user_id,membership_id,severity,checked_positions,started_at,completed_at) VALUES (?,?,?,?,?,'CLEAN',1,clock_timestamp(),clock_timestamp())",run,f.org,f.store,f.user,f.member);
             sql("INSERT INTO stockrescue.inventory_reconciliation_result(org_id,store_id,run_id,position_id,position_version,severity,finding_code,expected_buckets,observed_buckets) VALUES (?,?,?,?,2,'CLEAN','MATCH','{}','{}')",f.org,f.store,run,f.position);
@@ -293,7 +296,7 @@ class InventoryPersistenceTest {
 
     @Test void outboxInboxAndReconciliationRejectScopeAliasesInvalidPayloadsAndDuplicateEffects() {
         within(f->{
-            var posted=post(f,Operation.RECEIVE,new Delta(1,0,0,0));
+            var posted=post(f,InventoryOperation.RECEIVE,new Delta(1,0,0,0));
             var event=UUID.fromString(text("SELECT id FROM stockrescue.inventory_outbox_event WHERE movement_id=?",posted.movement));
             reject("23514",()->sql("UPDATE stockrescue.inventory_outbox_delivery SET lease_owner=? WHERE event_id=?",UUID.randomUUID(),event));
             reject("23514",()->sql("UPDATE stockrescue.inventory_outbox_delivery SET lease_owner=?,lease_until=clock_timestamp()+interval '30 seconds' WHERE event_id=?",UUID.randomUUID(),event));
@@ -313,7 +316,7 @@ class InventoryPersistenceTest {
         var f=transactions.execute(status->fixture());
         try (var correlation=org.slf4j.MDC.putCloseable("correlationId",UUID.randomUUID().toString())) {
             assertThatThrownBy(()->transactions.executeWithoutResult(status->{
-                post(f,Operation.RECEIVE,new Delta(5,0,0,0));
+                post(f,InventoryOperation.RECEIVE,new Delta(5,0,0,0));
                 new AuditWriter(jdbc,new ObjectMapper()).organizationAction(f.user,f.org,"stock_position",f.position,"GOODS_RECEIVED");
                 throw new IllegalStateException("injected failure after all inserts");
             })).isInstanceOf(IllegalStateException.class).hasMessage("injected failure after all inserts");
@@ -324,11 +327,27 @@ class InventoryPersistenceTest {
         }
     }
 
+    @Test void outboxEventPreservesNullableCorrelationWhenNoRequestContextExists() {
+        String previous=MDC.get("correlationId");
+        try {
+            MDC.remove("correlationId");
+            within(f->{
+                var posted=post(f,InventoryOperation.RECEIVE,new Delta(2,0,0,0));
+                UUID event=UUID.fromString(text("SELECT id FROM stockrescue.inventory_outbox_event WHERE movement_id=?",posted.movement));
+                var outbox=new InventoryOutboxRepository(jdbc).find(event);
+                assertThat(outbox.correlationId()).isNull();
+                assertThat(new InventoryEventCodec(new ObjectMapper()).fromOutbox(outbox).correlationId()).isNull();
+            });
+        } finally {
+            if(previous==null) MDC.remove("correlationId"); else MDC.put("correlationId",previous);
+        }
+    }
+
     @Test void inventoryPrimitivesRequireAWriteTransactionAndRejectStaleVersions() {
         assertThatThrownBy(()->repository.createPosition(UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID()))
                 .isInstanceOf(IllegalStateException.class);
         within(f->{
-            var posted=post(f,Operation.RECEIVE,new Delta(1,0,0,0));
+            var posted=post(f,InventoryOperation.RECEIVE,new Delta(1,0,0,0));
             assertThatThrownBy(()->repository.postLine(f.org,f.store,posted.movement,f.position,0,new Delta(1,0,0,0),Trust.UNVERIFIED))
                     .isInstanceOf(InventoryWriteConflict.class);
             assertThat(number("SELECT count(*) FROM stockrescue.stock_movement_line WHERE position_id=?",f.position)).isEqualTo(1);
@@ -371,10 +390,10 @@ class InventoryPersistenceTest {
         repository.createPosition(f.position,f.org,f.store,f.location,f.product,f.lot);
         return f;
     }
-    private static CommandReceipt command(Fixture f,Operation operation) {
+    private static CommandReceipt command(Fixture f,InventoryOperation operation) {
         return new CommandReceipt(UUID.randomUUID(),f.org,f.store,f.user,f.member,operation,UUID.randomUUID(),new byte[32],"{\"accepted\":true}");
     }
-    private static Posting post(Fixture f,Operation operation,Delta delta) {
+    private static Posting post(Fixture f,InventoryOperation operation,Delta delta) {
         var command=command(f,operation); repository.recordCommand(command); var movement=UUID.randomUUID();
         repository.recordMovement(movement,command,"Operator stock evidence","manual-document");
         var position=repository.position(f.org,f.store,f.position,true).orElseThrow();
