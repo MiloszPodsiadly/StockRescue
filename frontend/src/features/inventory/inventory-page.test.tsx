@@ -1,8 +1,10 @@
 import { render, screen } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
 import userEvent from '@testing-library/user-event'
-import type { StockPosition } from '@/api/inventory'
+import type { InventoryAllocation, StockPosition } from '@/api/inventory'
+import type { Store } from '@/api/stores'
 import { PositionTable } from './inventory-page'
+import { inventoryAllocationsForOperation, inventoryOperationChoices } from './inventory-permissions'
 
 const row = (initialization: StockPosition['initialization'], quantity: number | null): StockPosition => ({
   id: 'position', productId: 'product', lotId: 'lot', locationId: 'location', unit: 'EA', initialization,
@@ -30,4 +32,16 @@ it('lets keyboard users focus and activate the position review action', async ()
   expect(review).toHaveFocus()
   await user.keyboard('{Enter}')
   expect(onSelect).toHaveBeenCalledWith('position')
+})
+
+it('offers hold controls to inventory operators and limits allocation changes to owned records', () => {
+  const operatorActions = ['QUARANTINE_STOCK'] as Store['allowedActions']
+  expect(inventoryOperationChoices(operatorActions).map(action => action.value)).toEqual(['quarantine', 'hold', 'releaseHold'])
+  const allocations: InventoryAllocation[] = [
+    { id: 'owned-hold', positionId: 'position', bucket: 'OTHER_BLOCKED', remaining: 2, state: 'ACTIVE', version: 1, ownedByCurrentUser: true },
+    { id: 'peer-hold', positionId: 'position', bucket: 'OTHER_BLOCKED', remaining: 3, state: 'ACTIVE', version: 1, ownedByCurrentUser: false },
+    { id: 'released-hold', positionId: 'position', bucket: 'OTHER_BLOCKED', remaining: 0, state: 'RELEASED', version: 2, ownedByCurrentUser: true },
+  ]
+  expect(inventoryAllocationsForOperation(allocations, 'releaseHold', false).map(item => item.id)).toEqual(['owned-hold'])
+  expect(inventoryAllocationsForOperation(allocations, 'releaseHold', true).map(item => item.id)).toEqual(['owned-hold', 'peer-hold'])
 })

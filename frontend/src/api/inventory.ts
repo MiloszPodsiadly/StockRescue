@@ -7,6 +7,8 @@ export type InventoryMovement = components['schemas']['MovementResponse']
 export type InventoryAllocation = components['schemas']['AllocationResponse']
 export type InventoryCommand = components['schemas']['InventoryCommandResponse']
 export type InventoryReceipt = components['schemas']['ReceiptRequest']
+export type InventoryReceiptDocument = components['schemas']['ReceiptDocumentRequest']
+export type InventoryReceiptDocumentResult = components['schemas']['ReceiptDocumentResponse']
 export type StockCommand = components['schemas']['StockCommandRequest']
 export type StockWriteOff = components['schemas']['WriteOffRequest']
 export type Reconciliation = components['schemas']['ReconciliationResponse']
@@ -49,6 +51,19 @@ export async function listInventoryAllocations(organizationId: string, storeId: 
 export async function receiveInventoryGoods(organizationId: string, storeId: string, body: InventoryReceipt, signal: AbortSignal) {
   const { data, error, response } = await api.POST(`${base}/receipts`, { params: { path: { organizationId, storeId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
   signal.throwIfAborted()
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function receiveInventoryGoodsDocument(organizationId: string, storeId: string, body: InventoryReceiptDocument, signal: AbortSignal) {
+  const { data, error, response } = await api.POST(`${base}/receipt-documents`, { params: { path: { organizationId, storeId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
+  signal.throwIfAborted()
+  if (!data) throw new ApiError(response, error)
+  return { result: data, created: response.status === 201 }
+}
+
+export async function getInventoryReceiptDocumentOutcome(organizationId: string, storeId: string, requestId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.GET(`${base}/receipt-documents/commands/{requestId}`, { params: { path: { organizationId, storeId, requestId } }, signal: requestSignal(signal) })
   if (!data) throw new ApiError(response, error)
   return data
 }

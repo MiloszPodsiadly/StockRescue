@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { AppLink } from '@/components/app-link'
@@ -7,27 +7,29 @@ import { Field, inputClass } from '@/components/form-field'
 import { StateMessage } from '@/components/state-message'
 import { ApiError, errorMessage } from '@/api/client'
 import { listProducts } from '@/api/products'
-import type { Product } from '@/api/products'
 import { listLots } from '@/api/lots'
 import { listStorageLocations } from '@/api/storage-locations'
-import type { StorageLocation } from '@/api/storage-locations'
 import { getStore } from '@/api/stores'
 import type { Store } from '@/api/stores'
 import {
   getInventoryCommandOutcome, getInventorySnapshot, listInventoryAllocations, listInventoryAvailableByLot,
   listInventoryFindings, listInventoryMovements, listInventoryPositions,
-  listInventoryReconciliations, receiveInventoryGoods, reconcileInventory, repairInventoryProjection,
-  releaseInventoryAllocation, runInventoryCommand, writeOffInventoryStock,
+  listInventoryReconciliations, reconcileInventory, repairInventoryProjection, releaseInventoryAllocation,
+  runInventoryCommand, writeOffInventoryStock,
 } from '@/api/inventory'
 import type {
-  AvailableByLot, InventoryAllocation, InventoryCommand, InventoryOperation,
-  InventoryReceipt, ProjectionRepair, Reconciliation, ReconciliationFinding, StockCommand, StockPosition,
+  AvailableByLot, InventoryAllocation, InventoryCommand, InventoryOperation, ProjectionRepair,
+  Reconciliation, ReconciliationFinding, StockCommand, StockPosition,
 } from '@/api/inventory'
 import { OrganizationPage } from '../organizations/organization-page'
 import { useTenantKey, useTenantRequests } from '../organizations/tenant-requests'
+import { subscribeAccessChanges } from '@/api/session-events'
+import { clearPendingInventoryCommand, savePendingInventoryCommand, usePendingInventoryCommand } from './inventory-pending-commands'
+import { InventoryReceiptForm } from './inventory-receipt-form'
+import { inventoryAllocationsForOperation, inventoryOperationChoices } from './inventory-permissions'
+import type { OperationChoice } from './inventory-permissions'
 
-type OperationChoice = 'reserve' | 'release' | 'adjust' | 'writeOff' | 'quarantine' | 'hold' | 'releaseHold' | 'sale'
-type CommandDraft = { choice: OperationChoice, requestId: string, expectedVersion: number, quantity: number, reason: string, evidenceReference: string, allocationId?: string }
+type CommandDraft = { choice: OperationChoice, requestId: string, positionId: string, expectedVersion: number, quantity: number, reason: string, evidenceReference: string, allocationId?: string }
 const refresh = { refetchOnWindowFocus: true, staleTime: 0 } as const
 
 export function InventoryPage() {
@@ -37,6 +39,7 @@ export function InventoryPage() {
 
 function InventoryWorkspace({ organizationId, storeId }: { organizationId: string, storeId: string }) {
   const scope = useTenantKey()
+  const [, actorId, scopedOrganizationId] = scope
   const client = useQueryClient()
   const [productId, setProductId] = useState('')
   const [lotId, setLotId] = useState('')
@@ -55,8 +58,16 @@ function InventoryWorkspace({ organizationId, storeId }: { organizationId: strin
   const selectedSnapshot = useQuery({ queryKey: [...inventoryKey, 'snapshot', selectedPositionId], enabled: canRead && Boolean(selectedPositionId), queryFn: ({ signal }) => getInventorySnapshot(organizationId, storeId, selectedPositionId, signal), ...refresh })
   const selected = selectedPositionId ? selectedSnapshot.data : undefined
   const commandRefresh = async () => {
-    await client.invalidateQueries({ queryKey: inventoryKey })
+    await Promise.all([
+      client.invalidateQueries({ queryKey: inventoryKey }),
+      client.invalidateQueries({ queryKey: [...scope, 'store', storeId] }),
+    ])
   }
+  useEffect(() => subscribeAccessChanges(changed => {
+    if (changed !== organizationId) return
+    void client.invalidateQueries({ queryKey: ['tenant', actorId, scopedOrganizationId, 'store', storeId] }, { cancelRefetch: false })
+    void client.invalidateQueries({ queryKey: ['tenant', actorId, scopedOrganizationId, 'inventory', storeId] }, { cancelRefetch: false })
+  }), [client, organizationId, actorId, scopedOrganizationId, storeId])
 
   if (store.isPending) return <StateMessage state="loading" title="Checking store access" description="Resolving your current store permissions." />
   if (store.isError) return <Unavailable title="Store unavailable" error={store.error} retry={() => { void store.refetch() }} />
@@ -71,7 +82,7 @@ function InventoryWorkspace({ organizationId, storeId }: { organizationId: strin
       <Field label="Storage location">{id => <select id={id} value={locationId} onChange={event => { setLocationId(event.target.value); setOffset(0); setSelectedPositionId('') }} className={inputClass}><option value="">All locations</option>{locations.data?.items.map(location => <option key={location.id} value={location.id}>{location.code} · {location.name}</option>)}</select>}</Field>
     </section>
     {(products.isError || lots.isError || locations.isError) && <p role="status" className="rounded-xl border border-border p-4 text-sm text-muted-foreground">Some catalog labels are unavailable. Inventory remains scoped and can still be reviewed by its saved record references.</p>}
-    <ReceiptForm organizationId={organizationId} storeId={storeId} store={store.data} products={products.data?.items ?? []} locations={locations.data?.items ?? []} scope={inventoryKey} onCommitted={commandRefresh} />
+    <InventoryReceiptForm organizationId={organizationId} storeId={storeId} store={store.data} products={products.data?.items ?? []} locations={locations.data?.items ?? []} scope={inventoryKey} onCommitted={commandRefresh} />
     {positions.isPending ? <StateMessage state="loading" title="Loading inventory" description="Reading the latest saved stock positions." /> : positions.isError ? <Unavailable title="Inventory could not be loaded" error={positions.error} retry={() => { void positions.refetch() }} /> : positions.data.items.length === 0 ? <StateMessage state="empty" title="No stock positions in this view" description="There are no recorded stock rows for the selected product, lot and location filters." /> : <>
       <PositionTable items={positions.data.items} productNames={new Map((products.data?.items ?? []).map(item => [item.id, `${item.sku} · ${item.name}`]))} lotNames={new Map((lots.data?.items ?? []).map(item => [item.id, item.lotCode]))} locationNames={new Map((locations.data?.items ?? []).map(item => [item.id, `${item.code} · ${item.name}`]))} selectedId={selectedPositionId} onSelect={id => setSelectedPositionId(id)} />
       {availability.isError ? <p role="alert" className="text-sm">Availability by lot could not be refreshed: {errorMessage(availability.error)}</p> : availability.data && <AvailabilityTable items={availability.data.items} lotNames={new Map((lots.data?.items ?? []).map(item => [item.id, item.lotCode]))} locationNames={new Map((locations.data?.items ?? []).map(item => [item.id, `${item.code} · ${item.name}`]))} observedAt={availability.data.observedAt} />}
@@ -80,7 +91,7 @@ function InventoryWorkspace({ organizationId, storeId }: { organizationId: strin
 
     {selectedPositionId && selectedSnapshot.isPending && <StateMessage state="loading" title="Refreshing selected position" description="Reading the current saved version before showing any stock operation." />}
     {selectedSnapshot.isError && <Unavailable title="Position could not be refreshed" error={selectedSnapshot.error} retry={() => { void selectedSnapshot.refetch() }} />}
-    {selected && <SelectedPosition key={`${selected.id}:${selected.version}`} organizationId={organizationId} storeId={storeId} store={store.data} position={selected} scope={inventoryKey} onCommitted={commandRefresh} />}
+    {selected && <SelectedPosition key={`${organizationId}:${storeId}:${selected.id}`} organizationId={organizationId} storeId={storeId} store={store.data} position={selected} scope={inventoryKey} onCommitted={commandRefresh} />}
     <ReconciliationPanel organizationId={organizationId} storeId={storeId} canReconcile={store.data.allowedActions.includes('RECONCILE_INVENTORY')} canRemediate={store.data.allowedActions.includes('REMEDIATE_INVENTORY')} scope={inventoryKey} onReviewPosition={setSelectedPositionId} onCommitted={commandRefresh} />
   </section>
 }
@@ -116,84 +127,13 @@ function SelectedPosition({ organizationId, storeId, store, position, scope, onC
   </section>
 }
 
-function ReceiptForm({ organizationId, storeId, store, products, locations, scope, onCommitted }: { organizationId: string, storeId: string, store: Store, products: Product[], locations: StorageLocation[], scope: readonly unknown[], onCommitted: () => Promise<void> }) {
-  const tenantKey = useTenantKey()
-  const client = useQueryClient()
-  const tenantSignal = useTenantRequests()
-  const [productId, setProductId] = useState('')
-  const [lotId, setLotId] = useState('')
-  const [locationId, setLocationId] = useState('')
-  const [quantity, setQuantity] = useState('')
-  const [supplierKey, setSupplierKey] = useState('')
-  const [documentType, setDocumentType] = useState('DELIVERY_NOTE')
-  const [documentReference, setDocumentReference] = useState('')
-  const [documentLineReference, setDocumentLineReference] = useState('1')
-  const [physicallyReceivedAt, setPhysicallyReceivedAt] = useState(() => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16))
-  const [reason, setReason] = useState('')
-  const [evidenceReference, setEvidenceReference] = useState('')
-  const [confirmed, setConfirmed] = useState(false)
-  const [draft, setDraft] = useState<InventoryReceipt | null>(null)
-  const [recovered, setRecovered] = useState<InventoryCommand | null>(null)
-  const [recoveryError, setRecoveryError] = useState('')
-  const lots = useQuery({ queryKey: [...scope, 'catalog', 'inventory-receipt-lots', productId], enabled: Boolean(productId), queryFn: ({ signal }) => listLots(organizationId, productId, false, 0, signal), ...refresh })
-  const currentPosition = useQuery({ queryKey: [...scope, 'inventory', storeId, 'receipt-position', productId, lotId, locationId], enabled: Boolean(productId && lotId && locationId), queryFn: ({ signal }) => listInventoryPositions(organizationId, storeId, { productId, lotId, locationId, limit: 2 }, signal), ...refresh })
-  const mutation = useMutation({ mutationKey: [...tenantKey, 'inventory', storeId, 'receipt'], retry: false, gcTime: 0, mutationFn: (body: InventoryReceipt) => receiveInventoryGoods(organizationId, storeId, body, tenantSignal()), onSuccess: async () => { setDraft(null); setConfirmed(false); setRecovered(null); await onCommitted() } })
-  const allowed = store.allowedActions.includes('RECEIVE_STOCK')
-  const definitelyRejected = mutation.error instanceof ApiError && mutation.error.status >= 400 && mutation.error.status < 500
-  const matchingPosition = currentPosition.data?.items[0]
-  const canConfirmVersion = Boolean(currentPosition.data && !currentPosition.isError && currentPosition.data.items.length <= 1)
-  const eligibleToSubmit = allowed && canConfirmVersion && confirmed && !mutation.isPending && !draft && productId && lotId && locationId && Number.isSafeInteger(Number(quantity)) && Number(quantity) > 0 && supplierKey.trim() && documentReference.trim() && documentLineReference.trim() && reason.trim() && evidenceReference.trim()
-  function prepareReceipt() {
-    if (!eligibleToSubmit) return
-    const receivedAt = new Date(physicallyReceivedAt)
-    if (Number.isNaN(receivedAt.getTime())) return
-    const payload: InventoryReceipt = { requestId: crypto.randomUUID(), expectedVersion: matchingPosition?.version ?? 0, locationId, productId, lotId, quantity: Number(quantity), supplierKey: supplierKey.trim(), documentType: documentType.trim(), documentReference: documentReference.trim(), documentLineReference: documentLineReference.trim(), physicallyReceivedAt: receivedAt.toISOString(), reason: reason.trim(), evidenceReference: evidenceReference.trim() }
-    setDraft(payload); setRecoveryError(''); setRecovered(null); mutation.mutate(payload)
-  }
-  async function recoverReceipt() {
-    if (!draft) return
-    try {
-      const result = await getInventoryCommandOutcome(organizationId, storeId, 'RECEIVE', draft.requestId, tenantSignal())
-      mutation.reset(); setDraft(null); setConfirmed(false); setRecovered(result)
-      await client.invalidateQueries({ queryKey: [...tenantKey, 'inventory', storeId] })
-    } catch (error) {
-      setRecoveryError(error instanceof ApiError && error.status === 404 ? 'No committed result is visible for this request key yet. Keep these receipt details and retry only with the same request key.' : errorMessage(error))
-    }
-  }
-  function reviseRejectedReceipt() {
-    setDraft(null); setConfirmed(false); setRecovered(null); setRecoveryError('The server rejected the previous receipt. Review its reason, correct the document or version, then submit a new request.')
-    mutation.reset(); void onCommitted()
-  }
-  return <section className="space-y-4 rounded-xl border border-border p-5" aria-label="Physical goods receipt">
-    <div><h4 className="text-lg font-semibold">Record physical receipt</h4><p className="mt-1 text-sm text-muted-foreground">This books units that are already physically present. It does not approve future deliveries.</p></div>
-    {!allowed ? <p className="text-sm text-muted-foreground">Your current assignment cannot receive stock into this store.</p> : <form onSubmit={event => { event.preventDefault(); prepareReceipt() }} className="grid gap-4 sm:grid-cols-2">
-      <Field label="Product">{id => <select id={id} required value={productId} disabled={Boolean(draft) || mutation.isPending} onChange={event => { setProductId(event.target.value); setLotId('') }} className={inputClass}><option value="">Choose a product</option>{products.map(product => <option key={product.id} value={product.id}>{product.sku} · {product.name}</option>)}</select>}</Field>
-      <Field label="Lot">{id => <select id={id} required value={lotId} disabled={!productId || Boolean(draft) || mutation.isPending} onChange={event => setLotId(event.target.value)} className={inputClass}><option value="">Choose a lot</option>{lots.data?.items.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode}</option>)}</select>}</Field>
-      <Field label="Storage location">{id => <select id={id} required value={locationId} disabled={Boolean(draft) || mutation.isPending} onChange={event => setLocationId(event.target.value)} className={inputClass}><option value="">Choose a location</option>{locations.map(location => <option key={location.id} value={location.id}>{location.code} · {location.name}</option>)}</select>}</Field>
-      <Field label="Received quantity (EA)">{id => <input id={id} inputMode="numeric" pattern="[0-9]+" required min="1" value={quantity} disabled={Boolean(draft) || mutation.isPending} onChange={event => setQuantity(event.target.value)} className={inputClass} />}</Field>
-      <Field label="Supplier identity key">{id => <input id={id} required maxLength={200} value={supplierKey} disabled={Boolean(draft) || mutation.isPending} onChange={event => setSupplierKey(event.target.value)} className={inputClass} />}</Field>
-      <Field label="Source document type">{id => <select id={id} value={documentType} disabled={Boolean(draft) || mutation.isPending} onChange={event => setDocumentType(event.target.value)} className={inputClass}><option>DELIVERY_NOTE</option><option>INVOICE</option><option>OTHER</option></select>}</Field>
-      <Field label="Source document reference">{id => <input id={id} required maxLength={200} value={documentReference} disabled={Boolean(draft) || mutation.isPending} onChange={event => setDocumentReference(event.target.value)} className={inputClass} />}</Field>
-      <Field label="Document line reference">{id => <input id={id} required maxLength={64} value={documentLineReference} disabled={Boolean(draft) || mutation.isPending} onChange={event => setDocumentLineReference(event.target.value)} className={inputClass} />}</Field>
-      <Field label="Physically received at">{id => <input id={id} type="datetime-local" required value={physicallyReceivedAt} disabled={Boolean(draft) || mutation.isPending} onChange={event => setPhysicallyReceivedAt(event.target.value)} className={inputClass} />}</Field>
-      <Field label="Reason for receipt">{id => <textarea id={id} required maxLength={500} value={reason} disabled={Boolean(draft) || mutation.isPending} onChange={event => setReason(event.target.value)} className={inputClass} />}</Field>
-      <Field label="Evidence source link or reference">{id => <input id={id} required maxLength={256} value={evidenceReference} disabled={Boolean(draft) || mutation.isPending} onChange={event => setEvidenceReference(event.target.value)} className={inputClass} />}</Field>
-      {currentPosition.isPending && productId && lotId && locationId && <p role="status" className="sm:col-span-2">Checking the current position version before receipt…</p>}
-      {currentPosition.isError && <p role="alert" className="sm:col-span-2 text-sm">The current position could not be checked. Reload it before recording this receipt.</p>}
-      {canConfirmVersion && <p className="sm:col-span-2 text-sm text-muted-foreground">{matchingPosition ? `This receipt will use expected position version ${matchingPosition.version}.` : 'No position exists for this product, lot and location yet; the receipt will initialize it from the physical goods.'}</p>}
-      <label className="flex items-start gap-3 text-sm sm:col-span-2"><input type="checkbox" checked={confirmed} disabled={Boolean(draft) || mutation.isPending} onChange={event => setConfirmed(event.target.checked)} className="mt-1" />I confirmed these units are already physically present at the selected storage position.</label>
-      <div className="flex flex-wrap gap-3 sm:col-span-2"><Button type="submit" disabled={!eligibleToSubmit}>{mutation.isPending ? 'Saving physical receipt…' : 'Confirm physical receipt'}</Button>{draft && mutation.isError && (definitelyRejected ? <Button type="button" variant="outline" onClick={reviseRejectedReceipt}>Review rejected receipt</Button> : <><Button type="button" variant="outline" disabled={mutation.isPending} onClick={() => mutation.mutate(draft)}>Retry same receipt</Button><Button type="button" variant="outline" onClick={() => { void recoverReceipt() }}>Check saved result</Button></>)}</div>
-      {draft && mutation.isError && <p role="alert" className="sm:col-span-2 rounded-xl border border-amber-500/40 p-4 text-sm">{errorMessage(mutation.error)} {definitelyRejected ? 'The server returned a rejection; review it before preparing a new request.' : 'The receipt may have been committed.'} Request key {draft.requestId} and its original document data are preserved.</p>}
-      {recoveryError && <p role="status" className="sm:col-span-2 rounded-xl border border-border p-4 text-sm">{recoveryError}</p>}
-      {mutation.isSuccess && <p role="status" className="sm:col-span-2">Receipt confirmed in the inventory ledger. The saved position has been refreshed.</p>}
-      {recovered && <p role="status" className="sm:col-span-2">A previously committed receipt was found at position version {recovered.positionVersion}. The saved position has been refreshed.</p>}
-    </form>}
-  </section>
-}
-
 function InventoryOperations({ organizationId, storeId, store, position, allocations, onCommitted }: { organizationId: string, storeId: string, store: Store, position: StockPosition, allocations: InventoryAllocation[], onCommitted: () => Promise<void> }) {
-  const scope = useTenantKey()
+  const tenant = useTenantKey()
   const tenantSignal = useTenantRequests()
+  const subject = `position:${position.id}`
+  const pending = usePendingInventoryCommand<CommandDraft>(tenant, storeId, subject)
+  const submittingRef = useRef(false)
+  const [submitting, setSubmitting] = useState(false)
   const [choice, setChoice] = useState<OperationChoice>('reserve')
   const [adjustmentDirection, setAdjustmentDirection] = useState<'increase' | 'decrease'>('increase')
   const [quantity, setQuantity] = useState('')
@@ -201,70 +141,104 @@ function InventoryOperations({ organizationId, storeId, store, position, allocat
   const [evidenceReference, setEvidenceReference] = useState('')
   const [allocationId, setAllocationId] = useState('')
   const [confirmed, setConfirmed] = useState(false)
-  const [draft, setDraft] = useState<CommandDraft | null>(null)
   const [recoveryError, setRecoveryError] = useState('')
-  const mutation = useMutation({ mutationKey: [...scope, 'inventory', storeId, 'command'], retry: false, gcTime: 0, mutationFn: (command: CommandDraft) => executeCommand(organizationId, storeId, position.id, command, tenantSignal()), onSuccess: async () => { setDraft(null); setConfirmed(false); setQuantity(''); setReason(''); setEvidenceReference(''); setAllocationId(''); await onCommitted() } })
-  const choices = useMemo(() => {
-    const actions: { value: OperationChoice, label: string, permission: Store['allowedActions'][number] }[] = [
-    { value: 'reserve' as const, label: 'Reserve stock', permission: 'RESERVE_STOCK' },
-    { value: 'release' as const, label: 'Release reservation', permission: 'RELEASE_RESERVATION' },
-    { value: 'adjust' as const, label: 'Adjust physical count', permission: 'ADJUST_STOCK' },
-    { value: 'writeOff' as const, label: 'Write off stock', permission: 'WRITE_OFF_STOCK' },
-    { value: 'quarantine' as const, label: 'Quarantine stock', permission: 'QUARANTINE_STOCK' },
-    { value: 'hold' as const, label: 'Place other hold', permission: 'MANAGE_INVENTORY_ALLOCATIONS' },
-    { value: 'releaseHold' as const, label: 'Release other hold', permission: 'MANAGE_INVENTORY_ALLOCATIONS' },
-    { value: 'sale' as const, label: 'Record manual sale', permission: 'RECORD_SALE' },
-    ]
-    return actions.filter(action => store.allowedActions.includes(action.permission))
-  }, [store.allowedActions])
+  const mutation = useMutation({
+    mutationKey: [...tenant, 'inventory', storeId, 'command', position.id], retry: false, gcTime: 0,
+    mutationFn: (command: CommandDraft) => executeCommand(organizationId, storeId, command.positionId, command, tenantSignal()),
+    onError: (error, command) => {
+      submittingRef.current = false
+      setSubmitting(false)
+      if (error instanceof ApiError && error.status === 401) return
+      const rejected = error instanceof ApiError && error.status >= 400 && error.status < 500
+      savePendingInventoryCommand(tenant, storeId, subject, { payload: command, phase: rejected ? 'rejected' : 'unknown', message: errorMessage(error) })
+    },
+    onSuccess: async () => {
+      submittingRef.current = false
+      setSubmitting(false)
+      clearPendingInventoryCommand(tenant, storeId, subject)
+      setConfirmed(false); setQuantity(''); setReason(''); setEvidenceReference(''); setAllocationId('')
+      await onCommitted()
+    },
+  })
+  const choices = useMemo(() => inventoryOperationChoices(store.allowedActions), [store.allowedActions])
   const activeChoice = choices.find(action => action.value === choice) ?? choices[0]
   const effectiveChoice = activeChoice?.value ?? choice
-  const matchingAllocations = allocations.filter(item => item.remaining > 0 && item.state === 'ACTIVE' && (effectiveChoice === 'release' ? item.bucket === 'RESERVED' : effectiveChoice === 'releaseHold' ? item.bucket !== 'RESERVED' : effectiveChoice === 'writeOff' ? true : false))
+  const manager = store.allowedActions.includes('MANAGE_INVENTORY_ALLOCATIONS')
+  const matchingAllocations = inventoryAllocationsForOperation(allocations, effectiveChoice, manager)
   const requiresAllocation = effectiveChoice === 'release' || effectiveChoice === 'releaseHold'
-  const allowed = activeChoice && position.initialization === 'INITIALIZED' && position.trust !== 'FROZEN'
-  const definitelyRejected = mutation.error instanceof ApiError && mutation.error.status >= 400 && mutation.error.status < 500
+  const canChangeStock = Boolean(activeChoice && position.initialization === 'INITIALIZED' && position.trust !== 'FROZEN')
   const validQuantity = Number.isSafeInteger(Number(quantity)) && Number(quantity) > 0
-  const valid = allowed && confirmed && !mutation.isPending && !draft && validQuantity && reason.trim() && evidenceReference.trim() && (!requiresAllocation || Boolean(allocationId))
+  const valid = canChangeStock && confirmed && !mutation.isPending && !pending && !submitting && validQuantity && reason.trim() && evidenceReference.trim() && (!requiresAllocation || Boolean(allocationId))
   function submit() {
-    if (!valid || !activeChoice) return
+    if (!valid || !activeChoice || submittingRef.current) return
     const magnitude = Number(quantity)
-    const command: CommandDraft = { choice: effectiveChoice, requestId: crypto.randomUUID(), expectedVersion: position.version, quantity: effectiveChoice === 'adjust' && adjustmentDirection === 'decrease' ? -magnitude : magnitude, reason: reason.trim(), evidenceReference: evidenceReference.trim(), ...(allocationId ? { allocationId } : {}) }
-    setDraft(command); setRecoveryError(''); mutation.mutate(command)
+    const command: CommandDraft = { choice: effectiveChoice, requestId: crypto.randomUUID(), positionId: position.id, expectedVersion: position.version, quantity: effectiveChoice === 'adjust' && adjustmentDirection === 'decrease' ? -magnitude : magnitude, reason: reason.trim(), evidenceReference: evidenceReference.trim(), ...(allocationId ? { allocationId } : {}) }
+    submittingRef.current = true
+    setSubmitting(true)
+    savePendingInventoryCommand(tenant, storeId, subject, { payload: command, phase: 'in-flight' })
+    setRecoveryError('')
+    mutation.mutate(command)
   }
   async function recover() {
-    if (!draft) return
+    if (!pending) return
     try {
-      await getInventoryCommandOutcome(organizationId, storeId, operationFor(draft.choice), draft.requestId, tenantSignal())
-      setDraft(null); setRecoveryError('The committed result was found. Refreshing the saved position now.')
-      mutation.reset(); await onCommitted()
+      await getInventoryCommandOutcome(organizationId, storeId, operationFor(pending.payload.choice), pending.payload.requestId, tenantSignal())
+      clearPendingInventoryCommand(tenant, storeId, subject)
+      setConfirmed(false); setQuantity(''); setReason(''); setEvidenceReference(''); setAllocationId('')
+      setRecoveryError('The committed result was found. Refreshing the saved position now.')
+      mutation.reset()
+      await onCommitted()
     } catch (error) {
-      setRecoveryError(error instanceof ApiError && error.status === 404 ? 'No committed result is visible for this request key yet. Retry only with the preserved key and request details.' : errorMessage(error))
+      const message = error instanceof ApiError && error.status === 404
+        ? 'No saved result is visible yet. This does not prove the original request cannot still commit. Keep its exact key and payload; retry only that request.'
+        : errorMessage(error)
+      savePendingInventoryCommand(tenant, storeId, subject, { ...pending, phase: 'unknown', message })
+      setRecoveryError(message)
     }
   }
-  function reviseRejectedCommand() {
-    setDraft(null); setConfirmed(false); setRecoveryError('The server rejected the previous command. Review the refreshed stock, edit the quantity or evidence, and submit a new request.')
-    mutation.reset(); void onCommitted()
+  function retryExact() {
+    if (!pending || pending.phase !== 'unknown' || submittingRef.current) return
+    submittingRef.current = true
+    setSubmitting(true)
+    savePendingInventoryCommand(tenant, storeId, subject, { ...pending, phase: 'in-flight', message: undefined })
+    setRecoveryError('')
+    mutation.mutate(pending.payload)
   }
-  if (choices.length === 0) return <p className="text-sm text-muted-foreground">Your current role has no stock-changing actions for this position.</p>
+  function reviewRejected() {
+    clearPendingInventoryCommand(tenant, storeId, subject)
+    setConfirmed(false)
+    setRecoveryError('The server rejected the previous command. Review the refreshed stock, quantity and evidence before preparing a new request.')
+    mutation.reset()
+    void onCommitted()
+  }
+  const pendingAllocation = pending?.payload.allocationId ? allocations.find(item => item.id === pending.payload.allocationId) : undefined
+  const permissionForPending: Store['allowedActions'][number] | undefined = pending && ({ reserve: 'RESERVE_STOCK', release: 'RELEASE_RESERVATION', adjust: 'ADJUST_STOCK', writeOff: 'WRITE_OFF_STOCK', quarantine: 'QUARANTINE_STOCK', hold: 'QUARANTINE_STOCK', releaseHold: 'QUARANTINE_STOCK', sale: 'RECORD_SALE' } as const)[pending.payload.choice]
+  const canRetryPending = Boolean(pending && permissionForPending && store.allowedActions.includes(permissionForPending) && (!pending.payload.allocationId || manager || pendingAllocation?.ownedByCurrentUser))
+  if (choices.length === 0 && !pending) return <p className="text-sm text-muted-foreground">Your current role has no stock-changing actions for this position.</p>
   return <section className="space-y-4 rounded-xl border border-border p-5" aria-label="Inventory operations">
-    <div><h4 className="text-lg font-semibold">Stock operation</h4><p className="mt-1 text-sm text-muted-foreground">Every request uses position version {position.version}. The server checks current permissions, stock and safety evidence when saving.</p></div>
+    <div><h4 className="text-lg font-semibold">Stock operation</h4><p className="mt-1 text-sm text-muted-foreground">Every new request uses expected position version {position.version}. The server checks current permissions, stock and safety evidence when saving.</p></div>
     <form onSubmit={event => { event.preventDefault(); submit() }} className="grid gap-4 sm:grid-cols-2">
-      <Field label="Operation">{id => <select id={id} value={choice} disabled={Boolean(draft) || mutation.isPending} onChange={event => { setChoice(event.target.value as OperationChoice); setAllocationId('') }} className={inputClass}>{choices.map(action => <option key={action.value} value={action.value}>{action.label}</option>)}</select>}</Field>
-      {effectiveChoice === 'adjust' && <Field label="Adjustment direction">{id => <select id={id} value={adjustmentDirection} disabled={Boolean(draft) || mutation.isPending} onChange={event => setAdjustmentDirection(event.target.value as 'increase' | 'decrease')} className={inputClass}><option value="increase">Increase recorded on-hand</option><option value="decrease">Decrease recorded on-hand</option></select>}</Field>}
-      <Field label={`${effectiveChoice === 'adjust' ? 'Adjustment amount' : 'Quantity'} (${position.unit})`}>{id => <input id={id} required inputMode="numeric" pattern="[0-9]+" min="1" value={quantity} disabled={Boolean(draft) || mutation.isPending} onChange={event => setQuantity(event.target.value)} className={inputClass} />}</Field>
-      {(requiresAllocation || choice === 'writeOff') && <Field label={requiresAllocation ? 'Reservation or hold to release' : 'Specific allocation to write off (optional)'}>{id => <select id={id} required={requiresAllocation} value={allocationId} disabled={Boolean(draft) || mutation.isPending} onChange={event => setAllocationId(event.target.value)} className={inputClass}><option value="">{requiresAllocation ? 'Choose an active allocation' : 'Use available stock'}</option>{matchingAllocations.map(allocation => <option key={allocation.id} value={allocation.id}>{allocation.bucket} · {allocation.remaining} {position.unit} · {allocation.id.slice(0, 8)}</option>)}</select>}</Field>}
-      <Field label="Reason">{id => <textarea id={id} required maxLength={500} value={reason} disabled={Boolean(draft) || mutation.isPending} onChange={event => setReason(event.target.value)} className={inputClass} />}</Field>
-      <Field label="Evidence link or source reference">{id => <input id={id} required maxLength={256} value={evidenceReference} disabled={Boolean(draft) || mutation.isPending} onChange={event => setEvidenceReference(event.target.value)} className={inputClass} />}</Field>
-      {choice === 'sale' && <p className="rounded-xl border border-amber-500/40 bg-amber-50 p-4 text-sm text-amber-950 sm:col-span-2">A safety assessment describes current evidence; it does not grant permission to sell. The backend rechecks current lot, recall, expiry and storage evidence when committing the sale.</p>}
-      <label className="flex items-start gap-3 text-sm sm:col-span-2"><input type="checkbox" checked={confirmed} disabled={Boolean(draft) || mutation.isPending} onChange={event => setConfirmed(event.target.checked)} className="mt-1" />I reviewed this position, quantity, reason and evidence reference before submitting.</label>
-      <div className="flex flex-wrap gap-3 sm:col-span-2"><Button type="submit" disabled={!valid}>{mutation.isPending ? 'Saving operation…' : activeChoice.label}</Button>{draft && mutation.isError && (definitelyRejected ? <Button type="button" variant="outline" onClick={reviseRejectedCommand}>Review rejected command</Button> : <><Button type="button" variant="outline" disabled={mutation.isPending} onClick={() => mutation.mutate(draft)}>Retry same operation</Button><Button type="button" variant="outline" onClick={() => { void recover() }}>Check saved result</Button></>)}</div>
-      {mutation.isError && draft && <p role="alert" className="sm:col-span-2 rounded-xl border border-amber-500/40 p-4 text-sm">{errorMessage(mutation.error)} {definitelyRejected ? 'The server returned a rejection; review it before preparing a new request.' : 'The operation may have been committed.'} Request key {draft.requestId} and the exact payload remain available.</p>}
+      {choices.length > 0 && <Field label="Operation">{id => <select id={id} value={choice} disabled={Boolean(pending) || mutation.isPending} onChange={event => { setChoice(event.target.value as OperationChoice); setAllocationId('') }} className={inputClass}>{choices.map(action => <option key={action.value} value={action.value}>{action.label}</option>)}</select>}</Field>}
+      {choices.length > 0 && effectiveChoice === 'adjust' && <Field label="Adjustment direction">{id => <select id={id} value={adjustmentDirection} disabled={Boolean(pending) || mutation.isPending} onChange={event => setAdjustmentDirection(event.target.value as 'increase' | 'decrease')} className={inputClass}><option value="increase">Increase recorded on-hand</option><option value="decrease">Decrease recorded on-hand</option></select>}</Field>}
+      {choices.length > 0 && <Field label={`${effectiveChoice === 'adjust' ? 'Adjustment amount' : 'Quantity'} (${position.unit})`}>{id => <input id={id} required inputMode="numeric" pattern="[0-9]+" min="1" value={quantity} disabled={Boolean(pending) || mutation.isPending} onChange={event => setQuantity(event.target.value)} className={inputClass} />}</Field>}
+      {choices.length > 0 && (requiresAllocation || choice === 'writeOff') && <Field label={requiresAllocation ? 'Reservation or hold to release' : 'Specific allocation to write off (optional)'}>{id => <select id={id} required={requiresAllocation} value={allocationId} disabled={Boolean(pending) || mutation.isPending} onChange={event => setAllocationId(event.target.value)} className={inputClass}><option value="">{requiresAllocation ? (manager ? 'Choose an active allocation' : 'Choose an active allocation you own') : 'Use available stock'}</option>{matchingAllocations.map(allocation => <option key={allocation.id} value={allocation.id}>{allocation.bucket} · {allocation.remaining} {position.unit} · {allocation.id.slice(0, 8)}</option>)}</select>}</Field>}
+      {choices.length > 0 && <Field label="Reason">{id => <textarea id={id} required maxLength={500} value={reason} disabled={Boolean(pending) || mutation.isPending} onChange={event => setReason(event.target.value)} className={inputClass} />}</Field>}
+      {choices.length > 0 && <Field label="Evidence link or source reference">{id => <input id={id} required maxLength={256} value={evidenceReference} disabled={Boolean(pending) || mutation.isPending} onChange={event => setEvidenceReference(event.target.value)} className={inputClass} />}</Field>}
+      {choices.length > 0 && choice === 'sale' && <p className="rounded-xl border border-amber-500/40 bg-amber-50 p-4 text-sm text-amber-950 sm:col-span-2">A safety assessment describes current evidence; it does not grant permission to sell. The backend rechecks current lot, recall, expiry and storage evidence when committing the sale.</p>}
+      {choices.length > 0 && <label className="flex items-start gap-3 text-sm sm:col-span-2"><input type="checkbox" checked={confirmed} disabled={Boolean(pending) || mutation.isPending} onChange={event => setConfirmed(event.target.checked)} className="mt-1" />I reviewed this position, quantity, reason and evidence reference before submitting.</label>}
+      <div className="flex flex-wrap gap-3 sm:col-span-2">
+        {choices.length > 0 && <Button type="submit" disabled={!valid}>{mutation.isPending ? 'Saving operation…' : activeChoice?.label ?? 'Save operation'}</Button>}
+        {pending?.phase === 'in-flight' && <Button type="button" variant="outline" onClick={() => { void recover() }}>Check saved result</Button>}
+        {pending?.phase === 'unknown' && <><Button type="button" variant="outline" disabled={!canRetryPending || submitting} onClick={retryExact}>Retry exact operation</Button><Button type="button" variant="outline" onClick={() => { void recover() }}>Check saved result</Button></>}
+        {pending?.phase === 'rejected' && <><Button type="button" variant="outline" onClick={() => { void recover() }}>Check saved result</Button><Button type="button" variant="outline" onClick={reviewRejected}>Review rejected command</Button></>}
+      </div>
+      {pending && <p role={pending.phase === 'rejected' ? 'alert' : 'status'} className="sm:col-span-2 rounded-xl border border-amber-500/40 p-4 text-sm">{pending.message ?? (pending.phase === 'in-flight' ? 'The result is still being confirmed. Check the saved result before taking another action.' : '')}{pending.phase === 'unknown' && ' The operation may have been committed.'}{pending.phase === 'in-flight' && ' Check the saved result before taking another action.'} Request key {pending.payload.requestId} for {pending.payload.choice} at position {pending.payload.positionId}, version {pending.payload.expectedVersion}, is preserved with its exact quantity and evidence. {pending.phase === 'unknown' && !canRetryPending && 'Your current role or allocation ownership does not permit replaying this command.'}</p>}
+      {pending && <section aria-label="Pending operation details" className="sm:col-span-2 space-y-2 rounded-xl border border-border p-4 text-sm"><h5 className="font-semibold">Original operation held for recovery</h5><p>{pending.payload.choice} · position {pending.payload.positionId} · expected version {pending.payload.expectedVersion} · quantity {pending.payload.quantity} {position.unit}</p><p>Reason: {pending.payload.reason} · Evidence: {pending.payload.evidenceReference}{pending.payload.allocationId ? ` · Allocation ${pending.payload.allocationId}` : ''}</p></section>}
       {recoveryError && <p role="status" className="sm:col-span-2 rounded-xl border border-border p-4 text-sm">{recoveryError}</p>}
       {mutation.isSuccess && <p role="status" className="sm:col-span-2">The backend confirmed this inventory operation. The saved position is being refreshed.</p>}
     </form>
   </section>
 }
-
 async function executeCommand(organizationId: string, storeId: string, positionId: string, draft: CommandDraft, signal: AbortSignal): Promise<InventoryCommand> {
   const body: StockCommand = { requestId: draft.requestId, expectedVersion: draft.expectedVersion, quantity: draft.quantity, reason: draft.reason, evidenceReference: draft.evidenceReference }
   if (draft.choice === 'release' || draft.choice === 'releaseHold') return releaseInventoryAllocation(organizationId, storeId, positionId, draft.allocationId!, draft.choice === 'release' ? 'reservations' : 'holds', body, signal)

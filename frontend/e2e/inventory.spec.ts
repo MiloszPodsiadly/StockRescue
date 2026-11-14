@@ -43,6 +43,15 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
   const location = await write<components['schemas']['StorageLocationResponse']>(owner.context, `${organizationPath}/stores/${store.id}/storage-locations`, {
     requestId: randomUUID(), code: 'A-01', name: 'Ambient receiving shelf', zoneId: zone.id,
   }, 201)
+  const secondLocation = await write<components['schemas']['StorageLocationResponse']>(owner.context, `${organizationPath}/stores/${store.id}/storage-locations`, {
+    requestId: randomUUID(), code: 'A-02', name: 'Ambient receiving shelf two', zoneId: zone.id,
+  }, 201)
+  const rollbackLocationOne = await write<components['schemas']['StorageLocationResponse']>(owner.context, `${organizationPath}/stores/${store.id}/storage-locations`, {
+    requestId: randomUUID(), code: 'B-01', name: 'Atomic rollback shelf one', zoneId: zone.id,
+  }, 201)
+  const rollbackLocationTwo = await write<components['schemas']['StorageLocationResponse']>(owner.context, `${organizationPath}/stores/${store.id}/storage-locations`, {
+    requestId: randomUUID(), code: 'B-02', name: 'Atomic rollback shelf two', zoneId: zone.id,
+  }, 201)
   const inventoryPath = `${organizationPath}/stores/${store.id}/inventory`
   const positionPath = `${inventoryPath}/positions`
   const page = await owner.context.newPage()
@@ -51,26 +60,78 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await page.goto(`/organizations/${organization.id}/stores/${store.id}/inventory`)
     await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
     const receipt = page.getByRole('region', { name: 'Physical goods receipt' })
-    await chooseByKeyboard(page, receipt.getByLabel('Product'), product.id)
-    await chooseByKeyboard(page, receipt.getByLabel('Lot'), lot.id)
-    await chooseByKeyboard(page, receipt.getByLabel('Storage location'), location.id)
-    await expect(receipt.getByText(/No position exists for this product/)).toBeVisible()
-    await keyboardFill(page, receipt.getByLabel('Received quantity (EA)'), '10')
+    let documentPosts = 0
+    page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/inventory/receipt-documents')) documentPosts++ })
+    await chooseByKeyboard(page, receipt.getByLabel('Line 1 product'), product.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 1 lot'), lot.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 1 storage location'), location.id)
+    await expect(receipt.getByText(/No position exists yet/)).toBeVisible()
+    await keyboardFill(page, receipt.getByLabel('Line 1 received quantity (EA)'), '10')
+    await keyboardFill(page, receipt.getByLabel('Line 1 reference'), '1')
+    await receipt.getByRole('button', { name: 'Add receipt line' }).click()
+    await chooseByKeyboard(page, receipt.getByLabel('Line 2 product'), product.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 2 lot'), lot.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 2 storage location'), secondLocation.id)
+    await keyboardFill(page, receipt.getByLabel('Line 2 received quantity (EA)'), '4')
+    await keyboardFill(page, receipt.getByLabel('Line 2 reference'), '2')
     await keyboardFill(page, receipt.getByLabel('Supplier identity key'), `supplier:${suffix}`)
     await keyboardFill(page, receipt.getByLabel('Source document reference'), `DELIVERY-${suffix}`)
-    await keyboardFill(page, receipt.getByLabel('Document line reference'), '1')
     await receipt.getByLabel('Physically received at').fill(localDateTime(new Date(Date.now() - 60000)))
-    await keyboardFill(page, receipt.getByLabel('Reason for receipt'), 'Physically checked ten sealed units at receiving')
+    await keyboardFill(page, receipt.getByLabel('Reason for receipt'), 'Physically checked sealed units at both receiving positions')
     await keyboardFill(page, receipt.getByLabel('Evidence source link or reference'), `https://supplier.example.test/delivery/${suffix}`)
-    const receiptConfirmation = receipt.getByLabel(/I confirmed these units are already physically present/)
+    for (const width of [360, 767]) {
+      await page.setViewportSize({ width, height: 844 })
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    }
+    await page.setViewportSize({ width: 390, height: 844 })
+    const receiptConfirmation = receipt.getByLabel(/I confirmed all quantities are physically present/)
     await receiptConfirmation.focus()
     await page.keyboard.press('Space')
-    const confirmReceipt = receipt.getByRole('button', { name: 'Confirm physical receipt' })
+    const confirmReceipt = receipt.getByRole('button', { name: 'Confirm physical receipt document' })
     await confirmReceipt.focus()
     await page.keyboard.press('Enter')
-    await expect(receipt.getByRole('status')).toContainText('Receipt confirmed in the inventory ledger')
-    const positionRow = page.getByRole('row').filter({ hasText: lot.lotCode })
+    await page.keyboard.press('Enter')
+    await expect(receipt.getByRole('region', { name: 'Committed receipt lines' })).toContainText('Line 1')
+    await expect(receipt.getByRole('region', { name: 'Committed receipt lines' })).toContainText('Line 2')
+    expect(documentPosts).toBe(1)
+    const positionRow = page.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: location.code })
     await expect(positionRow).toContainText('10 EA')
+    const secondPositionRow = page.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: secondLocation.code })
+    await expect(secondPositionRow).toContainText('4 EA')
+
+    await chooseByKeyboard(page, receipt.getByLabel('Line 1 product'), product.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 1 lot'), lot.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 1 storage location'), rollbackLocationOne.id)
+    await keyboardFill(page, receipt.getByLabel('Line 1 received quantity (EA)'), '2')
+    await keyboardFill(page, receipt.getByLabel('Line 1 reference'), 'rollback-1')
+    await receipt.getByRole('button', { name: 'Add receipt line' }).click()
+    await chooseByKeyboard(page, receipt.getByLabel('Line 2 product'), product.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 2 lot'), lot.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 2 storage location'), rollbackLocationTwo.id)
+    await keyboardFill(page, receipt.getByLabel('Line 2 received quantity (EA)'), '3')
+    await keyboardFill(page, receipt.getByLabel('Line 2 reference'), 'rollback-2')
+    await keyboardFill(page, receipt.getByLabel('Supplier identity key'), `supplier:${suffix}`)
+    await keyboardFill(page, receipt.getByLabel('Source document reference'), `ATOMIC-${suffix}`)
+    await receipt.getByLabel('Physically received at').fill(localDateTime(new Date(Date.now() - 60000)))
+    await keyboardFill(page, receipt.getByLabel('Reason for receipt'), 'Verify no line is posted if a later line is stale')
+    await keyboardFill(page, receipt.getByLabel('Evidence source link or reference'), `atomic-receipt:${suffix}`)
+    await receipt.getByLabel(/I confirmed all quantities are physically present/).check()
+    let failedDocumentStatus = 0
+    await page.route(`**${inventoryPath}/receipt-documents`, async route => {
+      if (route.request().method() !== 'POST') { await route.continue(); return }
+      const payload = route.request().postDataJSON() as components['schemas']['ReceiptDocumentRequest']
+      const staleSecondLine = { ...payload, lines: payload.lines.map((line, index) => index === 1 ? { ...line, expectedVersion: 99 } : line) }
+      const response = await route.fetch({ postData: JSON.stringify(staleSecondLine) })
+      failedDocumentStatus = response.status()
+      await route.fulfill({ response })
+    })
+    await receipt.getByRole('button', { name: 'Confirm physical receipt document' }).click()
+    await expect(receipt.getByRole('alert')).toContainText(/rejected|conflict|version/i)
+    expect(failedDocumentStatus).toBe(409)
+    const afterRollback = await read<{ items: InventoryPosition[] }>(owner.context, positionPath)
+    expect(afterRollback.items.filter(item => item.locationId === rollbackLocationOne.id || item.locationId === rollbackLocationTwo.id)).toHaveLength(0)
+    await page.unroute(`**${inventoryPath}/receipt-documents`)
+    await receipt.getByRole('button', { name: 'Review rejected document' }).click()
     const reviewPosition = positionRow.getByRole('button', { name: 'Review position' })
     await reviewPosition.focus()
     await page.keyboard.press('Enter')
@@ -87,7 +148,10 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await page.keyboard.press('Enter')
     await expect(page.getByRole('region', { name: 'Selected inventory position' })).toBeVisible()
 
-    let position = await read<InventoryPosition>(owner.context, `${positionPath}/${(await read<{ items: InventoryPosition[] }>(owner.context, positionPath)).items[0].id}`)
+    const initialPositions = await read<{ items: InventoryPosition[] }>(owner.context, positionPath)
+    expect(initialPositions.items).toHaveLength(2)
+    let position = initialPositions.items.find(item => item.locationId === location.id)!
+    position = await snapshot(owner.context, positionPath, position.id)
     const allocations = await read<AllocationPage>(owner.context, `${positionPath}/${position.id}/allocations?offset=0&limit=100`)
     const reservation = allocations.items.find(item => item.bucket === 'RESERVED' && item.state === 'ACTIVE')!
     let result = await command(owner.context, `${positionPath}/${position.id}/reservations/${reservation.id}/release`, position, 2, 'Released two units from a verified reservation')
@@ -172,6 +236,11 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     expect(persisted.available).toBe(1)
 
     const lostResponseRequests: Record<string, unknown>[] = []
+    const outcomeLookups: string[] = []
+    page.on('request', request => {
+      const pathname = new URL(request.url()).pathname
+      if (request.method() === 'GET' && pathname.includes('/commands/ADJUST/')) outcomeLookups.push(pathname)
+    })
     let firstAcknowledgementDropped = false
     const adjustmentPath = `${positionPath}/${position.id}/adjustments`
     await page.route(`**${adjustmentPath}`, async route => {
@@ -184,7 +253,7 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
         await route.abort('connectionreset')
       } else await route.continue()
     })
-    const mainRow = page.getByRole('row').filter({ hasText: lot.lotCode })
+    const mainRow = page.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: location.code })
     await mainRow.getByRole('button', { name: 'Review position' }).click()
     const retryOperations = page.getByRole('region', { name: 'Inventory operations' })
     await retryOperations.getByLabel('Operation').selectOption('adjust')
@@ -193,13 +262,26 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await retryOperations.getByLabel('Evidence link or source reference').fill(`count-sheet:${suffix}`)
     await retryOperations.getByLabel(/I reviewed this position/).check()
     await retryOperations.getByRole('button', { name: 'Adjust physical count' }).click()
-    await expect(retryOperations.getByRole('button', { name: 'Retry same operation' })).toBeVisible()
-    await expect(retryOperations.getByRole('alert')).toContainText(/may have been committed/i)
-    await retryOperations.getByRole('button', { name: 'Retry same operation' }).click()
+    await expect(retryOperations.getByRole('button', { name: 'Retry exact operation' })).toBeVisible()
+    await expect(retryOperations.getByRole('status')).toContainText(/may have been committed/i)
+    const requestId = lostResponseRequests[0]?.requestId
+    expect(requestId).toBeTruthy()
+    await page.getByRole('link', { name: store.name }).click()
+    await expect(page.getByRole('heading', { name: store.name })).toBeVisible()
+    await page.goBack()
+    await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
+    const refreshedMainRow = page.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: location.code })
+    await refreshedMainRow.getByRole('button', { name: 'Review position' }).click()
+    const recoveredOperations = page.getByRole('region', { name: 'Inventory operations' })
+    await expect(recoveredOperations.getByRole('button', { name: 'Check saved result' })).toBeVisible()
+    await recoveredOperations.getByRole('button', { name: 'Check saved result' }).click()
+    await expect(recoveredOperations).toContainText('The committed result was found')
     await expect(page.getByRole('region', { name: 'Selected inventory position' })).toContainText('9 EA')
+    expect(outcomeLookups).toEqual([`${inventoryPath}/commands/ADJUST/${requestId}`])
     await page.unroute(`**${adjustmentPath}`)
-    expect(lostResponseRequests).toHaveLength(2)
-    expect(lostResponseRequests[0]).toEqual(lostResponseRequests[1])
+    expect(lostResponseRequests).toHaveLength(1)
+    const recoveredMovements = await read<MovementPage>(owner.context, `${positionPath}/${position.id}/movements?afterVersion=0&limit=100`)
+    expect(recoveredMovements.items.filter(item => item.operation === 'ADJUST' && item.reason === 'Recorded a final count correction after recovery')).toHaveLength(1)
     const afterRetry = await snapshot(owner.context, positionPath, position.id)
     expect(afterRetry.version).toBe(persisted.version + 1)
 
@@ -216,7 +298,7 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     const analystPage = await analyst.context.newPage()
     try {
       await analystPage.goto(`/organizations/${organization.id}/stores/${store.id}/inventory`)
-      const analystPosition = analystPage.getByRole('row').filter({ hasText: lot.lotCode })
+      const analystPosition = analystPage.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: location.code })
       await analystPosition.getByRole('button', { name: 'Review position' }).click()
       await expect(analystPage.getByRole('region', { name: 'Selected inventory position' })).toContainText('Your current role has no stock-changing actions for this position.')
       await expect(analystPage.getByRole('region', { name: 'Inventory operations' })).toHaveCount(0)
@@ -248,8 +330,13 @@ async function keyboardFill(page: import('@playwright/test').Page, field: import
 async function chooseByKeyboard(page: import('@playwright/test').Page, field: import('@playwright/test').Locator, value: string) {
   await expect(field).toBeEnabled()
   await expect(field.locator(`option[value="${value}"]`)).toHaveCount(1)
+  const options = await field.locator('option').evaluateAll(items => items.map(option => (option as HTMLOptionElement).value))
+  const currentIndex = options.indexOf(await field.inputValue())
+  const targetIndex = options.indexOf(value)
+  expect(currentIndex).toBeGreaterThanOrEqual(0)
+  expect(targetIndex).toBeGreaterThanOrEqual(0)
   await field.focus()
-  await page.keyboard.press('ArrowDown')
+  for (let index = 0; index < Math.abs(targetIndex - currentIndex); index++) await page.keyboard.press(targetIndex > currentIndex ? 'ArrowDown' : 'ArrowUp')
   await page.keyboard.press('Enter')
   await expect(field).toHaveValue(value)
 }

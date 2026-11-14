@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { clearCsrf } from './client'
-import { getInventoryCommandOutcome, receiveInventoryGoods, repairInventoryProjection } from './inventory'
+import { getInventoryCommandOutcome, getInventoryReceiptDocumentOutcome, receiveInventoryGoods, receiveInventoryGoodsDocument, repairInventoryProjection } from './inventory'
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { clearCsrf(); vi.unstubAllGlobals() })
@@ -24,6 +24,32 @@ it('looks up a committed result using the original command key and operation', a
   vi.stubGlobal('fetch', fetcher)
   await getInventoryCommandOutcome('org', 'store', 'RESERVE', 'same-request', new AbortController().signal)
   expect(new URL((fetcher.mock.calls[0][0] as Request).url).pathname).toContain('/inventory/commands/RESERVE/same-request')
+})
+
+it('submits one versioned physical receipt document through the CSRF protected API', async () => {
+  const fetcher = vi.fn().mockResolvedValueOnce(json({ token: 'csrf-document' })).mockResolvedValueOnce(new Response(JSON.stringify({
+    receiptId: 'receipt', movementId: 'movement', lines: [{ documentLineReference: 'line-a', positionId: 'position', version: 1,
+      onHand: 4, reserved: 0, quarantined: 0, otherBlocked: 0, available: 4, allocationId: null }],
+  }), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetcher)
+  const body = { requestId: 'receipt-document-request', supplierKey: 'supplier', documentType: 'DELIVERY_NOTE',
+    documentReference: 'DN-20', physicallyReceivedAt: '2026-11-12T10:00:00Z', reason: 'Physical delivery checked',
+    evidenceReference: 'supplier-document:20', lines: [{ documentLineReference: 'line-a', locationId: 'location',
+      productId: 'product', lotId: 'lot', quantity: 4, expectedVersion: 0 }] }
+  const response = await receiveInventoryGoodsDocument('org', 'store', body, new AbortController().signal)
+  expect(response.created).toBe(true)
+  expect(response.result.receiptId).toBe('receipt')
+  expect(new URL((fetcher.mock.calls[1][0] as Request).url).pathname).toContain('/inventory/receipt-documents')
+  expect(await (fetcher.mock.calls[1][0] as Request).json()).toEqual(body)
+  expect((fetcher.mock.calls[1][0] as Request).headers.get('X-CSRF-TOKEN')).toBe('csrf-document')
+})
+
+it('recovers the complete multi-line receipt result by its original command key', async () => {
+  const fetcher = vi.fn().mockResolvedValueOnce(json({ receiptId: 'receipt', movementId: 'movement', lines: [] }))
+  vi.stubGlobal('fetch', fetcher)
+  await getInventoryReceiptDocumentOutcome('org', 'store', 'receipt-request', new AbortController().signal)
+  expect(new URL((fetcher.mock.calls[0][0] as Request).url).pathname)
+    .toContain('/inventory/receipt-documents/commands/receipt-request')
 })
 
 it('submits an authorized projection repair with the captured version, evidence and request key', async () => {

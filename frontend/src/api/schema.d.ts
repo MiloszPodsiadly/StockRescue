@@ -646,6 +646,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/outbox/parked-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read payload-free diagnostics for parked events in a store */
+        get: operations["listParkedInventoryOutboxEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/outbox/parked-events/{eventId}/redrives": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request an audited replay of the same immutable parked event */
+        post: operations["requestInventoryOutboxRedrive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions": {
         parameters: {
             query?: never;
@@ -844,6 +878,40 @@ export interface paths {
         put?: never;
         /** Write off available or explicitly allocated blocked stock */
         post: operations["writeOffInventoryStock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/receipt-documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Atomically receive a bounded supplier document with distinct stock positions */
+        post: operations["receiveInventoryGoodsDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/receipt-documents/commands/{requestId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recover a committed multi-line receipt after an uncertain response */
+        get: operations["getInventoryReceiptDocumentOutcome"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1926,6 +1994,40 @@ export interface components {
             /** @enum {string} */
             role: "ORG_ADMIN" | "MEMBER";
         };
+        ParkedDiagnostic: {
+            /** Format: int64 */
+            aggregateVersion?: number;
+            /** Format: uuid */
+            eventId?: string;
+            eventType?: string;
+            lastErrorCode?: string;
+            /** Format: date-time */
+            latestAttemptAt?: string;
+            /** Format: int64 */
+            latestGeneration?: number;
+            /** Format: uuid */
+            movementId?: string;
+            /** Format: date-time */
+            occurredAt?: string;
+            /** Format: int32 */
+            originalAttemptCount?: number;
+            /** Format: int64 */
+            originalClaimVersion?: number;
+            /** Format: date-time */
+            parkedAt?: string;
+            /** Format: uuid */
+            positionId?: string;
+            /** Format: int32 */
+            redriveAttemptCount?: number;
+            /** Format: int32 */
+            schemaVersion?: number;
+            sourceFingerprint?: string;
+            state?: string;
+        };
+        ParkedPage: {
+            hasMore?: boolean;
+            items?: components["schemas"]["ParkedDiagnostic"][];
+        };
         PermissionsResponse: {
             allStoreActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
             organization: components["schemas"]["OrganizationResponse"];
@@ -1979,6 +2081,57 @@ export interface components {
             reason: string;
             /** Format: uuid */
             requestId: string;
+        };
+        ReceiptDocumentLineRequest: {
+            documentLineReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** Format: uuid */
+            locationId: string;
+            /** Format: uuid */
+            lotId: string;
+            /** Format: uuid */
+            productId: string;
+            /** Format: int64 */
+            quantity: number;
+        };
+        ReceiptDocumentLineResponse: {
+            /** Format: uuid */
+            allocationId: string | null;
+            /** Format: int64 */
+            available: number;
+            documentLineReference: string;
+            /** Format: int64 */
+            onHand: number;
+            /** Format: int64 */
+            otherBlocked: number;
+            /** Format: uuid */
+            positionId: string;
+            /** Format: int64 */
+            quarantined: number;
+            /** Format: int64 */
+            reserved: number;
+            /** Format: int64 */
+            version: number;
+        };
+        ReceiptDocumentRequest: {
+            documentReference: string;
+            documentType: string;
+            evidenceReference: string;
+            lines: components["schemas"]["ReceiptDocumentLineRequest"][];
+            /** Format: date-time */
+            physicallyReceivedAt: string;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+            supplierKey: string;
+        };
+        ReceiptDocumentResponse: {
+            lines: components["schemas"]["ReceiptDocumentLineResponse"][];
+            /** Format: uuid */
+            movementId: string;
+            /** Format: uuid */
+            receiptId: string;
         };
         ReceiptRequest: {
             documentLineReference: string;
@@ -2046,6 +2199,36 @@ export interface components {
             recallState: "UNKNOWN" | "NOT_REPORTED" | "RECALLED";
             /** Format: uuid */
             requestId: string;
+        };
+        RedriveRequestBody: {
+            evidenceReference: string;
+            /** Format: int32 */
+            expectedOriginalAttemptCount: number;
+            /** Format: int64 */
+            expectedOriginalClaimVersion: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+            sourceFingerprint: string;
+        };
+        RedriveResult: {
+            /** Format: date-time */
+            blockedAt?: string;
+            /** Format: uuid */
+            eventId?: string;
+            /** Format: int64 */
+            generation?: number;
+            lastErrorCode?: string;
+            /** Format: date-time */
+            nextAttemptAt?: string;
+            /** Format: date-time */
+            publishedAt?: string;
+            /** Format: uuid */
+            requestId?: string;
+            /** Format: int32 */
+            sendAttemptCount?: number;
+            sourceFingerprint?: string;
+            state?: string;
         };
         RegisterLotRequest: {
             dateMarking: components["schemas"]["DateMarkingRequest"];
@@ -7270,6 +7453,63 @@ export interface operations {
             };
         };
     };
+    listParkedInventoryOutboxEvents: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParkedPage"];
+                };
+            };
+        };
+    };
+    requestInventoryOutboxRedrive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                eventId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedriveRequestBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedriveResult"];
+                };
+            };
+        };
+    };
     listInventoryPositions: {
         parameters: {
             query?: {
@@ -8415,6 +8655,213 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    receiveInventoryGoodsDocument: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReceiptDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Exact idempotent retry returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptDocumentResponse"];
+                };
+            };
+            /** @description Receipt document recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptDocumentResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    getInventoryReceiptDocumentOutcome: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptDocumentResponse"];
                 };
             };
             /** @description Invalid inventory command or page */
