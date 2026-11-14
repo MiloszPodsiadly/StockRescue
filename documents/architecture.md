@@ -8,11 +8,11 @@ records; the Java backend authorizes commands and commits their audit evidence.
 
 | Component | Responsibility |
 | --- | --- |
-| Java / Spring Boot | Accounts, organizations, access decisions, store configuration and transport cost history in one modular application. |
+| Java / Spring Boot | Accounts, organizations, access decisions, catalog and inventory commands, store configuration and transport cost history in one modular application. |
 | PostgreSQL | Business records, constraints, transaction ordering, audit history and persisted sessions. |
 | React / TypeScript | Account and organization workspaces, forms, scoped navigation and service status. |
 | Python / FastAPI | A private computation service with a versioned health contract. |
-| Kafka | Broker connectivity and message transport checks. |
+| Kafka | Durable inventory change events and asynchronous derived views. |
 | Nginx / Docker Compose | Same-origin browser access and the local service topology. |
 
 ```mermaid
@@ -31,8 +31,8 @@ credentials are supplied explicitly. The Java application uses the restricted
 `stockrescue_app` database role; the computation service has its own configuration.
 
 Liveness checks the Java process, readiness checks its database connection, and
-integration health checks Kafka and Python separately. The workspace displays the
-backend's readiness result. Broker message checks use isolated temporary topics.
+integration health checks Kafka, Python and the inventory listener. The workspace
+displays the backend's readiness result.
 
 ## Application boundaries
 
@@ -46,6 +46,7 @@ JDBC repositories together:
 | `access` | Memberships, invitations, store assignments, revocation and authorization policy. |
 | `stores` | Store metadata, storage zones, directed transport lanes and cost revisions. |
 | `catalog` | Organization products, manufacturer lot registration and scoped source evidence. |
+| `inventory` | Physical receipts, stock quantities, reservations, holds and immutable movement evidence. |
 | `platform` | HTTP/security adapters, sessions, transactions, correlation and audit persistence. |
 
 Controllers validate and translate requests. Application services own command
@@ -158,6 +159,80 @@ preview. Store archival retains location history while making its configuration
 unusable. Eligibility resolves the selected location's zone and rejects archived
 locations or inactive parents.
 
+## Inventory records
+
+A stock position identifies one organization, store, storage location, product and
+manufacturer lot. Composite foreign keys keep those identities consistent. An
+uninitialized position carries no assertion about physical stock; an initialized
+zero is distinct. Quantities use integer pieces and explicit overflow checks.
+
+The immutable movement journal records physical quantity deltas and changes to
+reserved, quarantined and other blocked quantities. These buckets are disjoint;
+availability is derived from on-hand stock. Position updates require a matching
+journal version. Reservation and hold ownership retain immutable transitions,
+including partial releases and consumption. Deferred database constraints check
+the journal, ownership, position and pending event together at commit.
+
+Physical receipts retain supplier document and line identities independently of
+command retry keys. Source observations remain separate evidence. Command outcomes,
+movement history, reconciliation findings and outbox event contents are immutable.
+Delivery leases are stored separately from event contents. The inbox and derived
+change feed provide scoped persistence for asynchronous processing.
+
+Inventory changes commit to PostgreSQL before Kafka delivery. A bounded relay
+claims rows with expiring fenced leases, publishes in aggregate-version order and
+marks delivery only after broker acknowledgement. During a broker outage, stock
+commands continue to commit while the outbox backlog grows; retries use capped
+jittered delays, and operators can observe pending count, oldest age, attempts,
+errors and projection staleness through authenticated metrics. Poison events are
+parked and block later versions of their aggregate. An organization administrator
+can request a scoped, reasoned and audited redrive of the same immutable event;
+each new generation has its own fenced lease and only a persisted broker ACK
+releases the ordering gap. Invalid source evidence remains blocked for engineering
+review. The consumer stores an idempotent receipt and a monotonic derived view
+without changing stock balances. Redrive lifecycle and irreparable-source handling
+are recorded in [ADR-OUTBOX-REDRIVE](ADR-OUTBOX-REDRIVE.md).
+The projection consumer acknowledges only after its inbox transaction or durable
+invalid-event record commits. Known invalid records are parked; transient
+infrastructure failures retry the same offset with capped jitter. Unknown
+application failures pause the listener container for five minutes, retain the
+offset and expose category, offset, age and paused state through `inventoryMessaging`
+health and metrics without event payloads. After deploying a correction, restart
+the consumer to resume the same group offset; do not skip it. Kafka health remains
+separate from database-backed API health.
+Event correlation IDs are nullable opaque strings using the same safe 1-to-64
+character syntax accepted by HTTP; UUID values remain valid, while event, tenant,
+aggregate and causation identities remain UUIDs.
+
+Inventory commands lock current store authority before catalog context and stock
+positions. Product and lot locks serialize safety-evidence changes with stock
+writes. Sales and reservations re-evaluate current evidence, while received units
+with incomplete or blocking evidence enter quarantine. Releasing a hold into
+available stock requires a current eligible assessment. Operators release their own
+allocations; managers may manage another operator's allocations and perform audited
+adjustments and write-offs, including disposal from a named blocked allocation.
+
+Retry identities are scoped by organization, actor and operation and retain a
+fingerprint of normalized reviewed values. A retry returns the recorded logical
+outcome after current authorization. Changed values conflict. Receipt document
+identity independently prevents a second physical delivery posting under a new
+request key. Position, allocation transitions, receipt, command outcome, audit and
+pending event commit together. An uncertain response is recovered with the captured
+request identifier and original values.
+
+The multi-line receipt endpoint treats up to 50 distinct stock positions as one
+physical document: each line advances its own position and emits its own ordered
+event while sharing one movement and receipt header. Lines that fail current lot
+safety review enter quarantine within that same transaction.
+
+Reconciliation takes a store-scoped exclusive transaction lock while stock commands
+take its shared form, then rebuilds balances and allocation ownership from immutable
+movement and lifecycle evidence. Critical mismatches freeze only affected positions;
+the run and its findings remain durable across restarts. An organization administrator
+may rebuild a frozen projection only when its ledger and allocation history validate.
+That repair is recorded as immutable evidence and a zero-quantity movement; it never
+rewrites prior history. Corrupt source history remains frozen for investigation.
+
 ## Accounts and sessions
 
 Account identity uses trimmed ASCII email addresses normalized to lowercase.
@@ -190,16 +265,21 @@ Memberships and store assignments have independent scopes:
 
 | Role | Authority |
 | --- | --- |
-| Org Admin | Manage the organization's members, invitations, stores, zones, lanes and costs; inspect archived store history. |
-| Store Manager | Read assigned active stores, edit their metadata and storage zones, and register source evidence. |
-| Inventory Operator | Read assigned active stores and their configuration, and register source evidence. |
-| Read-only Analyst | Read assigned active stores and their configuration. |
+| Org Admin | All organization and store actions, including inventory reconciliation and privileged, audited inventory remediation; may inspect archived history. |
+| Store Manager | Assigned active stores; edit metadata, zones and locations, register lot/source evidence, and perform inventory operations including reconciliation and managing other users' allocations. |
+| Inventory Operator | Assigned active stores; read configuration and inventory, register source evidence, receive, reserve/release owned allocations, record sales, and quarantine/hold stock. |
+| Read-only Analyst | Read assigned active stores and inventory. |
 
 Every protected operation resolves the current account, active organization
 membership and relevant store assignment. Organization selection identifies the
 workspace being viewed; authorization comes from persisted membership and grants.
 Resource queries include organization scope, and composite foreign keys preserve
 that relationship during writes.
+
+Store roles apply only to assigned active stores. Org Admins retain read access to
+archived store history, while inventory writes require an active store. Store
+Managers may not remediate a frozen inventory projection; that action remains with
+Org Admins and is recorded in audit history.
 
 An invitation contains the intended email address and administrator-selected
 store assignments. Its 32-byte random secret is shared through a private link;

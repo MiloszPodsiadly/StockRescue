@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Shared assertions for the current versioned migration inventory. */
 public final class MigrationAssertions {
-    public static final int CURRENT_VERSION = 11;
+    public static final int CURRENT_VERSION = 15;
     private static final MigrationVersion CURRENT_MIGRATION =
             MigrationVersion.fromVersion(Integer.toString(CURRENT_VERSION));
     private static final List<MigrationVersion> EXPECTED_VERSIONS = IntStream.rangeClosed(1, CURRENT_VERSION)

@@ -195,5 +195,88 @@ class OpenApiContractTest extends InfrastructureTestBase {
         for(var field:java.util.List.of("id","code","zoneId","temperatureClass","active","usable","version","archivedAt")) assertThat(locationSchema.has(field)).isTrue();
         for(var field:java.util.List.of("quantity","capacity","availableQuantity")) assertThat(locationSchema.has(field)).isFalse();
         assertThat(schemas.path("EligibilityResponse").path("properties").has("locationVersion")).isTrue();
+
+        var inventory="/api/v1/organizations/{organizationId}/stores/{storeId}/inventory";
+        var inventoryPaths=document.path("paths");
+        var redrivePath=inventory+"/outbox/parked-events";
+        assertThat(inventoryPaths.path(redrivePath).path("get").path("operationId").asString())
+                .isEqualTo("listParkedInventoryOutboxEvents");
+        var redrive=inventoryPaths.path(redrivePath+"/{eventId}/redrives").path("post");
+        assertThat(redrive.path("operationId").asString()).isEqualTo("requestInventoryOutboxRedrive");
+        var redriveRequired=schemas.path("RedriveRequestBody").path("required");
+        for(var field:java.util.List.of("requestId","expectedOriginalClaimVersion","expectedOriginalAttemptCount",
+                "sourceFingerprint","reason","evidenceReference"))
+            assertThat(redriveRequired).anyMatch(value->value.asString().equals(field));
+        var positions=inventoryPaths.path(inventory+"/positions").path("get");
+        assertThat(positions.path("operationId").asString()).isEqualTo("listInventoryPositions");
+        assertThat(positions.path("security").get(0).has("session")).isTrue();
+        assertThat(positions.path("responses").path("200").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/StockPageResponse");
+        assertThat(inventoryPaths.path(inventory+"/available-by-lot").path("get").path("operationId").asString())
+                .isEqualTo("listInventoryAvailableByLot");
+        var receipt=inventoryPaths.path(inventory+"/receipts").path("post");
+        assertThat(receipt.path("operationId").asString()).isEqualTo("receiveInventoryGoods");
+        assertThat(receipt.path("responses").has("200")).isTrue();
+        assertThat(receipt.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/ReceiptRequest");
+        var receiptRequired=schemas.path("ReceiptRequest").path("required");
+        for(var field:java.util.List.of("requestId","expectedVersion","locationId","productId","lotId","quantity","documentReference","documentLineReference"))
+            assertThat(receiptRequired).anyMatch(value->value.asString().equals(field));
+        var receiptDocument=inventoryPaths.path(inventory+"/receipt-documents").path("post");
+        assertThat(receiptDocument.path("operationId").asString()).isEqualTo("receiveInventoryGoodsDocument");
+        assertThat(receiptDocument.path("responses").has("201")).isTrue();
+        assertThat(receiptDocument.path("responses").has("200")).isTrue();
+        for(var status:java.util.List.of("401","403","404","409","422")) assertThat(receiptDocument.path("responses").has(status)).isTrue();
+        assertThat(receiptDocument.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/ReceiptDocumentRequest");
+        var receiptDocumentSchema=schemas.path("ReceiptDocumentRequest");
+        var receiptDocumentRequired=receiptDocumentSchema.path("required");
+        for(var field:java.util.List.of("requestId","supplierKey","documentType","documentReference","physicallyReceivedAt","reason","evidenceReference","lines"))
+            assertThat(receiptDocumentRequired).anyMatch(value->value.asString().equals(field));
+        assertThat(receiptDocumentSchema.path("properties").path("lines").path("minItems").asInt()).isEqualTo(1);
+        assertThat(receiptDocumentSchema.path("properties").path("lines").path("maxItems").asInt()).isEqualTo(50);
+        var receiptLineRequired=schemas.path("ReceiptDocumentLineRequest").path("required");
+        for(var field:java.util.List.of("documentLineReference","locationId","productId","lotId","quantity","expectedVersion"))
+            assertThat(receiptLineRequired).anyMatch(value->value.asString().equals(field));
+        assertThat(schemas.path("ReceiptDocumentLineRequest").path("properties").path("quantity").path("type").asString()).isEqualTo("integer");
+        assertThat(schemas.path("ReceiptDocumentLineRequest").path("properties").path("expectedVersion").path("type").asString()).isEqualTo("integer");
+        assertThat(schemas.path("ReceiptDocumentLineResponse").path("properties").path("available").path("type").asString()).isEqualTo("integer");
+        var receiptDocumentResponse=receiptDocument.path("responses").path("201").path("content").path("application/json").path("schema").path("$ref");
+        assertThat(receiptDocumentResponse.asString()).isEqualTo("#/components/schemas/ReceiptDocumentResponse");
+        var receiptResultRequired=schemas.path("ReceiptDocumentResponse").path("required");
+        assertThat(receiptResultRequired).extracting(value->value.asString()).contains("receiptId","movementId","lines");
+        assertThat(schemas.path("ReceiptDocumentLineResponse").path("required").toString())
+                .contains("documentLineReference","positionId","version","onHand","reserved","quarantined","otherBlocked","available","allocationId");
+        var receiptDocumentOutcome=inventoryPaths.path(inventory+"/receipt-documents/commands/{requestId}").path("get");
+        assertThat(receiptDocumentOutcome.path("operationId").asString()).isEqualTo("getInventoryReceiptDocumentOutcome");
+        assertThat(receiptDocumentOutcome.path("responses").path("200").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/ReceiptDocumentResponse");
+        var reservation=inventoryPaths.path(inventory+"/positions/{positionId}/reservations").path("post");
+        assertThat(reservation.path("operationId").asString()).isEqualTo("reserveInventoryStock");
+        assertThat(reservation.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/StockCommandRequest");
+        assertThat(schemas.path("StockCommandRequest").path("required").toString())
+                .contains("requestId","expectedVersion","quantity","reason","evidenceReference");
+        var snapshot=schemas.path("StockSnapshotResponse").path("properties");
+        assertThat(snapshot.path("initialization").path("enum").toString()).isEqualTo("[\"NOT_INITIALIZED\",\"INITIALIZED\"]");
+        assertThat(snapshot.path("onHand").path("type")).anyMatch(value->value.asString().equals("null"));
+        assertThat(snapshot.path("available").path("type")).anyMatch(value->value.asString().equals("null"));
+        var outcome=inventoryPaths.path(inventory+"/commands/{operation}/{requestId}").path("get");
+        assertThat(outcome.path("operationId").asString()).isEqualTo("getInventoryCommandOutcome");
+        assertThat(outcome.path("responses").path("200").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/InventoryCommandResponse");
+        assertThat(inventoryPaths.path(inventory+"/reconciliations").path("post").path("operationId").asString())
+                .isEqualTo("reconcileInventory");
+        assertThat(inventoryPaths.path(inventory+"/reconciliations/{runId}/findings").path("get").path("operationId").asString())
+                .isEqualTo("listInventoryReconciliationFindings");
+        var projectionRepair=inventoryPaths.path(inventory+"/reconciliations/{runId}/positions/{positionId}/projection-repair").path("post");
+        assertThat(projectionRepair.path("operationId").asString()).isEqualTo("repairInventoryProjection");
+        assertThat(projectionRepair.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/ProjectionRepairRequest");
+        assertThat(projectionRepair.path("responses").path("200").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/InventoryCommandResponse");
+        var repairRequired=schemas.path("ProjectionRepairRequest").path("required");
+        for (var field:java.util.List.of("requestId","expectedVersion","reason","evidenceReference"))
+            assertThat(repairRequired).anyMatch(value->value.asString().equals(field));
     }
 }

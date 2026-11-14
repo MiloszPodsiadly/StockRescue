@@ -97,7 +97,7 @@ class StoreManagementTest extends InfrastructureTestBase {
     void storeManagersEditOnlyAssignedMetadataAndReadRolesCannotMutate() throws Exception {
         var manager = f.manager.browser();
         var assigned = tree(manager.get(path(f.orgA, f.a1)));
-        assertThat(assigned.path("allowedActions").toString()).contains("EDIT_STORE","REGISTER_STORE_LOT").doesNotContain("ARCHIVE_STORE");
+        assertThat(assigned.path("allowedActions").toString()).isEqualTo("[\"READ_STORE\",\"EDIT_STORE\",\"MANAGE_STORAGE_ZONES\",\"REGISTER_SOURCE_EVIDENCE\",\"MANAGE_STORAGE_LOCATIONS\",\"REGISTER_STORE_LOT\",\"READ_INVENTORY\",\"RECEIVE_STOCK\",\"RESERVE_STOCK\",\"RELEASE_RESERVATION\",\"ADJUST_STOCK\",\"WRITE_OFF_STOCK\",\"QUARANTINE_STOCK\",\"RECORD_SALE\",\"MANAGE_INVENTORY_ALLOCATIONS\",\"RECONCILE_INVENTORY\"]");
         assertThat(tree(manager.get(base(f.orgA))).path("canRegisterCandidateLots").asBoolean()).isTrue();
         var changed = manager.write("PATCH", path(f.orgA, f.a1), update(0, "Renamed North", "Europe/Berlin"));
         assertThat(changed.statusCode()).as(changed.body()).isEqualTo(200);
@@ -106,7 +106,7 @@ class StoreManagementTest extends InfrastructureTestBase {
         for (var user : List.of(f.operator, f.analyst)) {
             assertThat(tree(user.browser().get(base(f.orgA))).path("canRegisterCandidateLots").asBoolean()).isFalse();
             assertThat(tree(user.browser().get(path(f.orgA, f.a1))).path("allowedActions").toString())
-                    .isEqualTo(user==f.operator?"[\"READ_STORE\",\"REGISTER_SOURCE_EVIDENCE\"]":"[\"READ_STORE\"]");
+                    .isEqualTo(user==f.operator?"[\"READ_STORE\",\"REGISTER_SOURCE_EVIDENCE\",\"READ_INVENTORY\",\"RECEIVE_STOCK\",\"RESERVE_STOCK\",\"RELEASE_RESERVATION\",\"RECORD_SALE\",\"QUARANTINE_STOCK\"]":"[\"READ_STORE\",\"READ_INVENTORY\"]");
             problem(user.browser().write("PATCH", path(f.orgA, f.a1), update(1, "Forbidden", "UTC")), 403, "ACCESS_DENIED");
             problem(user.browser().write("POST", path(f.orgA, f.a1) + "/archive", version(1)), 403, "ACCESS_DENIED");
         }

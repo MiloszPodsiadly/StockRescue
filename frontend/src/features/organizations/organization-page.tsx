@@ -14,6 +14,7 @@ import { TenantBoundary } from './tenant-boundary'
 import { useOrganizationSelection } from './use-organization-selection'
 import { OrganizationPicker } from './organization-picker'
 import { OrganizationContext } from './organization-context'
+import { activateInventoryTenant, clearInventoryCommandsForTenant } from '../inventory/inventory-pending-commands'
 
 export function OrganizationPage({ organizationId, children }: { organizationId?: string, children: ReactNode }) {
   return <Workspace>{(account, onSignOut) => organizationId ? <ScopedOrganization key={`${account.id}:${organizationId}`} actorId={account.id} organizationId={organizationId} onSignOut={onSignOut}>{children}</ScopedOrganization> : <WorkspaceFrame onSignOut={onSignOut}><StateMessage state="unavailable" title="Organization unavailable" description="Open your organization from your account." /></WorkspaceFrame>}</Workspace>
@@ -21,6 +22,7 @@ export function OrganizationPage({ organizationId, children }: { organizationId?
 function ScopedOrganization({ actorId, organizationId, onSignOut, children }: { actorId: string, organizationId: string, onSignOut: () => void, children: ReactNode }) {
   const navigate = useNavigate()
   const client = useQueryClient()
+  useLayoutEffect(() => { activateInventoryTenant(['tenant', actorId, organizationId]) }, [actorId, organizationId])
   const selection = useOrganizationSelection(actorId, async selected => { await navigate({ to: '/organizations/$organizationId/stores', params: { organizationId: selected.id } }) })
   const organization = useQuery({ queryKey: ['tenant', actorId, organizationId, 'organization'], queryFn: ({ signal }) => getOrganization(organizationId, signal), refetchOnWindowFocus: true, refetchInterval: 30000, gcTime: 0 })
   useLayoutEffect(() => subscribeAccessChanges(changed => {
@@ -28,10 +30,11 @@ function ScopedOrganization({ actorId, organizationId, onSignOut, children }: { 
   }), [actorId, organizationId, client])
   useLayoutEffect(() => {
     if (organization.error instanceof ApiError && (organization.error.status === 403 || organization.error.status === 404)) {
+      clearInventoryCommandsForTenant(['tenant', actorId, organizationId])
       void client.cancelQueries({ queryKey: ['identity', actorId] })
       client.removeQueries({ queryKey: ['identity', actorId] })
     }
-  }, [organization.error, actorId, client])
+  }, [organization.error, actorId, organizationId, client])
   const unavailable = organization.isError || selection.selectionError
   const ready = organization.data && !unavailable && !selection.switching
   return <WorkspaceFrame onSignOut={onSignOut} organizationId={ready ? organizationId : undefined} administrator={Boolean(ready && organization.data?.role === 'ORG_ADMIN')} sidebar={!unavailable && <OrganizationPicker selection={selection} current={organization.data} />}>

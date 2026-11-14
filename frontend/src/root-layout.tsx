@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { clearCsrf } from './api/client'
 import { subscribeSessionChanges } from './api/session-events'
 import { sessionKey } from './features/auth/session'
+import { clearInventoryCommandsForTenant } from './features/inventory/inventory-pending-commands'
 
 export function RootLayout() {
   const client = useQueryClient()
@@ -14,6 +15,7 @@ export function RootLayout() {
     let generation = 0
     const unsubscribe = subscribeSessionChanges(change => {
       const current = ++generation
+      clearInventoryCommandsForTenant()
       clearCsrf()
       flushSync(() => { client.setQueryData(sessionKey, null) })
       void client.cancelQueries().then(() => {
@@ -25,7 +27,7 @@ export function RootLayout() {
     return () => { generation++; unsubscribe() }
   }, [client])
   useEffect(() => {
-    const title = pathname.endsWith('/storage-zones') ? 'Storage zones' : pathname.includes('/transport-lanes/') ? 'Cost history' : pathname.endsWith('/transport-lanes') ? 'Transport lanes' : pathname.endsWith('/members') ? 'Members and access' : pathname.endsWith('/settings') ? 'Settings' : pathname.includes('/stores/') ? 'Store details' : pathname.endsWith('/stores') ? 'Stores' : pathname === '/account' ? 'Your organizations' : pathname === '/sign-up' ? 'Create account' : pathname === '/sign-in' ? 'Sign in' : pathname === '/' ? 'Service status' : 'Workspace'
+    const title = pathname.endsWith('/storage-zones') ? 'Storage zones' : pathname.endsWith('/inventory') ? 'Inventory' : pathname.includes('/transport-lanes/') ? 'Cost history' : pathname.endsWith('/transport-lanes') ? 'Transport lanes' : pathname.endsWith('/members') ? 'Members and access' : pathname.endsWith('/settings') ? 'Settings' : pathname.includes('/stores/') ? 'Store details' : pathname.endsWith('/stores') ? 'Stores' : pathname === '/account' ? 'Your organizations' : pathname === '/sign-up' ? 'Create account' : pathname === '/sign-in' ? 'Sign in' : pathname === '/' ? 'Service status' : 'Workspace'
     document.title = `${title} · StockRescue`
     if (previous.current !== pathname) {
       previous.current = pathname

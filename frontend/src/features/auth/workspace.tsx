@@ -10,6 +10,7 @@ import { AppLink } from '@/components/app-link'
 import { StateMessage } from '@/components/state-message'
 import { Button } from '@/components/ui/button'
 import { useSession } from './session'
+import { clearInventoryCommandsForTenant } from '../inventory/inventory-pending-commands'
 
 export function Workspace({ children }: { children: (account: Account, onSignOut: () => void) => ReactNode }) {
   const session = useSession()
@@ -18,9 +19,9 @@ export function Workspace({ children }: { children: (account: Account, onSignOut
   const [closing, setClosing] = useState(false)
   const logout = useMutation({ mutationKey: ['identity', session.data?.id, 'sign-out'], retry: false, gcTime: 0, mutationFn: signOut,
     onMutate: async () => { await client.cancelQueries() },
-    onSuccess: async () => { await client.cancelQueries(); client.clear(); await navigate({ to: '/sign-in', replace: true }) },
+    onSuccess: async () => { clearInventoryCommandsForTenant(); await client.cancelQueries(); client.clear(); await navigate({ to: '/sign-in', replace: true }) },
   })
-  function close() { flushSync(() => { setClosing(true) }); logout.mutate() }
+  function close() { clearInventoryCommandsForTenant(); flushSync(() => { setClosing(true) }); logout.mutate() }
   if (closing) return <WorkspaceFrame onSignOut={close} signingOut={logout.isPending}><div className="space-y-5"><StateMessage state={logout.isError ? 'unavailable' : 'loading'} title={logout.isError ? 'Sign-out could not be confirmed' : 'Signing out'} description={logout.isError ? errorMessage(logout.error) : 'Closing your session and workspace.'} />{logout.isError && <p role="alert">Your private workspace is closed. Try signing out again to confirm the result.</p>}</div></WorkspaceFrame>
   if (session.isPending) return <WorkspaceFrame><StateMessage state="loading" title="Checking your session" description="Loading your account securely." /></WorkspaceFrame>
   if (session.isError) return <WorkspaceFrame><div className="space-y-5"><StateMessage state="unavailable" title="Session unavailable" description={errorMessage(session.error)} /><Button onClick={() => { void session.refetch() }}>Check session again</Button></div></WorkspaceFrame>

@@ -6,6 +6,9 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import com.stockrescue.inventory.messaging.InventoryMessagingHealthIndicator;
+import com.stockrescue.inventory.messaging.InventoryMessagingMetrics;
+import com.stockrescue.inventory.messaging.InventoryMessagingStartup;
 import com.stockrescue.support.InfrastructureTestBase;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -17,29 +20,87 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.health.contributor.Status;
 import org.springframework.context.ApplicationContext;
 import org.springframework.kafka.core.KafkaAdmin;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.test.annotation.DirtiesContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.BEFORE_CLASS)
 class KafkaFoundationTest extends InfrastructureTestBase {
 
     @Autowired
     private KafkaHealthIndicator health;
 
     @Autowired
+    private InventoryMessagingHealthIndicator messagingHealth;
+
+    @Autowired
+    private InventoryMessagingStartup messagingStartup;
+
+    @Autowired
+    private InventoryMessagingMetrics messagingMetrics;
+
+    @Autowired
+    private KafkaListenerEndpointRegistry listeners;
+
+    @Autowired
     private ApplicationContext application;
 
     @Test
     void defaultRuntimeNeedsNoSmokeTopicAndDiagnosticsDoNotProvisionTopics() throws Exception {
-        assertThat(application.getBeansOfType(NewTopic.class)).isEmpty();
+        assertThat(application.getBeansOfType(NewTopic.class)).hasSize(1);
         try (var admin = Admin.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
             var before = admin.listTopics().names().get(3, TimeUnit.SECONDS);
             assertThat(before).doesNotContain("stockrescue.infrastructure.smoke.v1");
+            assertThat(before).contains("stockrescue.inventory.events.v1");
             assertThat(health.health().getStatus()).isEqualTo(Status.UP);
+            await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(100)).untilAsserted(() -> {
+                var messaging = messagingHealth.health();
+                assertThat(messaging.getStatus()).withFailMessage(
+                        "Inventory messaging did not become healthy: %s", messaging.getDetails())
+                        .isEqualTo(Status.UP);
+                assertThat(messaging.getDetails()).containsEntry("state", "running");
+            });
             assertThat(admin.listTopics().names().get(3, TimeUnit.SECONDS)).isEqualTo(before);
         }
+    }
+
+    @Test
+    void unexpectedListenerStopRestartsOnceWithoutDuplicatingConsumers() {
+        var listener=listeners.getListenerContainer("inventory-change-projection");
+        assertThat(listener).isInstanceOf(ConcurrentMessageListenerContainer.class);
+        var concurrent=(ConcurrentMessageListenerContainer<?,?>)listener;
+        await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            assertThat(concurrent.isRunning()).isTrue();
+            assertThat(concurrent.getContainers()).hasSize(3);
+            assertThat(concurrent.getContainers()).allSatisfy(child->{
+                assertThat(child.isRunning()).isTrue();
+                assertThat(child.isInExpectedState()).isTrue();
+            });
+        });
+        double restartAttempts=messagingMetrics.consumerListenerRestartAttemptCount();
+
+        concurrent.getContainers().getFirst().stop();
+
+        await().atMost(Duration.ofSeconds(5)).pollInterval(Duration.ofMillis(50)).untilAsserted(()->{
+            assertThat(messagingHealth.health().getStatus()).isEqualTo(Status.DOWN);
+            assertThat(messagingStartup.listenerRunning()).isFalse();
+        });
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            assertThat(messagingStartup.state()).isEqualTo(InventoryMessagingStartup.State.RUNNING);
+            assertThat(messagingHealth.health().getStatus()).isEqualTo(Status.UP);
+            assertThat(concurrent.isRunning()).isTrue();
+            assertThat(concurrent.getContainers()).hasSize(3);
+            assertThat(concurrent.getContainers()).allSatisfy(child->{
+                assertThat(child.isRunning()).isTrue();
+                assertThat(child.isInExpectedState()).isTrue();
+            });
+            assertThat(messagingMetrics.consumerListenerRestartAttemptCount()).isEqualTo(restartAttempts+1);
+        });
     }
 
     @Test

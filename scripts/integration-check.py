@@ -10,10 +10,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 
 def require(condition, message):
@@ -124,27 +125,66 @@ def main():
     def redact(text):
         for secret in sensitive_values:
             text = text.replace(secret, "[REDACTED]")
+        text = re.sub(
+            r"(?im)(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-csrf-token)\s*:\s*).*$",
+            r"\1[REDACTED]",
+            text,
+        )
+        text = re.sub(
+            r"(?i)([\"']?[A-Za-z0-9_.-]*(?:authorization|proxy-authorization|cookie|set-cookie|x-csrf-token|csrf-token|password|passwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token)[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)",
+            lambda match: f'{match.group(1)}"[REDACTED]"',
+            text,
+        )
+        text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
+        text = re.sub(r"(://[^:/@\s]+:)[^@\s]+@", r"\1[REDACTED]@", text)
         return text
 
-    def save_diagnostic(contents):
+    def save_diagnostic(contents, append=False):
         diagnostic = working / f"{project}-failure.log"
         try:
-            write_private_environment_file(diagnostic, redact(contents))
+            contents = redact(contents)
+            if append and diagnostic.exists():
+                with diagnostic.open("a", encoding="utf-8", newline="\n") as output:
+                    output.write(contents)
+                if os.name != "nt":
+                    os.chmod(diagnostic, 0o600)
+            else:
+                write_private_environment_file(diagnostic, contents)
         except Exception:
             return None
         return diagnostic
 
+    def diagnostic_text(value):
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value
+
     def execute(command, failure_expected=False, timeout=240, input_text=None):
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            input=input_text,
-            timeout=timeout,
-        )
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                input=input_text,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            command_label = redact(" ".join(str(part) for part in command))
+            captured = diagnostic_text(error.stdout) + diagnostic_text(error.stderr)
+            diagnostic = save_diagnostic(
+                f"Command timed out after {timeout}s: {command_label}\n{captured}\n"
+            )
+            detail = (
+                f"diagnostic log is in {diagnostic}"
+                if diagnostic
+                else "diagnostic could not be written"
+            )
+            raise TimeoutError(f"Infrastructure check command timed out; {detail}") from error
         if not failure_expected and result.returncode:
             diagnostic = save_diagnostic(result.stdout + result.stderr)
             detail = (
@@ -169,6 +209,48 @@ def main():
 
     def run(*command, **options):
         return execute(compose + list(command), **options)
+
+    def collect_failure_diagnostics(error):
+        sections = [
+            "=== Integration failure ===",
+            f"type: {type(error).__name__}",
+            "message: omitted to avoid copying request data or secrets",
+        ]
+        projects = [(project, compose)] + [
+            (scenario["project"], scenario["compose"]) for scenario in scenario_projects
+        ]
+        for project_name, project_compose in projects:
+            for label, arguments in (
+                ("service status", ["ps", "-a"]),
+                ("recent service logs", ["logs", "--no-color", "--tail", "80"]),
+            ):
+                try:
+                    result = subprocess.run(
+                        project_compose + arguments,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=20,
+                    )
+                    output = result.stdout + result.stderr
+                    if len(output) > 60000:
+                        output = output[-60000:]
+                    sections.extend(
+                        [
+                            f"=== {project_name}: {label} (exit {result.returncode}) ===",
+                            output or "<no output>",
+                        ]
+                    )
+                except Exception as diagnostic_error:
+                    sections.extend(
+                        [
+                            f"=== {project_name}: {label} ===",
+                            f"diagnostic command failed: {type(diagnostic_error).__name__}",
+                        ]
+                    )
+        return save_diagnostic("\n".join(sections) + "\n", append=True)
 
     scenario_projects = []
     pnpm_executable = "pnpm.cmd" if os.name == "nt" else "pnpm"
@@ -321,18 +403,18 @@ def main():
         except (URLError, TimeoutError):
             return 0, b"", {}
 
-    def account_request(browser, path, payload=None):
+    def account_request(browser, path, payload=None, service_url=base_url, csrf=None, correlation_id=None):
         nonlocal sensitive_values
         headers = {"Accept": "application/json"}
+        if correlation_id is not None:
+            headers["X-Correlation-ID"] = correlation_id
         if payload is not None:
-            code, contents = account_request(browser, "/api/v1/auth/csrf")
-            require(code == 200, "CSRF bootstrap failed through the proxy")
-            csrf = json.loads(contents)
+            if csrf is None:
+                csrf = account_csrf(browser, service_url)
             headers[csrf["headerName"]] = csrf["token"]
             headers["Content-Type"] = "application/json"
-            sensitive_values += (csrf["token"],)
         request = Request(
-            base_url + path,
+            service_url + path,
             data=json.dumps(payload).encode("utf-8") if payload is not None else None,
             headers=headers,
         )
@@ -341,20 +423,37 @@ def main():
                 return response.status, response.read()
         except HTTPError as error:
             return error.code, error.read()
+        except (URLError, TimeoutError):
+            return 0, b""
 
-    def verify_account_login():
+    def account_csrf(browser, service_url=base_url):
+        nonlocal sensitive_values
+        for attempt in range(8):
+            status_code, response_body = account_request(
+                browser, "/api/v1/auth/csrf", service_url=service_url
+            )
+            if status_code == 200:
+                csrf = json.loads(response_body)
+                sensitive_values += (csrf["token"],)
+                return csrf
+            if status_code != 429 or attempt == 7:
+                require(status_code == 200, f"CSRF bootstrap returned HTTP {status_code} through the proxy")
+            time.sleep(1)
+        raise AssertionError("CSRF bootstrap remained rate limited through the proxy")
+
+    def verify_account_login(service_url=base_url):
         nonlocal sensitive_values
         jar = CookieJar()
         browser = build_opener(HTTPCookieProcessor(jar))
         credentials = {"email": f"operator-{uuid4().hex}@example.test", "password": uuid4().hex}
-        sensitive_values += (credentials["password"],)
-        code, _ = account_request(browser, "/api/v1/auth/sign-up", credentials)
+        sensitive_values += (credentials["email"], credentials["password"])
+        code, _ = account_request(browser, "/api/v1/auth/sign-up", credentials, service_url)
         require(code == 202, "Account registration failed through the proxy")
         require(
-            account_request(browser, "/api/v1/auth/me")[0] == 401,
+            account_request(browser, "/api/v1/auth/me", service_url=service_url)[0] == 401,
             "Registration unexpectedly granted an authenticated session",
         )
-        code, contents = account_request(browser, "/api/v1/auth/sign-in", credentials)
+        code, contents = account_request(browser, "/api/v1/auth/sign-in", credentials, service_url)
         require(code == 200, "Account sign-in failed through the proxy")
         account = json.loads(contents)
         cookies = [cookie for cookie in jar if cookie.name == "SRSESSION"]
@@ -368,23 +467,262 @@ def main():
             "Local HTTP session cookie flags are incorrect",
         )
         require(
-            json.loads(account_request(browser, "/api/v1/auth/me")[1])["id"] == account["id"],
+            json.loads(account_request(browser, "/api/v1/auth/me", service_url=service_url)[1])["id"] == account["id"],
             "Session introspection returned a different identity",
         )
         print("PASS: real registration, login and session cookie through Nginx", flush=True)
         onboarding = {"requestId": str(uuid4()), "name": "Durable cooperative"}
-        code, contents = account_request(browser, "/api/v1/organizations", onboarding)
+        code, contents = account_request(browser, "/api/v1/organizations", onboarding, service_url)
         require(code == 201, "Organization onboarding failed through the proxy")
         organization = json.loads(contents)
         require(organization["role"] == "ORG_ADMIN", "Server did not assign the initial owner")
-        code, contents = account_request(browser, "/api/v1/organizations", onboarding)
+        code, contents = account_request(browser, "/api/v1/organizations", onboarding, service_url)
         require(code == 200 and json.loads(contents)["id"] == organization["id"], "Onboarding retry created a different organization")
-        code, _ = account_request(browser, "/api/v1/auth/active-organization", {"organizationId": organization["id"]})
+        code, _ = account_request(browser, "/api/v1/auth/active-organization", {"organizationId": organization["id"]}, service_url)
         require(code == 200, "Organization selection failed through the proxy")
-        code, contents = account_request(browser, "/api/v1/auth/me/effective-permissions")
+        code, contents = account_request(browser, "/api/v1/auth/me/effective-permissions", service_url=service_url)
         require(code == 200 and json.loads(contents)["organization"]["id"] == organization["id"], "Current permissions did not match the selection")
         print("PASS: real organization onboarding, idempotent retry and current owner permissions through Nginx", flush=True)
         return browser, account["id"], organization["id"]
+
+    def service_write(browser, service_url, path, payload, expected_status, correlation_id=None):
+        for attempt in range(8):
+            status_code, response_body = account_request(
+                browser, path, payload, service_url, correlation_id=correlation_id
+            )
+            if status_code == 429 and attempt < 7:
+                time.sleep(1)
+                continue
+            require(
+                status_code == expected_status,
+                f"Database-backed write to {path} returned HTTP {status_code}, expected {expected_status}",
+            )
+            return json.loads(response_body) if response_body else None
+        raise AssertionError(f"Database-backed write to {path} remained rate limited")
+
+    def cold_inventory_state(scenario, movement_id, position_id):
+        movement_id = str(UUID(movement_id))
+        position_id = str(UUID(position_id))
+        query = f"""
+WITH receipt_event AS (
+    SELECT id FROM stockrescue.inventory_outbox_event
+    WHERE movement_id='{movement_id}' AND position_id='{position_id}'
+)
+SELECT
+    (SELECT count(*) FROM receipt_event),
+    (SELECT count(*) FROM receipt_event e JOIN stockrescue.inventory_outbox_delivery d ON d.event_id=e.id
+        WHERE d.published_at IS NULL),
+    (SELECT count(*) FROM receipt_event e JOIN stockrescue.inventory_inbox i ON i.event_id=e.id
+        WHERE i.consumer_name='inventory-change-projection-v1'),
+    (SELECT count(*) FROM receipt_event e JOIN stockrescue.inventory_change_feed f ON f.event_id=e.id
+        WHERE f.consumer_name='inventory-change-projection-v1'),
+    (SELECT coalesce(max(p.aggregate_version),0) FROM stockrescue.inventory_change_projection p
+        WHERE p.position_id='{position_id}' AND p.consumer_name='inventory-change-projection-v1'),
+    (SELECT on_hand FROM stockrescue.stock_position WHERE id='{position_id}'),
+    (SELECT count(*) FROM stockrescue.stock_movement_line WHERE movement_id='{movement_id}' AND position_id='{position_id}')
+"""
+        output = run_scenario(
+            scenario,
+            "exec",
+            "-T",
+            "postgres",
+            "psql",
+            "-U",
+            "stockrescue_admin",
+            "-d",
+            "stockrescue",
+            "-At",
+            "-F",
+            "|",
+            "-c",
+            query,
+            timeout=20,
+        ).stdout.strip()
+        require(output, "PostgreSQL returned no inventory outbox evidence")
+        return tuple(int(value) for value in output.split("|"))
+
+    def cold_inventory_correlation(scenario, movement_id, position_id):
+        movement_id = str(UUID(movement_id))
+        position_id = str(UUID(position_id))
+        query = f"""
+SELECT coalesce(e.correlation_id, '<NULL>'), coalesce(e.payload->>'correlationId', '<NULL>')
+FROM stockrescue.inventory_outbox_event e
+WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
+"""
+        output = run_scenario(
+            scenario,
+            "exec",
+            "-T",
+            "postgres",
+            "psql",
+            "-U",
+            "stockrescue_admin",
+            "-d",
+            "stockrescue",
+            "-At",
+            "-F",
+            "|",
+            "-c",
+            query,
+            timeout=20,
+        ).stdout.strip()
+        require(output, "PostgreSQL returned no correlation evidence for the committed inventory event")
+        return tuple(output.split("|"))
+
+    def verify_cold_kafka_inventory(scenario):
+        service_url = scenario["base_url"]
+        browser, _, organization_id = verify_account_login(service_url)
+        organization_path = f"/api/v1/organizations/{organization_id}"
+        suffix = uuid4().hex[:8].upper()
+        store = service_write(
+            browser,
+            service_url,
+            f"{organization_path}/stores",
+            {"requestId": str(uuid4()), "code": f"COLD_{suffix}", "name": "Cold Kafka receiving store", "zoneId": "Europe/Warsaw"},
+            201,
+        )
+        store_path = f"{organization_path}/stores/{store['id']}"
+        zone = service_write(
+            browser,
+            service_url,
+            f"{store_path}/storage-zones",
+            {"name": "Ambient receiving zone", "temperatureClass": "AMBIENT"},
+            201,
+        )
+        product = service_write(
+            browser,
+            service_url,
+            f"{organization_path}/products",
+            {"requestId": str(uuid4()), "sku": f"COLD-{suffix}", "name": f"Cold Kafka product {suffix}", "baseUnit": "EA", "category": "BAKERY", "temperatureClass": "AMBIENT"},
+            201,
+        )
+        service_write(
+            browser,
+            service_url,
+            f"{organization_path}/products/{product['id']}/classification-evidence/operator-confirmations",
+            {"requestId": str(uuid4()), "expectedProductVersion": product["version"], "category": "BAKERY", "temperatureClass": "AMBIENT", "productProfile": "PACKAGED_SHELF_STABLE_DRY_BAKERY", "sourceType": "ORIGINAL_PACKAGE", "evidenceReference": "package:cold-start-test", "reason": "Verified ambient storage instructions for the integration test"},
+            201,
+        )
+        received_date = (datetime.now(timezone.utc) + timedelta(days=45)).date().isoformat()
+        lot = service_write(
+            browser,
+            service_url,
+            f"{organization_path}/lots",
+            {"requestId": str(uuid4()), "productId": product["id"], "storeId": store["id"], "lotCode": f"COLD-LOT-{suffix}", "identityState": "CONFIRMED", "manufacturerVerified": True, "manufacturerIdentityKey": f"maker:{suffix}", "manufacturerProvenance": {"source": "Integration fixture", "reference": f"maker:{suffix}"}, "dateMarking": {"labeledValue": received_date, "type": "USE_BY", "precision": "DAY", "provenance": {"source": "Integration fixture", "reference": f"label:{suffix}"}}},
+            201,
+        )
+        service_write(
+            browser,
+            service_url,
+            f"{organization_path}/lots/{lot['id']}/safety-status-evidence",
+            {"requestId": str(uuid4()), "expectedVersion": lot["version"], "recallState": "NOT_REPORTED", "damageState": "NOT_REPORTED", "provenance": {"source": "Integration fixture", "reference": f"safety:{suffix}"}, "reason": "Verified fixture status for the integration test"},
+            201,
+        )
+        location = service_write(
+            browser,
+            service_url,
+            f"{store_path}/storage-locations",
+            {"requestId": str(uuid4()), "code": f"A-{suffix}", "name": "Ambient receiving shelf", "zoneId": zone["id"]},
+            201,
+        )
+        second_location = service_write(
+            browser,
+            service_url,
+            f"{store_path}/storage-locations",
+            {"requestId": str(uuid4()), "code": f"B-{suffix}", "name": "Secondary receiving shelf", "zoneId": zone["id"]},
+            201,
+        )
+        inventory_path = f"{store_path}/inventory"
+        correlation_ids = ["inventory-review-123", str(uuid4())]
+        receipts = []
+        for index, (receiving_location, correlation_id) in enumerate(zip(
+            (location, second_location), correlation_ids, strict=True
+        ), start=1):
+            receipt = {
+                "requestId": str(uuid4()),
+                "expectedVersion": 0,
+                "locationId": receiving_location["id"],
+                "productId": product["id"],
+                "lotId": lot["id"],
+                "quantity": 7,
+                "supplierKey": f"supplier:{suffix}:{index}",
+                "documentType": "DELIVERY_NOTE",
+                "documentReference": f"DELIVERY-{suffix}-{index}",
+                "documentLineReference": "1",
+                "physicallyReceivedAt": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                "reason": "Verified physical receipt during Kafka outage",
+                "evidenceReference": f"delivery:{suffix}:{index}",
+            }
+            result = service_write(
+                browser, service_url, f"{inventory_path}/receipts", receipt, 200, correlation_id
+            )
+            replay = service_write(
+                browser, service_url, f"{inventory_path}/receipts", receipt, 200, correlation_id
+            )
+            require(
+                replay["movementId"] == result["movementId"] and replay["positionId"] == result["positionId"],
+                "Retrying the same receipt created a different inventory result",
+            )
+            state = cold_inventory_state(scenario, result["movementId"], result["positionId"])
+            require(
+                state == (1, 1, 0, 0, 0, 7, 1),
+                "Cold-Kafka inventory receipt was not committed once with one pending outbox event and no inbox application",
+            )
+            require(
+                cold_inventory_correlation(scenario, result["movementId"], result["positionId"])
+                == (correlation_id, correlation_id),
+                "Accepted HTTP correlation ID was not preserved identically in the outbox column and payload",
+            )
+            receipts.append((result["movementId"], result["positionId"], state))
+        print("PASS: opaque and UUID correlation IDs survive idempotent inventory POSTs during Kafka outage", flush=True)
+
+        csrf = account_csrf(browser, service_url)
+        run_scenario(scenario, "stop", "postgres", timeout=30)
+        wait_for_at(service_url, "/api/health/readiness", 503)
+        require(status_at(service_url, "/api/health/liveness")[0] == 200, "Backend liveness failed during the PostgreSQL outage")
+        failed_receipt = {
+            "requestId": str(uuid4()),
+            "expectedVersion": 0,
+            "locationId": location["id"],
+            "productId": product["id"],
+            "lotId": lot["id"],
+            "quantity": 7,
+            "supplierKey": f"supplier:{suffix}:db-down",
+            "documentType": "DELIVERY_NOTE",
+            "documentReference": f"DB-DOWN-{suffix}",
+            "documentLineReference": "1",
+            "physicallyReceivedAt": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+            "reason": "Verified physical receipt during database outage",
+            "evidenceReference": f"delivery:{suffix}:db-down",
+        }
+        status_code, _ = account_request(
+            browser, f"{inventory_path}/receipts", failed_receipt, service_url, csrf
+        )
+        require(status_code not in (200, 201), "Inventory receipt falsely succeeded without PostgreSQL")
+        run_scenario(scenario, "up", "-d", "--wait", "--wait-timeout", "90", "postgres", timeout=120)
+        wait_for_at(service_url, "/api/health/readiness", 200)
+        require(
+            all(cold_inventory_state(scenario, movement_id, position_id) == state
+                for movement_id, position_id, state in receipts),
+            "A failed PostgreSQL inventory request changed the committed ledger",
+        )
+        print("PASS: inventory POST fails without PostgreSQL and leaves the committed ledger unchanged", flush=True)
+        return receipts
+
+    def verify_cold_kafka_inventory_recovered(scenario, inventory_state):
+        for movement_id, position_id, before in inventory_state:
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                current = cold_inventory_state(scenario, movement_id, position_id)
+                if current[1:] == (0, 1, 1, 1, 7, 1):
+                    require(current[0] == 1, "Kafka recovery created duplicate outbox events")
+                    break
+                time.sleep(0.5)
+            else:
+                raise AssertionError(
+                    f"Kafka recovery did not drain/apply the committed event; before={before}, after={current}"
+                )
+        print("PASS: Kafka recovery delivered both correlation variants exactly once without duplicate stock", flush=True)
 
     def verify_account_restart_and_logout(browser, user_id, organization_id):
         code, contents = account_request(browser, "/api/v1/auth/me")
@@ -681,6 +1019,9 @@ def main():
         backend_pid = backend_process(scenario["compose"])
         if browser:
             browser_cold_start(scenario["base_url"], "ready")
+        inventory_state = (
+            verify_cold_kafka_inventory(scenario) if label == "cold-kafka" else None
+        )
 
         run_scenario(
             scenario,
@@ -698,6 +1039,8 @@ def main():
             backend_process(scenario["compose"]) == backend_pid,
             f"Starting {missing_service} restarted the backend instead of recovering health live",
         )
+        if inventory_state is not None:
+            verify_cold_kafka_inventory_recovered(scenario, inventory_state)
         if server_port is not None:
             for invalid_port in ("0", "65536", "not-a-port"):
                 invalid_healthcheck = execute(
@@ -1286,6 +1629,11 @@ def main():
         completed = True
     except BaseException as error:
         primary_error = error
+        diagnostic = collect_failure_diagnostics(error)
+        if diagnostic:
+            print(f"DEBUG: sanitized Compose diagnostics saved to {diagnostic}", flush=True)
+        else:
+            print("WARNING: sanitized Compose diagnostics could not be written", file=sys.stderr, flush=True)
         raise
     finally:
         cleanup_errors = []

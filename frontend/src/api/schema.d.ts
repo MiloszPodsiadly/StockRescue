@@ -612,6 +612,381 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/available-by-lot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read availability by lot and storage position; unknown quantities stay null */
+        get: operations["listInventoryAvailableByLot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/commands/{operation}/{requestId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recover an actor-scoped committed result after an uncertain response */
+        get: operations["getInventoryCommandOutcome"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/outbox/parked-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read payload-free diagnostics for parked events in a store */
+        get: operations["listParkedInventoryOutboxEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/outbox/parked-events/{eventId}/redrives": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request an audited replay of the same immutable parked event */
+        post: operations["requestInventoryOutboxRedrive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a bounded store-scoped page of recorded inventory positions */
+        get: operations["listInventoryPositions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read an authoritative versioned PostgreSQL stock position */
+        get: operations["getInventorySnapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/adjustments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record a reasoned version-aware stock adjustment */
+        post: operations["adjustInventoryStock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/allocations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read current reservation and hold status for one position */
+        get: operations["listInventoryAllocations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/holds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Move available stock into an other-blocked allocation */
+        post: operations["holdInventoryStock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/holds/{allocationId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Release a blocked allocation after current eligibility review */
+        post: operations["releaseInventoryHold"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/movements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read bounded immutable movement history after a position version */
+        get: operations["listInventoryMovements"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/quarantines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Move available stock into a quarantine allocation */
+        post: operations["quarantineInventoryStock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/reservations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reserve available stock against an expected position version */
+        post: operations["reserveInventoryStock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/reservations/{allocationId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Release an owned or manager-authorized reservation */
+        post: operations["releaseInventoryReservation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/sales": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record a manual sale after server-side eligibility checks */
+        post: operations["recordInventorySale"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/positions/{positionId}/write-offs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Write off available or explicitly allocated blocked stock */
+        post: operations["writeOffInventoryStock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/receipt-documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Atomically receive a bounded supplier document with distinct stock positions */
+        post: operations["receiveInventoryGoodsDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/receipt-documents/commands/{requestId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recover a committed multi-line receipt after an uncertain response */
+        get: operations["getInventoryReceiptDocumentOutcome"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Commit physical receipt and retry result in PostgreSQL */
+        post: operations["receiveInventoryGoods"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/reconciliations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read bounded immutable reconciliation history */
+        get: operations["listInventoryReconciliations"];
+        put?: never;
+        /** Reconstruct store stock from immutable inventory evidence */
+        post: operations["reconcileInventory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/reconciliations/{runId}/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read bounded findings for one authorized reconciliation run */
+        get: operations["listInventoryReconciliationFindings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/reconciliations/{runId}/positions/{positionId}/projection-repair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rebuild a frozen position only from validated immutable ledger and allocation evidence */
+        post: operations["repairInventoryProjection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/stores/{storeId}/storage-locations": {
         parameters: {
             query?: never;
@@ -888,9 +1263,28 @@ export interface components {
         AcceptInvitationRequest: {
             token: string;
         };
+        AllocationPageResponse: {
+            hasMore: boolean;
+            items: components["schemas"]["AllocationResponse"][];
+        };
+        AllocationResponse: {
+            /** @enum {string} */
+            bucket: "RESERVED" | "QUARANTINED" | "OTHER_BLOCKED";
+            /** Format: uuid */
+            id: string;
+            ownedByCurrentUser: boolean;
+            /** Format: uuid */
+            positionId: string;
+            /** Format: int64 */
+            remaining: number;
+            /** @enum {string} */
+            state: "ACTIVE" | "RELEASED" | "WRITTEN_OFF" | "CONSUMED";
+            /** Format: int64 */
+            version: number;
+        };
         ApiProblem: {
             /** @enum {string} */
-            code: "ACCESS_DENIED" | "ACCESS_CONFLICT" | "ACCESS_RATE_LIMITED" | "AUTH_RATE_LIMITED" | "AUTH_REQUIRED" | "CSRF_INVALID" | "CATALOG_CONFLICT" | "CATALOG_INACTIVE" | "GTIN_REVIEW_REQUIRED" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_INACTIVE" | "INCOMPATIBLE_ZONES" | "INTERNAL_ERROR" | "INVALID_CORRELATION_ID" | "INVALID_CREDENTIALS" | "INVALID_REQUEST" | "INVITATION_UNAVAILABLE" | "NO_FUTURE_REVISIONS" | "ONBOARDING_CONFLICT" | "ORGANIZATION_REQUIRED" | "REQUEST_TOO_LARGE" | "RESOURCE_NOT_FOUND" | "SERVICE_UNAVAILABLE" | "SCHEDULED_REVISIONS_PENDING" | "SESSION_EXPIRED" | "STORE_CONFLICT" | "STORE_INACTIVE" | "ZONE_IMPACT_CHANGED" | "ZONE_HAS_ACTIVE_LOCATIONS";
+            code: "ACCESS_DENIED" | "ACCESS_CONFLICT" | "ACCESS_RATE_LIMITED" | "ALLOCATION_UNAVAILABLE" | "AUTH_RATE_LIMITED" | "AUTH_REQUIRED" | "CSRF_INVALID" | "CATALOG_CONFLICT" | "CATALOG_INACTIVE" | "GTIN_REVIEW_REQUIRED" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_INACTIVE" | "INCOMPATIBLE_ZONES" | "IDEMPOTENCY_CONFLICT" | "INSUFFICIENT_STOCK" | "INTERNAL_ERROR" | "INVALID_CORRELATION_ID" | "INVALID_CREDENTIALS" | "INVALID_REQUEST" | "INVITATION_UNAVAILABLE" | "INVENTORY_CONFLICT" | "INVENTORY_FROZEN" | "INVENTORY_INACTIVE" | "INVENTORY_NOT_INITIALIZED" | "LOT_NOT_ELIGIBLE" | "NO_FUTURE_REVISIONS" | "ONBOARDING_CONFLICT" | "ORGANIZATION_REQUIRED" | "REQUEST_TOO_LARGE" | "RECEIPT_ALREADY_RECORDED" | "RESOURCE_NOT_FOUND" | "SERVICE_UNAVAILABLE" | "SCHEDULED_REVISIONS_PENDING" | "SESSION_EXPIRED" | "STORE_CONFLICT" | "STORE_INACTIVE" | "ZONE_IMPACT_CHANGED" | "ZONE_HAS_ACTIVE_LOCATIONS";
             correlationId: string;
             detail: string;
             /** Format: int32 */
@@ -938,6 +1332,33 @@ export interface components {
             reason: string;
             /** Format: int64 */
             version: number;
+        };
+        AvailableByLotPageResponse: {
+            hasMore: boolean;
+            items: components["schemas"]["AvailableByLotResponse"][];
+            /** Format: date-time */
+            observedAt: string;
+        };
+        AvailableByLotResponse: {
+            /** Format: int64 */
+            available: number | null;
+            /** @enum {string} */
+            initialization: "NOT_INITIALIZED" | "INITIALIZED";
+            /** Format: uuid */
+            locationId: string;
+            /** Format: uuid */
+            lotId: string;
+            /** Format: date-time */
+            observedAt: string;
+            /** Format: uuid */
+            positionId: string;
+            /** Format: int64 */
+            positionVersion: number;
+            /** Format: uuid */
+            productId: string;
+            /** @enum {string} */
+            trust: "UNVERIFIED" | "CLEAN" | "FROZEN";
+            unit: string;
         };
         CancelScheduledRevisionsRequest: {
             /** Format: int64 */
@@ -1202,6 +1623,20 @@ export interface components {
             reference: string | null;
             source: string;
         };
+        FindingPageResponse: {
+            hasMore: boolean;
+            items: components["schemas"]["FindingResponse"][];
+        };
+        FindingResponse: {
+            code: string;
+            expected: string | null;
+            observed: string | null;
+            /** Format: uuid */
+            positionId: string;
+            /** Format: int64 */
+            positionVersion: number;
+            severity: string;
+        };
         FoodSafetyPolicyHistoryResponse: {
             current: components["schemas"]["FoodSafetyPolicyVersionResponse"] | null;
             hasMore: boolean;
@@ -1276,6 +1711,28 @@ export interface components {
             matches: components["schemas"]["GtinMatchResponse"][];
             /** Format: int32 */
             offset: number;
+        };
+        InventoryCommandResponse: {
+            /** Format: uuid */
+            allocationId: string | null;
+            /** Format: int64 */
+            available: number;
+            /** Format: uuid */
+            movementId: string;
+            /** Format: int64 */
+            onHand: number;
+            /** Format: int64 */
+            otherBlocked: number;
+            /** Format: uuid */
+            positionId: string;
+            /** Format: int64 */
+            positionVersion: number;
+            /** Format: int64 */
+            quarantined: number;
+            /** Format: uuid */
+            receiptId: string | null;
+            /** Format: int64 */
+            reserved: number;
         };
         InvitationClaimResponse: {
             /** Format: uuid */
@@ -1447,6 +1904,30 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        MovementPageResponse: {
+            hasMore: boolean;
+            items: components["schemas"]["MovementResponse"][];
+        };
+        MovementResponse: {
+            /** Format: int64 */
+            deltaOnHand: number;
+            /** Format: int64 */
+            deltaOtherBlocked: number;
+            /** Format: int64 */
+            deltaQuarantined: number;
+            /** Format: int64 */
+            deltaReserved: number;
+            evidenceReference: string;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            operation: "RECEIVE" | "RESERVE" | "RELEASE" | "ADJUST" | "WRITE_OFF" | "QUARANTINE" | "HOLD" | "RELEASE_HOLD" | "SALE" | "VERIFY_ZERO" | "RECONCILE" | "REMEDIATE";
+            /** Format: int64 */
+            positionVersion: number;
+            reason: string;
+            /** Format: date-time */
+            recordedAt: string;
+        };
         OnboardingRequest: {
             name: string;
             /** Format: uuid */
@@ -1513,8 +1994,42 @@ export interface components {
             /** @enum {string} */
             role: "ORG_ADMIN" | "MEMBER";
         };
+        ParkedDiagnostic: {
+            /** Format: int64 */
+            aggregateVersion?: number;
+            /** Format: uuid */
+            eventId?: string;
+            eventType?: string;
+            lastErrorCode?: string;
+            /** Format: date-time */
+            latestAttemptAt?: string;
+            /** Format: int64 */
+            latestGeneration?: number;
+            /** Format: uuid */
+            movementId?: string;
+            /** Format: date-time */
+            occurredAt?: string;
+            /** Format: int32 */
+            originalAttemptCount?: number;
+            /** Format: int64 */
+            originalClaimVersion?: number;
+            /** Format: date-time */
+            parkedAt?: string;
+            /** Format: uuid */
+            positionId?: string;
+            /** Format: int32 */
+            redriveAttemptCount?: number;
+            /** Format: int32 */
+            schemaVersion?: number;
+            sourceFingerprint?: string;
+            state?: string;
+        };
+        ParkedPage: {
+            hasMore?: boolean;
+            items?: components["schemas"]["ParkedDiagnostic"][];
+        };
         PermissionsResponse: {
-            allStoreActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT")[];
+            allStoreActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
             organization: components["schemas"]["OrganizationResponse"];
             organizationActions: ("READ_ORGANIZATION" | "MANAGE_ACCESS" | "CREATE_STORE" | "MANAGE_TRANSPORT_LANES" | "READ_CATALOG" | "MANAGE_CATALOG" | "MANAGE_FOOD_SAFETY_POLICY" | "RECORD_LOT_SAFETY_EVIDENCE")[];
             storeGrants: components["schemas"]["StorePermissionResponse"][];
@@ -1559,6 +2074,107 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        ProjectionRepairRequest: {
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        ReceiptDocumentLineRequest: {
+            documentLineReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** Format: uuid */
+            locationId: string;
+            /** Format: uuid */
+            lotId: string;
+            /** Format: uuid */
+            productId: string;
+            /** Format: int64 */
+            quantity: number;
+        };
+        ReceiptDocumentLineResponse: {
+            /** Format: uuid */
+            allocationId: string | null;
+            /** Format: int64 */
+            available: number;
+            documentLineReference: string;
+            /** Format: int64 */
+            onHand: number;
+            /** Format: int64 */
+            otherBlocked: number;
+            /** Format: uuid */
+            positionId: string;
+            /** Format: int64 */
+            quarantined: number;
+            /** Format: int64 */
+            reserved: number;
+            /** Format: int64 */
+            version: number;
+        };
+        ReceiptDocumentRequest: {
+            documentReference: string;
+            documentType: string;
+            evidenceReference: string;
+            lines: components["schemas"]["ReceiptDocumentLineRequest"][];
+            /** Format: date-time */
+            physicallyReceivedAt: string;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+            supplierKey: string;
+        };
+        ReceiptDocumentResponse: {
+            lines: components["schemas"]["ReceiptDocumentLineResponse"][];
+            /** Format: uuid */
+            movementId: string;
+            /** Format: uuid */
+            receiptId: string;
+        };
+        ReceiptRequest: {
+            documentLineReference: string;
+            documentReference: string;
+            documentType: string;
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** Format: uuid */
+            locationId: string;
+            /** Format: uuid */
+            lotId: string;
+            /** Format: date-time */
+            physicallyReceivedAt: string;
+            /** Format: uuid */
+            productId: string;
+            /** Format: int64 */
+            quantity: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+            supplierKey: string;
+        };
+        ReconciliationPageResponse: {
+            hasMore: boolean;
+            items: components["schemas"]["ReconciliationResponse"][];
+        };
+        ReconciliationResponse: {
+            /** Format: int32 */
+            checkedPositions: number;
+            /** Format: date-time */
+            completedAt: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** @enum {string} */
+            severity: "CLEAN" | "WARN" | "CRITICAL";
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: uuid */
+            storeId: string;
+        };
         RecordFoodSafetyPolicyReviewRequest: {
             /** Format: int64 */
             expectedVersion: number;
@@ -1583,6 +2199,36 @@ export interface components {
             recallState: "UNKNOWN" | "NOT_REPORTED" | "RECALLED";
             /** Format: uuid */
             requestId: string;
+        };
+        RedriveRequestBody: {
+            evidenceReference: string;
+            /** Format: int32 */
+            expectedOriginalAttemptCount: number;
+            /** Format: int64 */
+            expectedOriginalClaimVersion: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+            sourceFingerprint: string;
+        };
+        RedriveResult: {
+            /** Format: date-time */
+            blockedAt?: string;
+            /** Format: uuid */
+            eventId?: string;
+            /** Format: int64 */
+            generation?: number;
+            lastErrorCode?: string;
+            /** Format: date-time */
+            nextAttemptAt?: string;
+            /** Format: date-time */
+            publishedAt?: string;
+            /** Format: uuid */
+            requestId?: string;
+            /** Format: int32 */
+            sendAttemptCount?: number;
+            sourceFingerprint?: string;
+            state?: string;
         };
         RegisterLotRequest: {
             dateMarking: components["schemas"]["DateMarkingRequest"];
@@ -1740,6 +2386,51 @@ export interface components {
             /** @enum {string} */
             visibilityScope: "ALL_ORGANIZATION_SOURCES" | "ASSIGNED_STORE_SOURCES";
         };
+        StockCommandRequest: {
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** Format: int64 */
+            quantity: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        StockPageResponse: {
+            hasMore: boolean;
+            items: components["schemas"]["StockSnapshotResponse"][];
+            /** Format: date-time */
+            observedAt: string;
+        };
+        StockSnapshotResponse: {
+            /** Format: int64 */
+            available: number | null;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            initialization: "NOT_INITIALIZED" | "INITIALIZED";
+            /** Format: uuid */
+            locationId: string;
+            /** Format: uuid */
+            lotId: string;
+            /** Format: date-time */
+            observedAt: string;
+            /** Format: int64 */
+            onHand: number | null;
+            /** Format: int64 */
+            otherBlocked: number | null;
+            /** Format: uuid */
+            productId: string;
+            /** Format: int64 */
+            quarantined: number | null;
+            /** Format: int64 */
+            reserved: number | null;
+            /** @enum {string} */
+            trust: "UNVERIFIED" | "CLEAN" | "FROZEN";
+            unit: string;
+            /** Format: int64 */
+            version: number;
+        };
         StorageLocationPage: {
             canManage: boolean;
             hasMore: boolean;
@@ -1786,7 +2477,7 @@ export interface components {
             items: components["schemas"]["StoreResponse"][];
         };
         StorePermissionResponse: {
-            actions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT")[];
+            actions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
             /** @enum {string} */
             role: "STORE_MANAGER" | "INVENTORY_OPERATOR" | "READ_ONLY_ANALYST";
             /** Format: uuid */
@@ -1795,7 +2486,7 @@ export interface components {
         StoreResponse: {
             active: boolean;
             addressLine1: string | null;
-            allowedActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT")[];
+            allowedActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
             city: string | null;
             code: string;
             countryCode: string | null;
@@ -1843,6 +2534,11 @@ export interface components {
             reason: string;
             /** Format: int64 */
             version: number;
+        };
+        WriteOffRequest: {
+            /** Format: uuid */
+            allocationId?: string;
+            stock: components["schemas"]["StockCommandRequest"];
         };
         ZoneArchiveImpactResponse: {
             /** Format: int32 */
@@ -6549,6 +7245,2190 @@ export interface operations {
                 };
             };
             /** @description Service unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listInventoryAvailableByLot: {
+        parameters: {
+            query?: {
+                productId?: string;
+                lotId?: string;
+                locationId?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AvailableByLotPageResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    getInventoryCommandOutcome: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                operation: "RECEIVE" | "RESERVE" | "RELEASE" | "ADJUST" | "WRITE_OFF" | "QUARANTINE" | "HOLD" | "RELEASE_HOLD" | "SALE" | "VERIFY_ZERO" | "RECONCILE" | "REMEDIATE";
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listParkedInventoryOutboxEvents: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParkedPage"];
+                };
+            };
+        };
+    };
+    requestInventoryOutboxRedrive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                eventId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedriveRequestBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedriveResult"];
+                };
+            };
+        };
+    };
+    listInventoryPositions: {
+        parameters: {
+            query?: {
+                productId?: string;
+                lotId?: string;
+                locationId?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StockPageResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    getInventorySnapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StockSnapshotResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    adjustInventoryStock: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StockCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listInventoryAllocations: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AllocationPageResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    holdInventoryStock: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StockCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    releaseInventoryHold: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+                allocationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StockCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listInventoryMovements: {
+        parameters: {
+            query?: {
+                afterVersion?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MovementPageResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    quarantineInventoryStock: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StockCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    reserveInventoryStock: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StockCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    releaseInventoryReservation: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+                allocationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StockCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    recordInventorySale: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StockCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    writeOffInventoryStock: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WriteOffRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    receiveInventoryGoodsDocument: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReceiptDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Exact idempotent retry returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptDocumentResponse"];
+                };
+            };
+            /** @description Receipt document recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptDocumentResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    getInventoryReceiptDocumentOutcome: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptDocumentResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    receiveInventoryGoods: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReceiptRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listInventoryReconciliations: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconciliationPageResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    reconcileInventory: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconciliationResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listInventoryReconciliationFindings: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FindingPageResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    repairInventoryProjection: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                runId: string;
+                positionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectionRepairRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryCommandResponse"];
+                };
+            };
+            /** @description Invalid inventory command or page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Organization, store or inventory record unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale position, insufficient stock, changed retry, duplicate receipt or frozen stock */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid request values or current lot evidence do not permit the requested operation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Request failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Inventory dependency temporarily unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;

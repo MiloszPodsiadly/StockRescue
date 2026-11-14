@@ -12,7 +12,7 @@ import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.stereotype.Component;
 
 @Component("kafka")
-public class KafkaHealthIndicator implements HealthIndicator, AutoCloseable {
+public class KafkaHealthIndicator implements HealthIndicator, KafkaAvailability, AutoCloseable {
 
     private final KafkaAdmin admin;
     private volatile Admin client;
@@ -23,15 +23,21 @@ public class KafkaHealthIndicator implements HealthIndicator, AutoCloseable {
 
     @Override
     public Health health() {
+        return available()?Health.up().withDetail("state","available").build()
+                :Health.down().withDetail("state","unavailable").build();
+    }
+
+    @Override
+    public boolean available() {
         try {
             var nodes = client().describeCluster(new DescribeClusterOptions().timeoutMs(2000))
                     .nodes().get(3, TimeUnit.SECONDS);
-            return nodes.isEmpty() ? Health.down().build() : Health.up().build();
+            return !nodes.isEmpty();
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            return Health.down().build();
+            return false;
         } catch (Exception exception) {
-            return Health.down().build();
+            return false;
         }
     }
 
