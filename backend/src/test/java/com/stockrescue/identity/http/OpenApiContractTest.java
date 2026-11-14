@@ -198,6 +198,15 @@ class OpenApiContractTest extends InfrastructureTestBase {
 
         var inventory="/api/v1/organizations/{organizationId}/stores/{storeId}/inventory";
         var inventoryPaths=document.path("paths");
+        var redrivePath=inventory+"/outbox/parked-events";
+        assertThat(inventoryPaths.path(redrivePath).path("get").path("operationId").asString())
+                .isEqualTo("listParkedInventoryOutboxEvents");
+        var redrive=inventoryPaths.path(redrivePath+"/{eventId}/redrives").path("post");
+        assertThat(redrive.path("operationId").asString()).isEqualTo("requestInventoryOutboxRedrive");
+        var redriveRequired=schemas.path("RedriveRequestBody").path("required");
+        for(var field:java.util.List.of("requestId","expectedOriginalClaimVersion","expectedOriginalAttemptCount",
+                "sourceFingerprint","reason","evidenceReference"))
+            assertThat(redriveRequired).anyMatch(value->value.asString().equals(field));
         var positions=inventoryPaths.path(inventory+"/positions").path("get");
         assertThat(positions.path("operationId").asString()).isEqualTo("listInventoryPositions");
         assertThat(positions.path("security").get(0).has("session")).isTrue();
@@ -213,6 +222,35 @@ class OpenApiContractTest extends InfrastructureTestBase {
         var receiptRequired=schemas.path("ReceiptRequest").path("required");
         for(var field:java.util.List.of("requestId","expectedVersion","locationId","productId","lotId","quantity","documentReference","documentLineReference"))
             assertThat(receiptRequired).anyMatch(value->value.asString().equals(field));
+        var receiptDocument=inventoryPaths.path(inventory+"/receipt-documents").path("post");
+        assertThat(receiptDocument.path("operationId").asString()).isEqualTo("receiveInventoryGoodsDocument");
+        assertThat(receiptDocument.path("responses").has("201")).isTrue();
+        assertThat(receiptDocument.path("responses").has("200")).isTrue();
+        for(var status:java.util.List.of("401","403","404","409","422")) assertThat(receiptDocument.path("responses").has(status)).isTrue();
+        assertThat(receiptDocument.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/ReceiptDocumentRequest");
+        var receiptDocumentSchema=schemas.path("ReceiptDocumentRequest");
+        var receiptDocumentRequired=receiptDocumentSchema.path("required");
+        for(var field:java.util.List.of("requestId","supplierKey","documentType","documentReference","physicallyReceivedAt","reason","evidenceReference","lines"))
+            assertThat(receiptDocumentRequired).anyMatch(value->value.asString().equals(field));
+        assertThat(receiptDocumentSchema.path("properties").path("lines").path("minItems").asInt()).isEqualTo(1);
+        assertThat(receiptDocumentSchema.path("properties").path("lines").path("maxItems").asInt()).isEqualTo(50);
+        var receiptLineRequired=schemas.path("ReceiptDocumentLineRequest").path("required");
+        for(var field:java.util.List.of("documentLineReference","locationId","productId","lotId","quantity","expectedVersion"))
+            assertThat(receiptLineRequired).anyMatch(value->value.asString().equals(field));
+        assertThat(schemas.path("ReceiptDocumentLineRequest").path("properties").path("quantity").path("type").asString()).isEqualTo("integer");
+        assertThat(schemas.path("ReceiptDocumentLineRequest").path("properties").path("expectedVersion").path("type").asString()).isEqualTo("integer");
+        assertThat(schemas.path("ReceiptDocumentLineResponse").path("properties").path("available").path("type").asString()).isEqualTo("integer");
+        var receiptDocumentResponse=receiptDocument.path("responses").path("201").path("content").path("application/json").path("schema").path("$ref");
+        assertThat(receiptDocumentResponse.asString()).isEqualTo("#/components/schemas/ReceiptDocumentResponse");
+        var receiptResultRequired=schemas.path("ReceiptDocumentResponse").path("required");
+        assertThat(receiptResultRequired).extracting(value->value.asString()).contains("receiptId","movementId","lines");
+        assertThat(schemas.path("ReceiptDocumentLineResponse").path("required").toString())
+                .contains("documentLineReference","positionId","version","onHand","reserved","quarantined","otherBlocked","available","allocationId");
+        var receiptDocumentOutcome=inventoryPaths.path(inventory+"/receipt-documents/commands/{requestId}").path("get");
+        assertThat(receiptDocumentOutcome.path("operationId").asString()).isEqualTo("getInventoryReceiptDocumentOutcome");
+        assertThat(receiptDocumentOutcome.path("responses").path("200").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/ReceiptDocumentResponse");
         var reservation=inventoryPaths.path(inventory+"/positions/{positionId}/reservations").path("post");
         assertThat(reservation.path("operationId").asString()).isEqualTo("reserveInventoryStock");
         assertThat(reservation.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())

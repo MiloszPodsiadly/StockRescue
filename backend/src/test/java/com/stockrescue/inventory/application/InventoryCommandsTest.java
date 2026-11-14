@@ -29,6 +29,10 @@ import com.stockrescue.catalog.domain.EvidenceProvenance;
 import com.stockrescue.catalog.domain.ProductCategory;
 import com.stockrescue.inventory.application.InventoryCommands.*;
 import com.stockrescue.inventory.application.InventoryChangeProcessor;
+import com.stockrescue.inventory.application.InventoryOutboxRedriveService;
+import com.stockrescue.inventory.application.InventoryOutboxRedriveService.ParkedDiagnostic;
+import com.stockrescue.inventory.application.InventoryOutboxRedriveService.RedriveRequest;
+import com.stockrescue.inventory.application.InventoryOutboxRedriveService.RedriveResult;
 import com.stockrescue.inventory.domain.InventoryFailure;
 import com.stockrescue.inventory.domain.InventoryFailure.Kind;
 import com.stockrescue.inventory.domain.StockBuckets;
@@ -39,10 +43,12 @@ import com.stockrescue.inventory.domain.InventoryOperation;
 import com.stockrescue.inventory.messaging.InventoryChangeListener;
 import com.stockrescue.inventory.messaging.InventoryEventCodec;
 import com.stockrescue.inventory.messaging.InventoryMessagingMetrics;
+import com.stockrescue.inventory.messaging.InventoryMessagingStartup;
 import com.stockrescue.inventory.messaging.InventoryOutboxRelay;
 import com.stockrescue.inventory.messaging.InventoryStockChangedEvent;
 import com.stockrescue.inventory.persistence.InventoryOutboxRepository;
-import com.stockrescue.platform.kafka.InventoryMessagingHealthIndicator;
+import com.stockrescue.inventory.persistence.InventoryOutboxRedriveRepository;
+import com.stockrescue.inventory.messaging.InventoryMessagingHealthIndicator;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -56,6 +62,7 @@ import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.SendResult;
 import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
+import com.stockrescue.stores.application.StoreService;
 import com.stockrescue.support.InfrastructureTestBase;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -81,7 +88,9 @@ import static org.mockito.Mockito.doCallRealMethod;
 
 // Let all synchronized commands reach PostgreSQL rather than timing out in the small connection pool.
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.NONE,properties={"spring.datasource.hikari.connection-timeout=30000",
-        "stockrescue.inventory.outbox-relay.enabled=false"})
+        "stockrescue.inventory.outbox-relay.enabled=false","stockrescue.inventory.outbox-relay.lease-duration=14s",
+        "stockrescue.inventory.messaging.consumer-retry-initial=1s","stockrescue.inventory.messaging.consumer-retry-maximum=2s",
+        "stockrescue.inventory.messaging.consumer-blocked-retry-interval=2s"})
 @Import(InventoryCommandsTest.TimeConfiguration.class)
 class InventoryCommandsTest extends InfrastructureTestBase {
     private static final Instant NOW=Instant.parse("2026-11-12T10:00:00Z");
@@ -93,13 +102,17 @@ class InventoryCommandsTest extends InfrastructureTestBase {
     @Autowired private FoodSafetyProductClassificationConfirmationService classification;
     @Autowired private LotService lots;
     @Autowired private StaffService staff;
+    @Autowired private StoreService storeService;
     @Autowired private JdbcClient jdbc;
     @Autowired private TransactionTemplate transactions;
     @Autowired private TestClock clock;
     @Autowired private InventoryChangeProcessor changeProcessor;
     @Autowired private InventoryEventCodec eventCodec;
     @Autowired private InventoryOutboxRepository outbox;
+    @Autowired private InventoryOutboxRedriveRepository redrives;
+    @Autowired private InventoryOutboxRedriveService redriveService;
     @Autowired private InventoryMessagingMetrics messagingMetrics;
+    @Autowired private InventoryMessagingStartup messagingStartup;
     @Autowired private InventoryMessagingHealthIndicator inventoryMessagingHealth;
     @MockitoSpyBean private KafkaTemplate kafka;
     @Autowired private KafkaListenerEndpointRegistry listeners;
@@ -121,6 +134,18 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         f=new Fixture();
     }
     @AfterEach void clear() { MDC.remove("correlationId"); clock.set(NOW); }
+
+    private void haltInventoryConsumer() {
+        messagingStartup.halt();
+        var container=listeners.getListenerContainer("inventory-change-projection");
+        await().atMost(Duration.ofSeconds(10)).until(()->container==null || !container.isRunning());
+    }
+
+    private void resumeInventoryConsumer() {
+        messagingStartup.resume();
+        var container=listeners.getListenerContainer("inventory-change-projection");
+        await().atMost(Duration.ofSeconds(15)).until(()->container!=null && container.isRunning());
+    }
 
     @Test void oneHundredSynchronizedReservationsContendForOneUnitWithoutOverselling() throws Exception {
         var pool=dataSource.unwrap(com.zaxxer.hikari.HikariDataSource.class);
@@ -295,6 +320,210 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         assertThat(snapshot(received).buckets().onHand()).isEqualTo(2);
     }
 
+    @Test void multiLineReceiptPostsOneDocumentAndMovementAndReplaysCanonicalLines() {
+        var secondProduct=f.secondEligibleReference();
+        UUID unknownLot=UUID.randomUUID();
+        sql("INSERT INTO stockrescue.manufacturer_lot(id,org_id,product_id,lot_code) VALUES (?,?,?,'UNKNOWN')",unknownLot,f.org,f.product);
+        var unknown=new PositionReference(f.location,f.product,unknownLot);
+        var requestId=UUID.randomUUID();
+        var request=receiptDocument(requestId,"DELIVERY-MULTI-1",List.of(
+                receiptDocumentLine("line-c",unknown,4,0),receiptDocumentLine("line-b",secondProduct,3,0),
+                receiptDocumentLine("line-a",f.reference(),2,0)));
+        var created=service.receiveGoodsDocument(f.owner,f.org,f.store,request);
+
+        assertThat(created.created()).isTrue();
+        assertThat(service.receiptDocumentOutcome(f.owner,f.org,f.store,requestId)).isEqualTo(created.result());
+        assertThatThrownBy(()->service.commandOutcome(f.owner,f.org,f.store,InventoryOperation.RECEIVE,requestId))
+                .isInstanceOf(OrganizationUnavailableException.class);
+        assertThat(created.result().lines()).extracting(ReceiptDocumentLineResult::documentLineReference)
+                .containsExactly("line-a","line-b","line-c");
+        assertThat(created.result().lines()).filteredOn(line->line.documentLineReference().equals("line-a"))
+                .singleElement().satisfies(line->{assertThat(line.buckets()).isEqualTo(new StockBuckets(2,0,0,0));assertThat(line.available()).isEqualTo(2);});
+        assertThat(created.result().lines()).filteredOn(line->line.documentLineReference().equals("line-b"))
+                .singleElement().satisfies(line->{assertThat(line.buckets()).isEqualTo(new StockBuckets(3,0,0,0));assertThat(line.available()).isEqualTo(3);});
+        var quarantined=created.result().lines().stream().filter(line->line.documentLineReference().equals("line-c")).findFirst().orElseThrow();
+        assertThat(quarantined.buckets()).isEqualTo(new StockBuckets(4,0,4,0));
+        assertThat(quarantined.available()).isZero();assertThat(quarantined.allocationId()).isNotNull();
+        assertThat(effects()).containsExactly(1L,3L,1L,3L,3L,1L,3L,3L);
+
+        var reordered=receiptDocument(requestId,"DELIVERY-MULTI-1",request.lines().reversed());
+        var replay=service.receiveGoodsDocument(f.owner,f.org,f.store,reordered);
+        assertThat(replay.created()).isFalse();assertThat(replay.result()).isEqualTo(created.result());
+        fails(Kind.IDEMPOTENCY_CONFLICT,()->service.receiveGoodsDocument(f.owner,f.org,f.store,
+                receiptDocument(requestId,"DELIVERY-MULTI-1",List.of(receiptDocumentLine("line-a",f.reference(),99,0),
+                        receiptDocumentLine("line-b",secondProduct,3,0),receiptDocumentLine("line-c",unknown,4,0)))));
+        fails(Kind.DOCUMENT_ALREADY_RECEIVED,()->service.receiveGoodsDocument(f.operator,f.org,f.store,
+                receiptDocument(UUID.randomUUID(),"DELIVERY-MULTI-1",request.lines())));
+
+        assertThat(count("goods_receipt")).isEqualTo(1);assertThat(count("goods_receipt_line")).isEqualTo(3);
+        assertThat(count("stock_movement")).isEqualTo(1);assertThat(count("stock_movement_line")).isEqualTo(3);
+        assertThat(count("inventory_command_receipt")).isEqualTo(1);assertThat(count("inventory_outbox_event")).isEqualTo(3);
+        assertThat(stockAudits()).isEqualTo(3);
+        for(var line:created.result().lines()) reconstructPosition(line.positionId());
+        var firstLine=created.result().lines().stream().filter(line->line.documentLineReference().equals("line-a")).findFirst().orElseThrow();
+        var secondDocument=service.receiveGoodsDocument(f.owner,f.org,f.store,receiptDocument(UUID.randomUUID(),"DELIVERY-MULTI-2",
+                List.of(receiptDocumentLine("line-a",f.reference(),1,firstLine.version()))));
+        var secondLine=secondDocument.result().lines().getFirst();
+        assertThat(secondDocument.created()).isTrue();assertThat(secondLine.version()).isEqualTo(firstLine.version()+1);
+        var events=new ArrayList<>(created.result().lines().stream().map(line->outboxFor(line.positionId(),line.version())).toList());
+        events.add(outboxFor(secondLine.positionId(),secondLine.version()));
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();
+            for(var event:events) {
+                assertThat(publishedAt(event.id())).isNotNull();assertThat(inboxCount(event.id())).isEqualTo(1);
+                assertThat(feedCount(event.id())).isEqualTo(1);assertThat(projectionVersion(event.positionId())).isEqualTo(event.aggregateVersion());
+            }
+        });
+        assertThat(publishedAt(outboxFor(firstLine.positionId(),firstLine.version()).id()))
+                .isBeforeOrEqualTo(publishedAt(outboxFor(secondLine.positionId(),secondLine.version()).id()));
+    }
+
+    @Test void invalidOrStaleReceiptLineRollsBackEveryDocumentWrite() {
+        var duplicateReference=receiptDocument(UUID.randomUUID(),"DELIVERY-DUP-LINE",List.of(
+                receiptDocumentLine("same",f.reference(),1,0),receiptDocumentLine("same",new PositionReference(f.secondLocation,f.product,f.lot),1,0)));
+        fails(Kind.INVALID_REQUEST,()->service.receiveGoodsDocument(f.owner,f.org,f.store,duplicateReference));
+        var duplicatePosition=receiptDocument(UUID.randomUUID(),"DELIVERY-DUP-POSITION",List.of(
+                receiptDocumentLine("first",f.reference(),1,0),receiptDocumentLine("second",f.reference(),1,0)));
+        fails(Kind.INVALID_REQUEST,()->service.receiveGoodsDocument(f.owner,f.org,f.store,duplicatePosition));
+        fails(Kind.INVALID_REQUEST,()->service.receiveGoodsDocument(f.owner,f.org,f.store,
+                receiptDocument(UUID.randomUUID(),"DELIVERY-EMPTY",List.of())));
+        var oversized=java.util.stream.IntStream.range(0,InventoryService.MAX_RECEIPT_DOCUMENT_LINES+1)
+                .mapToObj(index->receiptDocumentLine("line-"+index,f.reference(),1,0)).toList();
+        fails(Kind.INVALID_REQUEST,()->service.receiveGoodsDocument(f.owner,f.org,f.store,
+                receiptDocument(UUID.randomUUID(),"DELIVERY-OVERSIZED",oversized)));
+
+        var existing=service.receiveGoods(f.owner,f.org,f.store,receipt(f.reference(),1));
+        var other=service.receiveGoods(f.owner,f.org,f.store,receipt(new PositionReference(f.secondLocation,f.product,f.lot),1));
+        var before=effects();
+        var overflow=receiptDocument(UUID.randomUUID(),"DELIVERY-OVERFLOW",List.of(
+                receiptDocumentLine("line-a",f.reference(),1,existing.positionVersion()),
+                receiptDocumentLine("line-z",new PositionReference(f.secondLocation,f.product,f.lot),Long.MAX_VALUE,other.positionVersion())));
+        fails(Kind.INVALID_REQUEST,()->service.receiveGoodsDocument(f.owner,f.org,f.store,overflow));
+        assertThat(effects()).containsExactlyElementsOf(before);
+        assertThat(snapshot(existing).buckets()).isEqualTo(new StockBuckets(1,0,0,0));
+        assertThat(snapshot(other).buckets()).isEqualTo(new StockBuckets(1,0,0,0));
+    }
+
+    @Test void staleVersionInAnyReceiptLineLeavesNewPositionsAndDocumentEvidenceUnchanged() {
+        var existing=service.receiveGoods(f.owner,f.org,f.store,receipt(f.reference(),1));
+        var before=effects();
+        var fresh=new PositionReference(f.secondLocation,f.product,f.lot);
+        var request=receiptDocument(UUID.randomUUID(),"DELIVERY-STALE-LINE",List.of(
+                receiptDocumentLine("line-a",fresh,2,0),receiptDocumentLine("line-z",f.reference(),1,0)));
+
+        fails(Kind.CONFLICT,()->service.receiveGoodsDocument(f.owner,f.org,f.store,request));
+
+        assertThat(effects()).containsExactlyElementsOf(before);
+        assertThat(inventory.positionByIdentity(f.org,f.store,fresh.locationId(),fresh.lotId())).isEmpty();
+        assertThat(snapshot(existing).buckets()).isEqualTo(new StockBuckets(1,0,0,0));
+    }
+
+    @Test void receiptDocumentRequiresCurrentPermissionAndMatchingActiveTenantStoreContexts() {
+        var before=effects();
+        assertThatThrownBy(()->service.receiveGoodsDocument(f.analyst,f.org,f.store,scopedReceipt(UUID.randomUUID(),f.reference())))
+                .isInstanceOf(AccessDeniedException.class);
+        for(var reference:List.of(new PositionReference(f.otherLocation,f.product,f.lot),
+                new PositionReference(f.location,UUID.randomUUID(),f.lot),new PositionReference(f.location,f.product,UUID.randomUUID()))) {
+            assertThatThrownBy(()->service.receiveGoodsDocument(f.owner,f.org,f.store,
+                    scopedReceipt(UUID.randomUUID(),reference))).isInstanceOf(OrganizationUnavailableException.class);
+        }
+        assertThatThrownBy(()->service.receiveGoodsDocument(f.owner,f.org,f.otherStore,
+                scopedReceipt(UUID.randomUUID(),f.reference()))).isInstanceOf(OrganizationUnavailableException.class);
+        assertThatThrownBy(()->service.receiveGoodsDocument(f.owner,f.otherOrg,f.store,
+                scopedReceipt(UUID.randomUUID(),f.reference()))).isInstanceOf(OrganizationUnavailableException.class);
+        assertThat(effects()).containsExactlyElementsOf(before);
+
+        storeService.archive(f.owner,f.org,f.otherStore,0,"Store permanently closed");
+        assertThatThrownBy(()->service.receiveGoodsDocument(f.owner,f.org,f.otherStore,
+                scopedReceipt(UUID.randomUUID(),new PositionReference(f.otherLocation,f.product,f.lot))))
+                .isInstanceOf(OrganizationUnavailableException.class);
+        assertThat(effects()).containsExactlyElementsOf(before);
+    }
+
+    @Test void concurrentReceiptDocumentsCannotPostTheSameSupplierDocumentTwice() throws Exception {
+        var secondReference=f.secondEligibleReference();
+        var lines=List.of(receiptDocumentLine("line-a",f.reference(),2,0),
+                receiptDocumentLine("line-b",secondReference,3,0));
+        var request=receiptDocument(UUID.randomUUID(),"DELIVERY-CONCURRENT",lines);
+        var second=receiptDocument(UUID.randomUUID(),"DELIVERY-CONCURRENT",request.lines());
+        var ready=new CountDownLatch(2);var start=new CountDownLatch(1);
+        try(var workers=Executors.newFixedThreadPool(2)) {
+            var first=workers.submit(()->receiveDocumentRacing(f.owner,request,ready,start));
+            var duplicate=workers.submit(()->receiveDocumentRacing(f.operator,second,ready,start));
+            assertThat(ready.await(10,TimeUnit.SECONDS)).isTrue();start.countDown();
+            var outcomes=List.of(first.get(20,TimeUnit.SECONDS),duplicate.get(20,TimeUnit.SECONDS));
+            assertThat(outcomes.stream().filter(outcome->outcome.submission()!=null && outcome.submission().created()).count()).isEqualTo(1);
+            assertThat(outcomes.stream().filter(outcome->outcome.failure()==Kind.DOCUMENT_ALREADY_RECEIVED).count()).isEqualTo(1);
+        } finally { start.countDown(); }
+        assertThat(count("goods_receipt")).isEqualTo(1);assertThat(count("goods_receipt_line")).isEqualTo(2);
+        assertThat(count("stock_movement")).isEqualTo(1);assertThat(count("stock_movement_line")).isEqualTo(2);
+        assertThat(count("inventory_command_receipt")).isEqualTo(1);assertThat(count("inventory_outbox_event")).isEqualTo(2);
+        var positions=service.positions(f.owner,f.org,f.store,null,0,100).items();
+        assertThat(positions).hasSize(2);
+        assertThat(positions).extracting(position->position.buckets().onHand()).containsExactlyInAnyOrder(2L,3L);
+        positions.forEach(position->reconstructPosition(position.id()));
+    }
+
+    @Test void receiptAndReservationWithOneExpectedVersionCannotBothAdvanceThePosition() throws Exception {
+        var initial=service.receiveGoods(f.owner,f.org,f.store,receipt(f.reference(),3));
+        var secondReference=f.secondEligibleReference();
+        var document=receiptDocument(UUID.randomUUID(),"DELIVERY-RESERVATION-RACE",List.of(
+                receiptDocumentLine("line-a",f.reference(),2,initial.positionVersion()),
+                receiptDocumentLine("line-b",secondReference,4,0)));
+        var reservation=new StockChange(UUID.randomUUID(),initial.positionId(),initial.positionVersion(),1,"Reserve counted stock","operator-record");
+        var receiptCreated=new AtomicBoolean();
+        var ready=new CountDownLatch(2);var start=new CountDownLatch(1);
+        try(var workers=Executors.newFixedThreadPool(2)) {
+            var receipt=workers.submit(()->receiveDocumentRacing(f.owner,document,ready,start));
+            var reserve=workers.submit(()->{
+                ready.countDown();barrier(start);
+                return attempt(()->service.reserveStock(f.operator,f.org,f.store,reservation));
+            });
+            assertThat(ready.await(10,TimeUnit.SECONDS)).isTrue();start.countDown();
+            var receiptOutcome=receipt.get(20,TimeUnit.SECONDS);var reserveOutcome=reserve.get(20,TimeUnit.SECONDS);
+            receiptCreated.set(receiptOutcome.submission()!=null && receiptOutcome.submission().created());
+            long successes=(receiptOutcome.submission()!=null && receiptOutcome.submission().created()?1:0)+(reserveOutcome.result()!=null?1:0);
+            assertThat(successes).isEqualTo(1);
+            assertThat((receiptOutcome.failure()==Kind.CONFLICT?1:0)+(reserveOutcome.failure()==Kind.CONFLICT?1:0)).isEqualTo(1);
+        } finally { start.countDown(); }
+        var position=snapshot(initial);
+        assertThat(position.version()).isEqualTo(2);
+        if(receiptCreated.get()) {
+            assertThat(position.buckets()).isEqualTo(new StockBuckets(5,0,0,0));
+            assertThat(inventory.positionByIdentity(f.org,f.store,secondReference.locationId(),secondReference.lotId())).isPresent();
+            assertThat(count("goods_receipt_line")).isEqualTo(3);
+            assertThat(count("stock_movement_line")).isEqualTo(3);
+        } else {
+            assertThat(position.buckets()).isEqualTo(new StockBuckets(3,1,0,0));
+            assertThat(inventory.positionByIdentity(f.org,f.store,secondReference.locationId(),secondReference.lotId())).isEmpty();
+            assertThat(count("goods_receipt_line")).isEqualTo(1);
+            assertThat(count("stock_movement_line")).isEqualTo(2);
+        }
+        reconstructPosition(position.id());
+    }
+
+    @Test void multiLineReceiptAndStoreReconciliationSerializeWithoutPartialEvidence() throws Exception {
+        var second=new PositionReference(f.secondLocation,f.product,f.lot);
+        var document=receiptDocument(UUID.randomUUID(),"DELIVERY-RECONCILIATION-RACE",List.of(
+                receiptDocumentLine("line-a",f.reference(),2,0),receiptDocumentLine("line-b",second,3,0)));
+        var ready=new CountDownLatch(2);var start=new CountDownLatch(1);
+        try(var workers=Executors.newFixedThreadPool(2)) {
+            var receipt=workers.submit(()->receiveDocumentRacing(f.owner,document,ready,start));
+            var reconcile=workers.submit(()->{
+                ready.countDown();barrier(start);
+                return withCorrelation(()->reconciliation.reconcile(f.owner,f.org,f.store));
+            });
+            assertThat(ready.await(10,TimeUnit.SECONDS)).isTrue();start.countDown();
+            var outcome=receipt.get(20,TimeUnit.SECONDS);var run=reconcile.get(20,TimeUnit.SECONDS);
+            assertThat(outcome.failure()).isNull();assertThat(outcome.submission().created()).isTrue();
+            assertThat(run.checkedPositions()).isIn(0,2);
+            assertThat(count("goods_receipt")).isEqualTo(1);assertThat(count("goods_receipt_line")).isEqualTo(2);
+            assertThat(count("stock_movement")).isEqualTo(1);assertThat(count("stock_movement_line")).isEqualTo(2);
+            assertThat(count("inventory_outbox_event")).isEqualTo(2);assertThat(count("inventory_reconciliation_run")).isEqualTo(1);
+            outcome.submission().result().lines().forEach(line->reconstructPosition(line.positionId()));
+        } finally { start.countDown(); }
+    }
+
     @Test void reservationOwnershipPartialReleaseAndDoubleReleaseRemainDistinctFromQuarantine() {
         var received=receive(4);
         var reserved=service.reserveStock(f.operator,f.org,f.store,change(received.positionId(),2));
@@ -307,6 +536,29 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         fails(Kind.ALLOCATION_UNAVAILABLE,()->service.releaseReservation(f.operator,f.org,f.store,new AllocationChange(change(received.positionId(),1),reserved.allocationId())));
         fails(Kind.ALLOCATION_UNAVAILABLE,()->service.releaseReservation(f.operator,f.org,f.store,new AllocationChange(change(received.positionId(),1),quarantined.allocationId())));
         assertThat(snapshot(received).buckets()).isEqualTo(new StockBuckets(4,0,2,0));
+        reconstruct(received);
+    }
+
+    @Test void operatorsReleaseOnlyTheirOwnHoldsWhileManagersCanReleaseOtherUsersHolds() {
+        var received=receive(6);
+        var operatorHold=service.hold(f.operator,f.org,f.store,change(received.positionId(),2));
+        var peerHold=service.hold(f.peer,f.org,f.store,change(received.positionId(),1));
+        long movementsBeforeRelease=count("stock_movement");
+
+        assertThatThrownBy(()->service.releaseHold(f.peer,f.org,f.store,
+                new AllocationChange(change(received.positionId(),1),operatorHold.allocationId())))
+                .isInstanceOf(AccessDeniedException.class);
+        assertThatThrownBy(()->service.releaseHold(f.operator,f.org,f.store,
+                new AllocationChange(change(received.positionId(),1),peerHold.allocationId())))
+                .isInstanceOf(AccessDeniedException.class);
+        assertThat(service.releaseHold(f.manager,f.org,f.store,
+                new AllocationChange(change(received.positionId(),1),peerHold.allocationId())).buckets())
+                .isEqualTo(new StockBuckets(6,0,0,2));
+        assertThat(service.releaseHold(f.operator,f.org,f.store,
+                new AllocationChange(change(received.positionId(),2),operatorHold.allocationId())).buckets())
+                .isEqualTo(new StockBuckets(6,0,0,0));
+
+        assertThat(count("stock_movement")).isEqualTo(movementsBeforeRelease+2);
         reconstruct(received);
     }
 
@@ -602,7 +854,7 @@ class InventoryCommandsTest extends InfrastructureTestBase {
                 new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_003L,"invalid","not-json"),
                 new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_004L,key,invalidCorrelation));
         MessageListenerContainer container=listeners.getListenerContainer("inventory-change-projection");
-        container.stop();
+        haltInventoryConsumer();
         try {
             for(var record:records) {
                 var acknowledgment=org.mockito.Mockito.mock(Acknowledgment.class);
@@ -610,7 +862,7 @@ class InventoryCommandsTest extends InfrastructureTestBase {
                 org.mockito.Mockito.verify(acknowledgment).acknowledge();
             }
         } finally {
-            container.start();
+            resumeInventoryConsumer();
             await().atMost(Duration.ofSeconds(10)).until(container::isRunning);
         }
         assertThat(jdbc.sql("SELECT failure_code FROM stockrescue.inventory_consumer_parked_event WHERE record_offset>=8000000001 ORDER BY record_offset")
@@ -740,9 +992,9 @@ class InventoryCommandsTest extends InfrastructureTestBase {
     @Test void inventoryConsumerContinuesProcessingAfterItsGroupRebalances() {
         var container=listeners.getListenerContainer("inventory-change-projection");
         assertThat(container).isNotNull();
-        container.stop();
+        haltInventoryConsumer();
         assertThat(container.isRunning()).isFalse();
-        container.start();
+        resumeInventoryConsumer();
         await().atMost(Duration.ofSeconds(15)).until(container::isRunning);
 
         var received=receive(2);
@@ -769,7 +1021,7 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         assertThat(concurrentContainer.getContainers()).hasSize(3);
         var metadata=captureOutboxMetadata();
         var databaseUnavailable=new AtomicBoolean();
-        container.stop();
+        haltInventoryConsumer();
         doAnswer(invocation->{
             if(databaseUnavailable.get()) throw new java.sql.SQLException("injected PostgreSQL connection outage");
             return invocation.callRealMethod();
@@ -788,7 +1040,7 @@ class InventoryCommandsTest extends InfrastructureTestBase {
 
             double retriesBefore=messagingMetrics.consumerRetryCount();
             databaseUnavailable.set(true);
-            container.start();
+            resumeInventoryConsumer();
             await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
                 assertThat(container.isRunning()).isTrue();
                 assertThat(concurrentContainer.isChildRunning()).isTrue();
@@ -803,6 +1055,19 @@ class InventoryCommandsTest extends InfrastructureTestBase {
             assertThat(directEventCount("inventory_inbox",first.id())).isZero();
             assertThat(directEventCount("inventory_change_feed",first.id())).isZero();
             assertThat(directProjectionVersion(received.positionId())).isZero();
+
+            haltInventoryConsumer();
+            await().atMost(Duration.ofSeconds(10)).until(()->!container.isRunning());
+            assertThat(messagingMetrics.retryingRecordCount()).isZero();
+            assertThat(messagingMetrics.failedRecords()).isEmpty();
+            assertThat(directCommittedOffset(partition)).isLessThanOrEqualTo(firstMetadata.offset());
+            resumeInventoryConsumer();
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
+                assertThat(messagingMetrics.retryingRecordCount()).isPositive();
+                assertThat(inventoryMessagingHealth.health().getStatus().getCode()).isEqualTo("DOWN");
+            });
+            double listenerRestartsAfterRecoveryResume=messagingMetrics.consumerListenerRestartAttemptCount();
+            assertThat(directCommittedOffset(partition)).isLessThanOrEqualTo(firstMetadata.offset());
 
             databaseUnavailable.set(false);
             await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
@@ -824,12 +1089,14 @@ class InventoryCommandsTest extends InfrastructureTestBase {
                         .param("event",eventId).param("org",f.org).query(Long.class).single()).isZero();
             }
             assertThat(messagingMetrics.retryingRecordCount()).isZero();
+            assertThat(messagingStartup.state()).isEqualTo(InventoryMessagingStartup.State.RUNNING);
+            assertThat(messagingMetrics.consumerListenerRestartAttemptCount()).isEqualTo(listenerRestartsAfterRecoveryResume);
             assertThat(inventoryMessagingHealth.health().getStatus().getCode()).isEqualTo("UP");
         } finally {
             databaseUnavailable.set(false);
             doCallRealMethod().when(dataSource).getConnection();
             if(!container.isRunning()) {
-                container.start();
+                resumeInventoryConsumer();
                 await().atMost(Duration.ofSeconds(15)).until(container::isRunning);
             }
         }
@@ -843,7 +1110,8 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         var container=listeners.getListenerContainer("inventory-change-projection");
         var metadata=captureOutboxMetadata();
         var parkingUnavailable=new AtomicBoolean();
-        container.stop();
+        haltInventoryConsumer();
+        await().atMost(Duration.ofSeconds(10)).until(()->!container.isRunning());
         doAnswer(invocation->{
             var connection=(java.sql.Connection)invocation.callRealMethod();
             return java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{java.sql.Connection.class},(proxy,method,args)->{
@@ -857,20 +1125,22 @@ class InventoryCommandsTest extends InfrastructureTestBase {
             });
         }).when(dataSource).getConnection();
         try {
+            var poison=(SendResult<?,?>)kafka.send(new ProducerRecord<>(inventoryTopic,key,"not-json"))
+                    .get(10,TimeUnit.SECONDS);
+            var poisonMetadata=poison.getRecordMetadata();
+            var poisonPartition=new TopicPartition(poisonMetadata.topic(),poisonMetadata.partition());
             relay.dispatchOnce();
             await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
                 assertThat(metadata).containsKey(source.id());
                 assertThat(publishedAt(source.id())).isNotNull();
             });
             var validMetadata=metadata.get(source.id());
-            var poison=(SendResult<?,?>)kafka.send(new ProducerRecord<>(inventoryTopic,"malformed-"+UUID.randomUUID(),"not-json"))
-                    .get(10,TimeUnit.SECONDS);
-            var poisonMetadata=poison.getRecordMetadata();
-            var poisonPartition=new TopicPartition(poisonMetadata.topic(),poisonMetadata.partition());
+            assertThat(validMetadata.partition()).isEqualTo(poisonMetadata.partition());
+            assertThat(validMetadata.offset()).isGreaterThan(poisonMetadata.offset());
 
             parkingUnavailable.set(true);
             double retriesBefore=messagingMetrics.consumerRetryCount();
-            container.start();
+            resumeInventoryConsumer();
             await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
                 assertThat(container.isRunning()).isTrue();
                 assertThat(messagingMetrics.retryingRecordCount()).isPositive();
@@ -878,16 +1148,17 @@ class InventoryCommandsTest extends InfrastructureTestBase {
             });
             Thread.sleep(Duration.ofMillis(2200));
             assertThat(messagingMetrics.consumerRetryCount()-retriesBefore).isBetween(1d,5d);
-            await().atMost(Duration.ofSeconds(10)).untilAsserted(()->assertThat(inboxCount(source.id())).isEqualTo(1));
             assertThat(directParkedEventCount(poisonPartition.topic(),poisonPartition.partition(),poisonMetadata.offset())).isZero();
             assertThat(directCommittedOffset(poisonPartition)).isLessThanOrEqualTo(poisonMetadata.offset());
+            assertThat(directEventCount("inventory_inbox",source.id())).isZero();
+            assertThat(directEventCount("inventory_change_feed",source.id())).isZero();
 
             parkingUnavailable.set(false);
             await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
                 assertThat(directParkedEventCount(poisonPartition.topic(),poisonPartition.partition(),poisonMetadata.offset())).isEqualTo(1);
                 assertThat(inboxCount(source.id())).isEqualTo(1);
                 assertThat(feedCount(source.id())).isEqualTo(1);
-                assertThat(directCommittedOffset(poisonPartition)).isGreaterThan(poisonMetadata.offset());
+                assertThat(directCommittedOffset(poisonPartition)).isGreaterThan(validMetadata.offset());
             });
             assertThat(validMetadata).isNotNull();
             assertThat(jdbc.sql("SELECT failure_code FROM stockrescue.inventory_consumer_parked_event "
@@ -900,7 +1171,78 @@ class InventoryCommandsTest extends InfrastructureTestBase {
             parkingUnavailable.set(false);
             doCallRealMethod().when(dataSource).getConnection();
             if(!container.isRunning()) {
-                container.start();
+                resumeInventoryConsumer();
+                await().atMost(Duration.ofSeconds(15)).until(container::isRunning);
+            }
+        }
+    }
+
+    @Test void deterministicProjectionFaultPausesItsPartitionAndResumesTheSameOffsetAfterCorrection() throws Exception {
+        var received=receive(2);
+        var source=outboxFor(received.positionId(),1);
+        var container=listeners.getListenerContainer("inventory-change-projection");
+        var metadata=captureOutboxMetadata();
+        haltInventoryConsumer();
+        await().atMost(Duration.ofSeconds(10)).until(()->!container.isRunning());
+        var function="test_block_inventory_projection";
+        var trigger="test_block_inventory_projection";
+        try {
+            jdbc.sql("CREATE FUNCTION stockrescue."+function+"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                    +"IF NEW.event_id='"+source.id()+"'::uuid THEN RAISE EXCEPTION 'injected projection invariant failure' USING ERRCODE='23514'; END IF; "
+                    +"RETURN NEW; END; $$").update();
+            jdbc.sql("CREATE TRIGGER "+trigger+" BEFORE INSERT ON stockrescue.inventory_inbox FOR EACH ROW EXECUTE FUNCTION stockrescue."+function+"()").update();
+            relay.dispatchOnce();
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
+                assertThat(metadata).containsKey(source.id());
+                assertThat(publishedAt(source.id())).isNotNull();
+            });
+            var eventMetadata=metadata.get(source.id());
+            var partition=new TopicPartition(eventMetadata.topic(),eventMetadata.partition());
+            resumeInventoryConsumer();
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(()->{
+                assertThat(messagingMetrics.blockedPartitionCount()).isEqualTo(1);
+                assertThat(messagingMetrics.pausedPartitionCount()).isPositive();
+                assertThat(messagingMetrics.failedRecords()).singleElement().satisfies(failed->{
+                    assertThat(failed.topic()).isEqualTo(eventMetadata.topic());
+                    assertThat(failed.partition()).isEqualTo(eventMetadata.partition());
+                    assertThat(failed.offset()).isEqualTo(eventMetadata.offset());
+                    assertThat(failed.category()).isEqualTo("NONRETRYABLE_APP_UNKNOWN");
+                });
+                assertThat(inventoryMessagingHealth.health().getDetails().get("state")).isEqualTo("blocked");
+                assertThat(inventoryMessagingHealth.health().getStatus().getCode()).isEqualTo("DOWN");
+            });
+            double failedDeliveries=messagingMetrics.consumerRetryCount();
+            Thread.sleep(Duration.ofMillis(2300));
+            assertThat(messagingMetrics.consumerRetryCount()-failedDeliveries).isBetween(0d,2d);
+            assertThat(directCommittedOffset(partition)).isLessThanOrEqualTo(eventMetadata.offset());
+            assertThat(directEventCount("inventory_inbox",source.id())).isZero();
+
+            haltInventoryConsumer();
+            await().atMost(Duration.ofSeconds(10)).until(()->!container.isRunning());
+            assertThat(messagingMetrics.retryingRecordCount()).isZero();
+            assertThat(messagingMetrics.blockedPartitionCount()).isZero();
+            assertThat(messagingMetrics.pausedPartitionCount()).isZero();
+            assertThat(messagingMetrics.failedRecords()).isEmpty();
+            assertThat(directCommittedOffset(partition)).isLessThanOrEqualTo(eventMetadata.offset());
+            jdbc.sql("DROP TRIGGER "+trigger+" ON stockrescue.inventory_inbox").update();
+            jdbc.sql("DROP FUNCTION stockrescue."+function+"()").update();
+            resumeInventoryConsumer();
+            await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+                assertThat(inboxCount(source.id())).isEqualTo(1);
+                assertThat(feedCount(source.id())).isEqualTo(1);
+                assertThat(directCommittedOffset(partition)).isGreaterThan(eventMetadata.offset());
+                assertThat(messagingMetrics.retryingRecordCount()).isZero();
+                assertThat(messagingMetrics.blockedPartitionCount()).isZero();
+                assertThat(messagingMetrics.pausedPartitionCount()).isZero();
+                assertThat(messagingMetrics.failedRecords()).isEmpty();
+                assertThat(messagingMetrics.lastSuccessfulProcessingEpochSeconds()).isPositive();
+                assertThat(inventoryMessagingHealth.health().getStatus().getCode()).isEqualTo("UP");
+            });
+        } finally {
+            jdbc.sql("DROP TRIGGER IF EXISTS "+trigger+" ON stockrescue.inventory_inbox").update();
+            jdbc.sql("DROP FUNCTION IF EXISTS stockrescue."+function+"()").update();
+            if(!container.isRunning()) {
+                resumeInventoryConsumer();
                 await().atMost(Duration.ofSeconds(15)).until(container::isRunning);
             }
         }
@@ -956,6 +1298,209 @@ class InventoryCommandsTest extends InfrastructureTestBase {
             return later!=null;
         });
         assertThat(laterClaim.get().aggregateVersion()).isEqualTo(versionOne.aggregateVersion()+1);
+    }
+
+    @Test void parkedAggregateResumesOnlyAfterAuditedRedriveAcknowledgement() {
+        var received=receive(4);
+        var versionOne=outboxFor(received.positionId(),1);
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();assertThat(publishedAt(versionOne.id())).isNotNull();assertThat(inboxCount(versionOne.id())).isEqualTo(1);
+        });
+        service.recordSale(f.operator,f.org,f.store,change(received.positionId(),1));
+        var versionTwo=outboxFor(received.positionId(),2);
+        park(versionTwo);
+        service.recordSale(f.operator,f.org,f.store,change(received.positionId(),1));
+        var versionThree=outboxFor(received.positionId(),3);
+        assertThat(outbox.claimDue(UUID.randomUUID(),5,Duration.ofSeconds(20))).noneMatch(row->row.id().equals(versionThree.id()));
+
+        var diagnostic=parkedDiagnostic(versionTwo.id());
+        assertThatThrownBy(()->redriveService.parked(f.operator,f.org,f.store,0,25)).isInstanceOf(AccessDeniedException.class);
+        assertThatThrownBy(()->redriveService.redrive(f.owner,f.org,f.otherStore,versionTwo.id(),request(diagnostic,UUID.randomUUID())))
+                .isInstanceOf(OrganizationUnavailableException.class);
+        assertThatThrownBy(()->redriveService.parked(f.foreign,f.otherOrg,f.store,0,25))
+                .isInstanceOf(OrganizationUnavailableException.class);
+        assertThatThrownBy(()->redriveService.redrive(f.owner,f.org,f.store,versionTwo.id(),new RedriveRequest(
+                UUID.randomUUID(),diagnostic.originalClaimVersion(),diagnostic.originalAttemptCount(),"0".repeat(64),
+                "Reviewed replay","incident:inventory-42")))
+                .isInstanceOfSatisfying(InventoryFailure.class,error->assertThat(error.kind()).isEqualTo(Kind.CONFLICT));
+        assertThatThrownBy(()->redriveService.redrive(f.owner,f.org,f.store,versionTwo.id(),new RedriveRequest(
+                UUID.randomUUID(),diagnostic.originalClaimVersion()+1,diagnostic.originalAttemptCount(),diagnostic.sourceFingerprint(),
+                "Reviewed replay","incident:inventory-42")))
+                .isInstanceOfSatisfying(InventoryFailure.class,error->assertThat(error.kind()).isEqualTo(Kind.CONFLICT));
+
+        UUID revokedAdmin=f.user();UUID revokedMember=adminMembership(revokedAdmin);
+        staff.revoke(f.owner,f.org,revokedMember,0,"Administrator access ended");
+        assertThatThrownBy(()->redriveService.parked(revokedAdmin,f.org,f.store,0,25))
+                .isInstanceOf(OrganizationUnavailableException.class);
+
+        UUID requestId=UUID.randomUUID();var request=request(diagnostic,requestId);
+        var accepted=redriveService.redrive(f.owner,f.org,f.store,versionTwo.id(),request);
+        var replay=redriveService.redrive(f.owner,f.org,f.store,versionTwo.id(),request);
+        assertThat(accepted.generation()).isEqualTo(1);
+        assertThat(replay.generation()).isEqualTo(accepted.generation());
+        assertThat(replay.state()).isEqualTo("REDRIVE_QUEUED");
+        assertThatThrownBy(()->redriveService.redrive(f.owner,f.org,f.store,versionTwo.id(),new RedriveRequest(requestId,
+                diagnostic.originalClaimVersion(),diagnostic.originalAttemptCount(),diagnostic.sourceFingerprint(),
+                "Changed reviewed reason","incident:inventory-42")))
+                .isInstanceOfSatisfying(InventoryFailure.class,error->assertThat(error.kind()).isEqualTo(Kind.IDEMPOTENCY_CONFLICT));
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND action='INVENTORY_OUTBOX_REDRIVE_REQUESTED' AND resource_id=:event")
+                .param("org",f.org).param("event",versionTwo.id()).query(Long.class).single()).isEqualTo(1);
+
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();
+            assertThat(redrivePublishedAt(accepted.generation(),versionTwo.id())).isNotNull();
+            assertThat(inboxCount(versionTwo.id())).isEqualTo(1);
+        });
+        assertThat(jdbc.sql("SELECT parked_at IS NOT NULL AND published_at IS NULL FROM stockrescue.inventory_outbox_delivery WHERE event_id=:event")
+                .param("event",versionTwo.id()).query(Boolean.class).single()).isTrue();
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();assertThat(publishedAt(versionThree.id())).isNotNull();
+            assertThat(projectionVersion(received.positionId())).isEqualTo(3);
+        });
+        assertThat(List.of(versionOne,versionTwo,versionThree).stream().map(InventoryOutboxRepository.OutboxEvent::id)
+                .mapToLong(this::inboxCount).sum()).isEqualTo(3);
+        assertThat(List.of(versionOne,versionTwo,versionThree).stream().map(InventoryOutboxRepository.OutboxEvent::id)
+                .mapToLong(this::feedCount).sum()).isEqualTo(3);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND store_id=:store")
+                .param("org",f.org).param("store",f.store).query(Long.class).single()).isEqualTo(3);
+        assertThat(redrives.unresolvedParkedCount()).isZero();
+        assertThat(redriveService.redrive(f.owner,f.org,f.store,versionTwo.id(),request)).isEqualTo(accepted);
+        assertThatThrownBy(()->redriveService.redrive(f.owner,f.org,f.store,versionTwo.id(),request(diagnostic,UUID.randomUUID())))
+                .isInstanceOfSatisfying(InventoryFailure.class,error->assertThat(error.kind()).isEqualTo(Kind.CONFLICT));
+    }
+
+    @Test void redrivingAnImmutableEventNeverChangesAFrozenStockProjection() {
+        var received=receive(2);
+        var event=outboxFor(received.positionId(),1);
+        park(event);
+        corruptProjection(received.positionId(),"on_hand",3);
+        var reconciliationRun=reconciliation.reconcile(f.owner,f.org,f.store);
+        assertThat(reconciliationRun.severity()).isEqualTo("CRITICAL");
+        var frozenBefore=snapshot(received);
+        assertThat(frozenBefore.trust()).isEqualTo(com.stockrescue.inventory.domain.StockPosition.Trust.FROZEN);
+        assertThat(frozenBefore.buckets().onHand()).isEqualTo(3);
+
+        var diagnostic=parkedDiagnostic(event.id());
+        var accepted=redriveService.redrive(f.owner,f.org,f.store,event.id(),request(diagnostic,UUID.randomUUID()));
+        assertThat(accepted.state()).isEqualTo("REDRIVE_QUEUED");
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();
+            assertThat(redrivePublishedAt(accepted.generation(),event.id())).isNotNull();
+            assertThat(inboxCount(event.id())).isEqualTo(1);
+        });
+
+        var afterRedrive=snapshot(received);
+        assertThat(afterRedrive.trust()).isEqualTo(com.stockrescue.inventory.domain.StockPosition.Trust.FROZEN);
+        assertThat(afterRedrive.version()).isEqualTo(frozenBefore.version());
+        assertThat(afterRedrive.buckets()).isEqualTo(frozenBefore.buckets());
+        assertThat(count("stock_movement")).isEqualTo(2);
+        assertThat(count("stock_movement_line")).isEqualTo(2);
+        assertThat(count("inventory_outbox_event")).isEqualTo(2);
+        assertThat(feedCount(event.id())).isEqualTo(1);
+    }
+
+    @Test void concurrentReplaysOfOneRedriveRequestReturnTheSameAcceptedResult() throws Exception {
+        var received=receive(3);
+        var versionOne=outboxFor(received.positionId(),1);
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();assertThat(publishedAt(versionOne.id())).isNotNull();
+        });
+        service.recordSale(f.operator,f.org,f.store,change(received.positionId(),1));
+        var parkedEvent=outboxFor(received.positionId(),2);park(parkedEvent);
+        var diagnostic=parkedDiagnostic(parkedEvent.id());
+        var request=request(diagnostic,UUID.randomUUID());
+        var ready=new CountDownLatch(2);var start=new CountDownLatch(1);
+        try(var workers=Executors.newFixedThreadPool(2)) {
+            var first=workers.submit(()->redriveRacing(f.owner,parkedEvent.id(),request,ready,start));
+            var second=workers.submit(()->redriveRacing(f.owner,parkedEvent.id(),request,ready,start));
+            assertThat(ready.await(10,TimeUnit.SECONDS)).isTrue();start.countDown();
+            var outcomes=List.of(first.get(20,TimeUnit.SECONDS),second.get(20,TimeUnit.SECONDS));
+            assertThat(outcomes).allSatisfy(outcome->assertThat(outcome.failure()).isNull());
+            assertThat(outcomes.get(0).result()).isEqualTo(outcomes.get(1).result());
+            assertThat(outcomes.get(0).result().generation()).isEqualTo(1);
+        } finally { start.countDown(); }
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_outbox_redrive_attempt WHERE event_id=:event")
+                .param("event",parkedEvent.id()).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND action='INVENTORY_OUTBOX_REDRIVE_REQUESTED' AND resource_id=:event")
+                .param("org",f.org).param("event",parkedEvent.id()).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test void concurrentAdministratorsAndExpiredRedriveLeasesCannotCreateOrPublishStaleGenerations() throws Exception {
+        var received=receive(3);
+        var versionOne=outboxFor(received.positionId(),1);
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();assertThat(publishedAt(versionOne.id())).isNotNull();
+        });
+        service.recordSale(f.operator,f.org,f.store,change(received.positionId(),1));
+        var versionTwo=outboxFor(received.positionId(),2);park(versionTwo);
+        var diagnostic=parkedDiagnostic(versionTwo.id());
+        UUID peerAdmin=f.user();adminMembership(peerAdmin);
+        var ready=new CountDownLatch(2);var start=new CountDownLatch(1);
+        try(var workers=Executors.newFixedThreadPool(2)) {
+            var first=workers.submit(()->redriveRacing(f.owner,versionTwo.id(),request(diagnostic,UUID.randomUUID()),ready,start));
+            var second=workers.submit(()->redriveRacing(peerAdmin,versionTwo.id(),request(diagnostic,UUID.randomUUID()),ready,start));
+            assertThat(ready.await(10,TimeUnit.SECONDS)).isTrue();start.countDown();
+            var outcomes=List.of(first.get(20,TimeUnit.SECONDS),second.get(20,TimeUnit.SECONDS));
+            assertThat(outcomes.stream().filter(outcome->outcome.result()!=null)).hasSize(1);
+            assertThat(outcomes.stream().filter(outcome->outcome.failure()==Kind.CONFLICT)).hasSize(1);
+        } finally { start.countDown(); }
+
+        var active=jdbc.sql("SELECT id FROM stockrescue.inventory_outbox_redrive_attempt WHERE event_id=:event")
+                .param("event",versionTwo.id()).query(UUID.class).single();
+        assertThatThrownBy(()->jdbc.sql("UPDATE stockrescue.inventory_outbox_redrive_attempt SET reason='tampered' WHERE id=:id")
+                .param("id",active).update()).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        var firstClaim=redrives.claimDue(UUID.randomUUID(),1,Duration.ofMillis(100)).getFirst();
+        Thread.sleep(150);
+        var currentClaim=redrives.claimDue(UUID.randomUUID(),1,Duration.ofSeconds(20)).getFirst();
+        assertThat(currentClaim.attempt().claimVersion()).isEqualTo(firstClaim.attempt().claimVersion()+1);
+        assertThat(redrives.markPublished(firstClaim)).isFalse();
+        assertThat(redrives.scheduleRetry(firstClaim,"BROKER_UNAVAILABLE",Duration.ofMillis(1))).isFalse();
+        assertThat(redrives.scheduleRetry(currentClaim,"BROKER_UNAVAILABLE",Duration.ofMillis(1))).isTrue();
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();assertThat(redrivePublishedAt(currentClaim.attempt().generation(),versionTwo.id())).isNotNull();
+        });
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(()->assertThat(inboxCount(versionTwo.id())).isEqualTo(1));
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND action='INVENTORY_OUTBOX_REDRIVE_REQUESTED' AND resource_id=:event")
+                .param("org",f.org).param("event",versionTwo.id()).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test void brokerAcknowledgementBeforeRedriveMarkerCanReplayWithoutApplyingStockTwice() throws Exception {
+        var received=receive(4);
+        var versionOne=outboxFor(received.positionId(),1);
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();assertThat(publishedAt(versionOne.id())).isNotNull();assertThat(inboxCount(versionOne.id())).isEqualTo(1);
+        });
+        service.recordSale(f.operator,f.org,f.store,change(received.positionId(),1));
+        var versionTwo=outboxFor(received.positionId(),2);park(versionTwo);
+        service.recordSale(f.operator,f.org,f.store,change(received.positionId(),1));
+        var versionThree=outboxFor(received.positionId(),3);
+        var diagnostic=parkedDiagnostic(versionTwo.id());
+        redriveService.redrive(f.owner,f.org,f.store,versionTwo.id(),request(diagnostic,UUID.randomUUID()));
+        var firstOwner=UUID.randomUUID();
+        var firstClaim=redrives.claimDue(firstOwner,1,Duration.ofMillis(100)).getFirst();
+        var replayEvent=eventCodec.fromOutbox(firstClaim.event(),firstClaim.source());
+        var key=replayEvent.tenantId()+":"+replayEvent.aggregateType()+":"+replayEvent.aggregateId();
+        var payload=eventCodec.encode(replayEvent);
+        kafka.send(new ProducerRecord<>(inventoryTopic,key,payload)).get(12,TimeUnit.SECONDS);
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(()->assertThat(inboxCount(versionTwo.id())).isEqualTo(1));
+        assertThat(redrivePublishedAt(firstClaim.attempt().generation(),versionTwo.id())).isNull();
+        Thread.sleep(150);
+        var restartedClaim=redrives.claimDue(UUID.randomUUID(),1,Duration.ofSeconds(20)).getFirst();
+        assertThat(restartedClaim.attempt().claimVersion()).isEqualTo(firstClaim.attempt().claimVersion()+1);
+        assertThat(redrives.markPublished(firstClaim)).isFalse();
+        assertThat(outbox.claimDue(UUID.randomUUID(),5,Duration.ofSeconds(20))).noneMatch(row->row.id().equals(versionThree.id()));
+        kafka.send(new ProducerRecord<>(inventoryTopic,key,payload)).get(12,TimeUnit.SECONDS);
+        assertThat(redrives.markPublished(restartedClaim)).isTrue();
+        assertThat(inboxCount(versionTwo.id())).isEqualTo(1);
+        assertThat(feedCount(versionTwo.id())).isEqualTo(1);
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(100)).untilAsserted(()->{
+            relay.dispatchOnce();assertThat(publishedAt(versionThree.id())).isNotNull();
+            assertThat(projectionVersion(received.positionId())).isEqualTo(3);
+        });
+        assertThat(snapshot(received).buckets().onHand()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND store_id=:store")
+                .param("org",f.org).param("store",f.store).query(Long.class).single()).isEqualTo(3);
+        assertThat(redrives.unresolvedParkedCount()).isZero();
     }
 
     @Test void eventRelayDeliversTheCommittedStockChangeToTheDerivedConsumerProjection() {
@@ -1046,6 +1591,36 @@ class InventoryCommandsTest extends InfrastructureTestBase {
     }
 
     private Result receive(long quantity) { return service.receiveGoods(f.owner,f.org,f.store,receipt(f.reference(),quantity)); }
+    private void park(InventoryOutboxRepository.OutboxEvent event) {
+        var claim=outbox.claimDue(UUID.randomUUID(),5,Duration.ofSeconds(20)).stream()
+                .filter(candidate->candidate.id().equals(event.id())).findFirst().orElseThrow();
+        assertThat(outbox.park(claim,"OUTBOX_CONTRACT_INVALID")).isTrue();
+    }
+    private ParkedDiagnostic parkedDiagnostic(UUID eventId) {
+        return redriveService.parked(f.owner,f.org,f.store,0,100).items().stream()
+                .filter(item->item.eventId().equals(eventId)).findFirst().orElseThrow();
+    }
+    private static RedriveRequest request(ParkedDiagnostic diagnostic,UUID requestId) {
+        return new RedriveRequest(requestId,diagnostic.originalClaimVersion(),diagnostic.originalAttemptCount(),
+                diagnostic.sourceFingerprint(),"Reviewed immutable event replay","incident:inventory-42");
+    }
+    private UUID adminMembership(UUID user) {
+        var member=UUID.randomUUID();
+        sql("INSERT INTO stockrescue.membership(id,org_id,user_id,org_role) VALUES (?,?,?,'ORG_ADMIN')",member,f.org,user);
+        return member;
+    }
+    private RedriveRace redriveRacing(UUID actor,UUID eventId,RedriveRequest request,CountDownLatch ready,CountDownLatch start) throws Exception {
+        ready.countDown();barrier(start);
+        return withCorrelation(()->{
+            try { return new RedriveRace(redriveService.redrive(actor,f.org,f.store,eventId,request),null); }
+            catch(InventoryFailure failure) { return new RedriveRace(null,failure.kind()); }
+        });
+    }
+    private java.time.Instant redrivePublishedAt(long generation,UUID eventId) {
+        return jdbc.sql("SELECT published_at FROM stockrescue.inventory_outbox_redrive_attempt WHERE event_id=:event AND generation=:generation")
+                .param("event",eventId).param("generation",generation)
+                .query((row,index)->row.getTimestamp(1)==null?null:row.getTimestamp(1).toInstant()).optional().orElse(null);
+    }
     private InventoryOutboxRepository.OutboxEvent outboxFor(UUID position,long version) {
         UUID id=jdbc.sql("SELECT id FROM stockrescue.inventory_outbox_event WHERE org_id=:org AND position_id=:position AND aggregate_version=:version")
                 .param("org",f.org).param("position",position).param("version",version).query(UUID.class).single();
@@ -1122,6 +1697,16 @@ class InventoryCommandsTest extends InfrastructureTestBase {
     private ReceiveGoods receipt(PositionReference reference,long quantity) {
         return new ReceiveGoods(UUID.randomUUID(),reference,quantity,"supplier:registered-1","DELIVERY",UUID.randomUUID().toString(),"1",NOW.minusSeconds(3600),"Counted physical delivery","signed-delivery-note");
     }
+    private ReceiveGoodsDocument receiptDocument(UUID requestId,String document,List<ReceiveGoodsDocumentLine> lines) {
+        return new ReceiveGoodsDocument(requestId,"supplier:registered-1","DELIVERY",document,NOW.minusSeconds(3600),
+                "Counted physical delivery","signed-delivery-note",lines);
+    }
+    private ReceiveGoodsDocument scopedReceipt(UUID requestId,PositionReference position) {
+        return receiptDocument(requestId,"DELIVERY-SCOPE",List.of(receiptDocumentLine("line-a",position,1,0)));
+    }
+    private ReceiveGoodsDocumentLine receiptDocumentLine(String reference,PositionReference position,long quantity,long expectedVersion) {
+        return new ReceiveGoodsDocumentLine(reference,position,quantity,expectedVersion);
+    }
     private StockChange change(UUID position,long quantity) { return new StockChange(UUID.randomUUID(),position,null,quantity,"Observed stock operation","operator-record"); }
     private com.stockrescue.inventory.domain.StockPosition snapshot(Result result) { return service.snapshot(f.owner,f.org,f.store,result.positionId()); }
     private void recordRecall() {
@@ -1138,6 +1723,29 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         assertThat(jdbc.sql("SELECT coalesce(sum(remaining_quantity),0)::bigint FROM stockrescue.stock_allocation WHERE org_id=:org AND store_id=:store AND position_id=:position")
                 .param("org",f.org).param("store",f.store).param("position",result.positionId()).query(Long.class).single())
                 .isEqualTo(totals.reserved()+totals.quarantined()+totals.otherBlocked());
+    }
+    private void reconstructPosition(UUID positionId) {
+        var position=service.snapshot(f.owner,f.org,f.store,positionId);
+        var totals=jdbc.sql("SELECT coalesce(sum(delta_on_hand),0)::bigint AS physical,coalesce(sum(delta_reserved),0)::bigint AS reserved,coalesce(sum(delta_quarantined),0)::bigint AS quarantine,coalesce(sum(delta_other_blocked),0)::bigint AS blocked FROM stockrescue.stock_movement_line WHERE org_id=:org AND store_id=:store AND position_id=:position")
+                .param("org",f.org).param("store",f.store).param("position",positionId)
+                .query((row,index)->new StockBuckets(row.getLong("physical"),row.getLong("reserved"),row.getLong("quarantine"),row.getLong("blocked"))).single();
+        assertThat(totals).isEqualTo(position.buckets());
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement_line WHERE org_id=:org AND store_id=:store AND position_id=:position")
+                .param("org",f.org).param("store",f.store).param("position",positionId).query(Long.class).single()).isEqualTo(position.version());
+        assertThat(jdbc.sql("SELECT coalesce(sum(remaining_quantity),0)::bigint FROM stockrescue.stock_allocation WHERE org_id=:org AND store_id=:store AND position_id=:position")
+                .param("org",f.org).param("store",f.store).param("position",positionId).query(Long.class).single())
+                .isEqualTo(totals.reserved()+totals.quarantined()+totals.otherBlocked());
+    }
+    private List<Long> effects() {
+        return List.of(count("goods_receipt"),count("goods_receipt_line"),count("stock_movement"),count("stock_movement_line"),
+                count("inventory_outbox_event"),count("inventory_command_receipt"),count("stock_position"),stockAudits());
+    }
+    private ReceiptAttempt receiveDocumentRacing(UUID actor,ReceiveGoodsDocument request,CountDownLatch ready,CountDownLatch start) throws Exception {
+        ready.countDown();barrier(start);
+        return withCorrelation(()->{
+            try { return new ReceiptAttempt(service.receiveGoodsDocument(actor,f.org,f.store,request),null); }
+            catch(InventoryFailure failure) { return new ReceiptAttempt(null,failure.kind()); }
+        });
     }
     private long count(String table) { return jdbc.sql("SELECT count(*) FROM stockrescue."+table+" WHERE org_id=:org").param("org",f.org).query(Long.class).single(); }
     private long stockAudits() { return jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND action LIKE 'STOCK_%'").param("org",f.org).query(Long.class).single(); }
@@ -1176,6 +1784,8 @@ class InventoryCommandsTest extends InfrastructureTestBase {
                 .param("table","%stockrescue."+table+"%").query(Long.class).single()).isPositive());
     }
     private record Attempt(Result result,Kind failure) {}
+    private record ReceiptAttempt(ReceiptDocumentSubmission submission,Kind failure) {}
+    private record RedriveRace(RedriveResult result,Kind failure) {}
 
     private class Fixture {
         final UUID owner=user(),operator=user(),manager=user(),analyst=user(),peer=user(),foreign=user();
@@ -1205,6 +1815,22 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         void grant(UUID member,UUID targetStore,String role) { sql("INSERT INTO stockrescue.store_grant(id,org_id,membership_id,store_id,role) VALUES (?,?,?,?,?)",UUID.randomUUID(),org,member,targetStore,role); }
         void member(UUID user,String role) { var id=UUID.randomUUID();sql("INSERT INTO stockrescue.membership(id,org_id,user_id,org_role) VALUES (?,?,?,'MEMBER')",id,org,user);grant(id,store,role); }
         PositionReference reference() { return new PositionReference(location,product,lot); }
+        PositionReference secondEligibleReference() {
+            UUID anotherProduct=UUID.randomUUID(),anotherLot=UUID.randomUUID();
+            sql("INSERT INTO stockrescue.product(id,org_id,sku,name,base_unit,temperature_class,category) VALUES (?,?,?,'Packaged biscuits','EA','AMBIENT','BAKERY')",
+                    anotherProduct,org,"BISCUITS-"+anotherProduct);
+            classification.confirm(owner,org,anotherProduct,new FoodSafetyProductClassificationConfirmationSubmission(UUID.randomUUID(),0,
+                    ProductCategory.BAKERY,TemperatureClass.AMBIENT,ProductProfile.PACKAGED_SHELF_STABLE_DRY_BAKERY,
+                    SourceType.ORIGINAL_PACKAGE,"package:biscuits-label","Reviewed original package"));
+            sql("""
+                    INSERT INTO stockrescue.manufacturer_lot(id,org_id,product_id,lot_code,identity_state,manufacturer_identity_key,manufacturer_source,
+                        manufacturer_reference,confirmed_by_membership_id,confirmed_at,labeled_value,date_marking_type,date_precision,marking_source,marking_reference,
+                        recall_state,damage_state,status_source,status_reference)
+                    VALUES (?,?,?,'BISCUIT-LOT','CONFIRMED','maker:registered-2','Manufacturer register','register-record',?,clock_timestamp(),
+                        '2027-04-30','USE_BY','DAY','Original package','label-photo','NOT_REPORTED','NOT_REPORTED','Manufacturer notice','notice-record')
+                    """,anotherLot,org,anotherProduct,ownerMember);
+            return new PositionReference(location,anotherProduct,anotherLot);
+        }
     }
     @TestConfiguration static class TimeConfiguration { @Bean @Primary TestClock inventoryTestClock() { return new TestClock(); } }
     static final class TestClock extends Clock {

@@ -70,7 +70,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertPublicSchemaContainsOnlyFlywayHistory(connection);
             var tables = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'stockrescue'");
             assertThat(tables.next()).isTrue();
-            assertThat(tables.getInt(1)).isEqualTo(49);
+            assertThat(tables.getInt(1)).isEqualTo(50);
             var signedTables=statement.executeQuery("""
                     SELECT table_name FROM information_schema.tables WHERE table_schema='stockrescue'
                         AND table_name IN ('food_safety_policy_approval','food_safety_policy_approval_revocation',
@@ -117,6 +117,38 @@ class PostgresFoundationTest extends InfrastructureTestBase {
                     """);
             assertThat(publicGrants.next()).isTrue();
             assertThat(publicGrants.getInt(1)).as("PUBLIC privileges on the metadata schema").isZero();
+        }
+    }
+
+    @Test
+    void v014DatabaseUpgradesOnlyThroughAppendOnlyRedriveMigration() throws Exception {
+        try (var previous = new PostgreSQLContainer(DockerImageName.parse(POSTGRES.getDockerImageName()))
+                .withDatabaseName("stockrescue_test").withUsername("test_admin").withPassword("test-admin-password")
+                .withInitScript("db/test-role.sql")) {
+            previous.start();
+            var baseline=Flyway.configure().dataSource(previous.getJdbcUrl(),"stockrescue_app","test-app-password")
+                    .locations("classpath:db/migration").target("14").cleanDisabled(true).load();
+            assertThat(baseline.migrate().migrationsExecuted).isEqualTo(14);
+            String historyBefore;
+            try(var connection=DriverManager.getConnection(previous.getJdbcUrl(),"stockrescue_app","test-app-password")) {
+                historyBefore=migrationHistoryThrough(connection,14);
+                try(var statement=connection.createStatement();var result=statement.executeQuery(
+                        "SELECT to_regclass('stockrescue.inventory_outbox_redrive_attempt')")) {
+                    assertThat(result.next()).isTrue();assertThat(result.getString(1)).isNull();
+                }
+            }
+            var upgraded=Flyway.configure().dataSource(previous.getJdbcUrl(),"stockrescue_app","test-app-password")
+                    .locations("classpath:db/migration").cleanDisabled(true).load();
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);
+            upgraded.validate();MigrationAssertions.assertCurrent(upgraded);
+            try(var connection=DriverManager.getConnection(previous.getJdbcUrl(),"stockrescue_app","test-app-password")) {
+                assertThat(migrationHistoryThrough(connection,14)).isEqualTo(historyBefore);
+                try(var statement=connection.createStatement();var result=statement.executeQuery(
+                        "SELECT to_regclass('stockrescue.inventory_outbox_redrive_attempt')")) {
+                    assertThat(result.next()).isTrue();assertThat(result.getString(1)).isEqualTo("stockrescue.inventory_outbox_redrive_attempt");
+                }
+            }
+            assertThat(upgraded.migrate().migrationsExecuted).isZero();
         }
     }
 
@@ -363,6 +395,15 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertThat(result.next()).isFalse();
             return snapshot;
         }
+    }
+
+    private String migrationHistoryThrough(Connection connection,int version) throws Exception {
+        var rows=new ArrayList<String>();
+        try(var statement=connection.prepareStatement("SELECT row_to_json(history)::text FROM public.flyway_schema_history history WHERE version::int<=? ORDER BY installed_rank")) {
+            statement.setInt(1,version);
+            try(var result=statement.executeQuery()) { while(result.next()) rows.add(result.getString(1)); }
+        }
+        return String.join("\n",rows);
     }
 
     private int status(String path) throws Exception {

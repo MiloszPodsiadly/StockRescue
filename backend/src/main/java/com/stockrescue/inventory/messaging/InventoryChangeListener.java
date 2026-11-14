@@ -32,20 +32,27 @@ public class InventoryChangeListener {
             autoStartup="false")
     public void consume(ConsumerRecord<String,String> record,Acknowledgment acknowledgment) {
         try {
-            var outcome=processor.process(record.key(),record.value());
-            switch(outcome) {
-                case APPLIED -> metrics.applied();
-                case STALE -> metrics.stale();
-                case DUPLICATE -> metrics.duplicate();
+            try {
+                var outcome=processor.process(record.key(),record.value());
+                switch(outcome) {
+                    case APPLIED -> metrics.applied();
+                    case STALE -> metrics.stale();
+                    case DUPLICATE -> metrics.duplicate();
+                }
+            } catch(InventoryEventContractException invalid) {
+                if(!invalid.isPermanentContractFailure()) throw invalid;
+                parked.record(consumer,record.topic(),record.partition(),record.offset(),codec.eventIdOrNull(record.value()),
+                        digest(record.value()),invalid.code());
+                metrics.consumerParked();
             }
-        } catch(InventoryEventContractException invalid) {
-            if(!invalid.isPermanentContractFailure()) throw invalid;
-            parked.record(consumer,record.topic(),record.partition(),record.offset(),codec.eventIdOrNull(record.value()),
-                    digest(record.value()),invalid.code());
-            metrics.consumerParked();
+            acknowledgment.acknowledge();
+            metrics.consumerRetryRecovered(record);
+            metrics.consumerRecordSucceeded();
+        } catch(InventoryConsumerFailure failure) {
+            throw failure;
+        } catch(RuntimeException failure) {
+            throw InventoryConsumerFailure.classify(failure);
         }
-        acknowledgment.acknowledge();
-        metrics.consumerRetryRecovered(record);
     }
 
     private static byte[] digest(String payload) {

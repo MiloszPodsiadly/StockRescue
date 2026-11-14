@@ -2,6 +2,10 @@ package com.stockrescue.inventory.persistence;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.Optional;
@@ -40,6 +44,9 @@ public class InventoryRepository {
 
     public record Allocation(UUID id,UUID positionId,String bucket,UUID ownerId,long remaining,String state,long version) {}
     public record Movement(UUID id,InventoryOperation operation,long positionVersion,StockBuckets.Delta delta,String reason,String evidenceReference,Instant recordedAt) {}
+    public record PositionIdentity(UUID locationId,UUID productId,UUID lotId) { }
+    public record ReceiptLine(UUID positionId,String documentLineReference,long quantity,boolean quarantine) { }
+    private record LotLock(UUID id,UUID productId,boolean active) { }
 
     public void lockRequest(UUID org,UUID actor,InventoryOperation operation,UUID request) {
         requireWriteTransaction();
@@ -61,19 +68,62 @@ public class InventoryRepository {
                 .param("key","inventory-store:"+org+":"+store).query((row,index)->true).single();
     }
 
+    public void lockReceiptDocument(UUID org,String supplier,String type,String document) {
+        requireWriteTransaction();
+        String key="inventory-receipt-document:"+org+":"+supplier.length()+":"+supplier+":"+type.length()+":"+type+":"+document.length()+":"+document;
+        jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))")
+                .param("key",key).query((row,index)->true).single();
+    }
+
+    public boolean receiptDocumentExists(UUID org,String supplier,String type,String document) {
+        return jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM stockrescue.goods_receipt
+                    WHERE org_id=:org AND supplier_key=:supplier AND document_type=:type AND document_reference=:document)
+                """).param("org",org).param("supplier",supplier).param("type",type).param("document",document)
+                .query(Boolean.class).single();
+    }
+
     /** Store authority is locked first; catalog writers use product then lot in the same order. */
     public void lockActiveContext(UUID org,UUID store,UUID location,UUID product,UUID lot) {
+        lockActiveContexts(org,store,List.of(new PositionIdentity(location,product,lot)));
+    }
+
+    /** Lock every mutable catalogue context in a stable product, lot, then location order. */
+    public void lockActiveContexts(UUID org,UUID store,Collection<PositionIdentity> requested) {
         requireWriteTransaction();
-        boolean productActive=jdbc.sql("SELECT active FROM stockrescue.product WHERE org_id=:org AND id=:id FOR SHARE")
-                .param("org",org).param("id",product).query(Boolean.class).optional().orElseThrow(OrganizationUnavailableException::new);
-        boolean lotActive=jdbc.sql("SELECT active FROM stockrescue.manufacturer_lot WHERE org_id=:org AND product_id=:product AND id=:id FOR SHARE")
-                .param("org",org).param("product",product).param("id",lot).query(Boolean.class).optional().orElseThrow(OrganizationUnavailableException::new);
-        boolean locationActive=jdbc.sql("""
-                SELECT l.active AND z.active AS active FROM stockrescue.storage_location l
+        var contexts=requested.stream().distinct().sorted(Comparator.comparing(PositionIdentity::productId)
+                .thenComparing(PositionIdentity::lotId).thenComparing(PositionIdentity::locationId)).toList();
+        if(contexts.isEmpty() || contexts.stream().anyMatch(context->context.locationId()==null
+                || context.productId()==null || context.lotId()==null)) throw new IllegalArgumentException("Inventory position contexts are required");
+
+        var products=contexts.stream().map(PositionIdentity::productId).distinct().sorted().toList();
+        var lockedProducts=jdbc.sql("SELECT id,active FROM stockrescue.product WHERE org_id=:org AND id IN (:ids) ORDER BY id FOR SHARE")
+                .param("org",org).param("ids",products).query((row,index)->Map.entry(row.getObject("id",UUID.class),row.getBoolean("active"))).list();
+        if(lockedProducts.size()!=products.size()) throw new OrganizationUnavailableException();
+        if(lockedProducts.stream().anyMatch(product->!product.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
+
+        var productsByLot=new HashMap<UUID,UUID>();
+        for(var context:contexts) {
+            UUID previous=productsByLot.putIfAbsent(context.lotId(),context.productId());
+            if(previous!=null && !previous.equals(context.productId())) throw new OrganizationUnavailableException();
+        }
+        var lots=productsByLot.keySet().stream().sorted().toList();
+        var lockedLots=jdbc.sql("SELECT id,product_id,active FROM stockrescue.manufacturer_lot WHERE org_id=:org AND id IN (:ids) ORDER BY id FOR SHARE")
+                .param("org",org).param("ids",lots).query((row,index)->new LotLock(row.getObject("id",UUID.class),
+                        row.getObject("product_id",UUID.class),row.getBoolean("active"))).list();
+        if(lockedLots.size()!=lots.size() || lockedLots.stream().anyMatch(lot->!lot.productId().equals(productsByLot.get(lot.id()))))
+            throw new OrganizationUnavailableException();
+        if(lockedLots.stream().anyMatch(lot->!lot.active())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
+
+        var locations=contexts.stream().map(PositionIdentity::locationId).distinct().sorted().toList();
+        var lockedLocations=jdbc.sql("""
+                SELECT l.id,l.active AND z.active AS active FROM stockrescue.storage_location l
                 JOIN stockrescue.storage_zone z ON z.org_id=l.org_id AND z.store_id=l.store_id AND z.id=l.zone_id
-                WHERE l.org_id=:org AND l.store_id=:store AND l.id=:id FOR SHARE OF l,z
-                """).param("org",org).param("store",store).param("id",location).query(Boolean.class).optional().orElseThrow(OrganizationUnavailableException::new);
-        if (!productActive || !lotActive || !locationActive) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
+                WHERE l.org_id=:org AND l.store_id=:store AND l.id IN (:ids) ORDER BY l.id FOR SHARE OF l,z
+                """).param("org",org).param("store",store).param("ids",locations)
+                .query((row,index)->Map.entry(row.getObject("id",UUID.class),row.getBoolean("active"))).list();
+        if(lockedLocations.size()!=locations.size()) throw new OrganizationUnavailableException();
+        if(lockedLocations.stream().anyMatch(location->!location.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
     }
 
     public Optional<StockPosition> positionByIdentity(UUID org,UUID store,UUID location,UUID lot) {
@@ -112,6 +162,19 @@ public class InventoryRepository {
         requireWriteTransaction();
         return jdbc.sql("SELECT * FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store ORDER BY id FOR UPDATE")
                 .param("org",org).param("store",store).query((row,index)->position(row)).list();
+    }
+
+    public List<StockPosition> lockPositions(UUID org,UUID store,List<UUID> positionIds) {
+        requireWriteTransaction();
+        var distinct=new HashSet<>(positionIds);
+        if(distinct.isEmpty() || distinct.contains(null)) throw new IllegalArgumentException("Position locks are required");
+        var locked=jdbc.sql("""
+                SELECT * FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND id IN (:ids)
+                ORDER BY product_id,lot_id,location_id,id FOR UPDATE
+                """).param("org",org).param("store",store).param("ids",distinct.stream().sorted().toList())
+                .query((row,index)->position(row)).list();
+        if(locked.size()!=distinct.size()) throw new OrganizationUnavailableException();
+        return locked;
     }
 
     public List<Movement> history(UUID org,UUID store,UUID position,long afterVersion,int limit) {
@@ -168,6 +231,12 @@ public class InventoryRepository {
     }
 
     public void recordReceipt(UUID id,UUID org,UUID store,UUID movement,UUID position,String supplier,String type,String document,String line,Instant receivedAt,long quantity,boolean quarantine) {
+        recordReceiptDocument(id,org,store,movement,supplier,type,document,receivedAt,
+                List.of(new ReceiptLine(position,line,quantity,quarantine)));
+    }
+
+    public void recordReceiptDocument(UUID id,UUID org,UUID store,UUID movement,String supplier,String type,String document,
+            Instant receivedAt,List<ReceiptLine> lines) {
         requireWriteTransaction();
         int changed=jdbc.sql("""
                 INSERT INTO stockrescue.goods_receipt(id,org_id,store_id,movement_id,supplier_key,document_type,document_reference,physical_receipt_at)
@@ -176,11 +245,14 @@ public class InventoryRepository {
                 """).param("id",id).param("org",org).param("store",store).param("movement",movement).param("supplier",supplier).param("type",type)
                 .param("document",document).param("received",java.sql.Timestamp.from(receivedAt)).update();
         if (changed!=1) throw new InventoryFailure(InventoryFailure.Kind.DOCUMENT_ALREADY_RECEIVED);
-        jdbc.sql("""
-                INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition)
-                VALUES (:org,:store,:id,:movement,:position,:line,:quantity,:disposition)
-                """).param("org",org).param("store",store).param("id",id).param("movement",movement).param("position",position).param("line",line)
-                .param("quantity",quantity).param("disposition",quarantine?"QUARANTINED":"AVAILABLE").update();
+        for(var line:lines) {
+            jdbc.sql("""
+                    INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition)
+                    VALUES (:org,:store,:id,:movement,:position,:line,:quantity,:disposition)
+                    """).param("org",org).param("store",store).param("id",id).param("movement",movement)
+                    .param("position",line.positionId()).param("line",line.documentLineReference()).param("quantity",line.quantity())
+                    .param("disposition",line.quarantine()?"QUARANTINED":"AVAILABLE").update();
+        }
     }
 
     public Optional<StockPosition> position(UUID org, UUID store, UUID id, boolean lock) {

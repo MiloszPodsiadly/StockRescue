@@ -8,6 +8,9 @@ import java.util.UUID;
 import com.stockrescue.inventory.application.InventoryCommands.AllocationChange;
 import com.stockrescue.inventory.application.InventoryCommands.PositionReference;
 import com.stockrescue.inventory.application.InventoryCommands.ReceiveGoods;
+import com.stockrescue.inventory.application.InventoryCommands.ReceiveGoodsDocument;
+import com.stockrescue.inventory.application.InventoryCommands.ReceiveGoodsDocumentLine;
+import com.stockrescue.inventory.application.InventoryCommands.ReceiptDocumentResult;
 import com.stockrescue.inventory.application.InventoryCommands.Result;
 import com.stockrescue.inventory.application.InventoryCommands.StockChange;
 import com.stockrescue.inventory.application.InventoryReconciliationService;
@@ -17,6 +20,7 @@ import com.stockrescue.inventory.application.InventoryReadModels.Movement;
 import com.stockrescue.inventory.domain.InventoryOperation;
 import com.stockrescue.inventory.domain.StockPosition;
 import com.stockrescue.platform.http.ApiProblem;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -126,6 +130,29 @@ public class InventoryController {
                 request.documentType(),request.documentReference(),request.documentLineReference(),request.physicallyReceivedAt(),
                 request.reason(),request.evidenceReference(),request.expectedVersion()));
         return ResponseEntity.ok(InventoryCommandResponse.from(result));
+    }
+
+    @PostMapping(value="/receipt-documents",consumes=MediaType.APPLICATION_JSON_VALUE)
+    @io.swagger.v3.oas.annotations.Operation(operationId="receiveInventoryGoodsDocument",
+            summary="Atomically receive a bounded supplier document with distinct stock positions")
+    @ApiResponses({
+            @ApiResponse(responseCode="201",description="Receipt document recorded",content=@Content(schema=@Schema(implementation=ReceiptDocumentResponse.class))),
+            @ApiResponse(responseCode="200",description="Exact idempotent retry returned",content=@Content(schema=@Schema(implementation=ReceiptDocumentResponse.class)))
+    })
+    public ResponseEntity<ReceiptDocumentResponse> receiveDocument(Authentication actor,@PathVariable UUID organizationId,
+            @PathVariable UUID storeId,@RequestBody ReceiptDocumentRequest request) {
+        var submission=inventory.receiveGoodsDocument(actor(actor),organizationId,storeId,request==null?null:request.command());
+        return ResponseEntity.status(submission.created()?HttpStatus.CREATED:HttpStatus.OK)
+                .body(ReceiptDocumentResponse.from(submission.result()));
+    }
+
+    @GetMapping("/receipt-documents/commands/{requestId}")
+    @io.swagger.v3.oas.annotations.Operation(operationId="getInventoryReceiptDocumentOutcome",
+            summary="Recover a committed multi-line receipt after an uncertain response")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=ReceiptDocumentResponse.class)))
+    public ReceiptDocumentResponse receiptDocumentOutcome(Authentication actor,@PathVariable UUID organizationId,
+            @PathVariable UUID storeId,@PathVariable UUID requestId) {
+        return ReceiptDocumentResponse.from(inventory.receiptDocumentOutcome(actor(actor),organizationId,storeId,requestId));
     }
 
     @PostMapping(value="/positions/{positionId}/reservations",consumes=MediaType.APPLICATION_JSON_VALUE)
@@ -246,6 +273,47 @@ public class InventoryController {
             @NotBlank @Size(max=200) String supplierKey,@NotBlank @Size(max=32) String documentType,
             @NotBlank @Size(max=200) String documentReference,@NotBlank @Size(max=64) String documentLineReference,
             @NotNull Instant physicallyReceivedAt,@NotBlank @Size(max=500) String reason,@NotBlank @Size(max=256) String evidenceReference) { }
+
+    public record ReceiptDocumentRequest(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,minLength=1,maxLength=200) String supplierKey,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,minLength=1,maxLength=32) String documentType,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,minLength=1,maxLength=200) String documentReference,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant physicallyReceivedAt,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,minLength=1,maxLength=500) String reason,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,minLength=1,maxLength=256) String evidenceReference,
+            @ArraySchema(minItems=1,maxItems=InventoryService.MAX_RECEIPT_DOCUMENT_LINES,
+                    arraySchema=@Schema(requiredMode=Schema.RequiredMode.REQUIRED)) List<ReceiptDocumentLineRequest> lines) {
+        ReceiveGoodsDocument command() {
+            return new ReceiveGoodsDocument(requestId,supplierKey,documentType,documentReference,physicallyReceivedAt,reason,evidenceReference,
+                    lines==null?null:lines.stream().map(line->line==null?null:new ReceiveGoodsDocumentLine(line.documentLineReference(),
+                            new PositionReference(line.locationId(),line.productId(),line.lotId()),line.quantity()==null?0:line.quantity(),
+                            line.expectedVersion())).toList());
+        }
+    }
+    public record ReceiptDocumentLineRequest(@Schema(requiredMode=Schema.RequiredMode.REQUIRED,minLength=1,maxLength=64) String documentLineReference,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID locationId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID productId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID lotId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,minimum="1") Long quantity,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,minimum="0",maximum="9223372036854775806") Long expectedVersion) { }
+    public record ReceiptDocumentResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID receiptId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID movementId,
+            @ArraySchema(arraySchema=@Schema(requiredMode=Schema.RequiredMode.REQUIRED)) List<ReceiptDocumentLineResponse> lines) {
+        static ReceiptDocumentResponse from(ReceiptDocumentResult result) {
+            return new ReceiptDocumentResponse(result.receiptId(),result.movementId(),result.lines().stream().map(line->
+                    new ReceiptDocumentLineResponse(line.documentLineReference(),line.positionId(),line.version(),line.buckets().onHand(),
+                            line.buckets().reserved(),line.buckets().quarantined(),line.buckets().otherBlocked(),line.available(),line.allocationId())).toList());
+        }
+    }
+    public record ReceiptDocumentLineResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) String documentLineReference,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID positionId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long version,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long onHand,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long reserved,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long quarantined,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long otherBlocked,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long available,
+            @Schema(types={"string","null"},format="uuid",requiredMode=Schema.RequiredMode.REQUIRED) UUID allocationId) { }
 
     public record StockCommandRequest(@NotNull UUID requestId,@NotNull @Min(0) @Max(Long.MAX_VALUE-1) Long expectedVersion,
             @NotNull Long quantity,@NotBlank @Size(max=500) String reason,@NotBlank @Size(max=256) String evidenceReference) {

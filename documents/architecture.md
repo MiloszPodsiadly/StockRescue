@@ -185,13 +185,21 @@ marks delivery only after broker acknowledgement. During a broker outage, stock
 commands continue to commit while the outbox backlog grows; retries use capped
 jittered delays, and operators can observe pending count, oldest age, attempts,
 errors and projection staleness through authenticated metrics. Poison events are
-parked and block later versions of their aggregate for review; the consumer stores
-an idempotent receipt and a monotonic derived view without changing stock balances.
-The projection consumer manually acknowledges only after its database transaction
-or durable poison parking commits. Other processing failures retry the same offset
-every second without a retry limit; retrying records and their age are exposed as
-metrics, and integration health becomes DOWN until they recover. This keeps
-aggregate order while avoiding a hot retry loop.
+parked and block later versions of their aggregate. An organization administrator
+can request a scoped, reasoned and audited redrive of the same immutable event;
+each new generation has its own fenced lease and only a persisted broker ACK
+releases the ordering gap. Invalid source evidence remains blocked for engineering
+review. The consumer stores an idempotent receipt and a monotonic derived view
+without changing stock balances. Redrive lifecycle and irreparable-source handling
+are recorded in [ADR-OUTBOX-REDRIVE](ADR-OUTBOX-REDRIVE.md).
+The projection consumer acknowledges only after its inbox transaction or durable
+invalid-event record commits. Known invalid records are parked; transient
+infrastructure failures retry the same offset with capped jitter. Unknown
+application failures pause the listener container for five minutes, retain the
+offset and expose category, offset, age and paused state through `inventoryMessaging`
+health and metrics without event payloads. After deploying a correction, restart
+the consumer to resume the same group offset; do not skip it. Kafka health remains
+separate from database-backed API health.
 Event correlation IDs are nullable opaque strings using the same safe 1-to-64
 character syntax accepted by HTTP; UUID values remain valid, while event, tenant,
 aggregate and causation identities remain UUIDs.
@@ -211,6 +219,11 @@ identity independently prevents a second physical delivery posting under a new
 request key. Position, allocation transitions, receipt, command outcome, audit and
 pending event commit together. An uncertain response is recovered with the captured
 request identifier and original values.
+
+The multi-line receipt endpoint treats up to 50 distinct stock positions as one
+physical document: each line advances its own position and emits its own ordered
+event while sharing one movement and receipt header. Lines that fail current lot
+safety review enter quarantine within that same transaction.
 
 Reconciliation takes a store-scoped exclusive transaction lock while stock commands
 take its shared form, then rebuilds balances and allocation ownership from immutable

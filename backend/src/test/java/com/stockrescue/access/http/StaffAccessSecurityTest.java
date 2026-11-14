@@ -91,6 +91,35 @@ class StaffAccessSecurityTest extends InfrastructureTestBase {
     }
 
     @Test
+    void parkedOutboxRecoveryIsAdministratorScopedAndRequiresCsrf() throws Exception {
+        String path="/api/v1/organizations/"+f.orgA+"/stores/"+f.a1+"/inventory/outbox/parked-events";
+        assertThat(tree(f.ownerA.browser().get(path)).path("items").isEmpty()).isTrue();
+        problem(f.manager.browser().get(path),403,"ACCESS_DENIED");
+        problem(f.operator.browser().get(path),403,"ACCESS_DENIED");
+        var request=Map.of("requestId",UUID.randomUUID(),"expectedOriginalClaimVersion",0,
+                "expectedOriginalAttemptCount",0,"sourceFingerprint","0".repeat(64),
+                "reason",REASON,"evidenceReference","incident:staff-access-1");
+        var missingExpectedState=Map.of("requestId",UUID.randomUUID(),"sourceFingerprint","0".repeat(64),
+                "reason",REASON,"evidenceReference","incident:staff-access-1");
+        problem(f.ownerA.browser().write("POST",path+"/"+UUID.randomUUID()+"/redrives",missingExpectedState),
+                400,"INVALID_REQUEST");
+        problem(f.ownerA.browser().send("POST",path+"/"+UUID.randomUUID()+"/redrives",json.writeValueAsString(request),null),
+                403,"CSRF_INVALID");
+        problem(f.operator.browser().write("POST",path+"/"+UUID.randomUUID()+"/redrives",request),403,"ACCESS_DENIED");
+        problem(f.ownerA.browser().write("POST",path+"/"+UUID.randomUUID()+"/redrives",request),404,"RESOURCE_NOT_FOUND");
+    }
+
+    @Test
+    void receiptDocumentEndpointUsesCurrentReceivePermissionAndReportsBusinessValidationAsUnprocessable() throws Exception {
+        String path="/api/v1/organizations/"+f.orgA+"/stores/"+f.a1+"/inventory/receipt-documents";
+        var request=Map.of("requestId",UUID.randomUUID(),"supplierKey","supplier","documentType","DELIVERY_NOTE",
+                "documentReference","DN-EMPTY","physicallyReceivedAt","2026-11-12T10:00:00Z","reason","Physical count reviewed",
+                "evidenceReference","supplier-document:DN-EMPTY","lines",List.of());
+        problem(f.analyst.browser().write("POST",path,request),403,"ACCESS_DENIED");
+        problem(f.operator.browser().write("POST",path,request),422,"INVALID_REQUEST");
+    }
+
+    @Test
     void directCrossTenantRequestsCannotReadOrChangeMembersInvitesOrGrants() throws Exception {
         var owner = f.ownerA.browser();
         problem(owner.get(base(f.orgA) + "/members/" + f.memberB), 404, "RESOURCE_NOT_FOUND");

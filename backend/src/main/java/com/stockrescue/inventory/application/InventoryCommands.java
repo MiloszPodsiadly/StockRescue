@@ -1,6 +1,7 @@
 package com.stockrescue.inventory.application;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import com.stockrescue.inventory.domain.StockBuckets;
 
@@ -15,6 +16,15 @@ public final class InventoryCommands {
             this(requestId,position,quantity,supplierKey,documentType,documentReference,documentLineReference,physicallyReceivedAt,reason,evidenceReference,null);
         }
     }
+    public record ReceiveGoodsDocument(UUID requestId,String supplierKey,String documentType,String documentReference,
+            Instant physicallyReceivedAt,String reason,String evidenceReference,List<ReceiveGoodsDocumentLine> lines) { }
+    public record ReceiveGoodsDocumentLine(String documentLineReference,PositionReference position,long quantity,Long expectedVersion) { }
+    public record ReceiptDocumentLineResult(String documentLineReference,UUID positionId,long version,StockBuckets buckets,
+            long available,UUID allocationId) { }
+    public record ReceiptDocumentResult(UUID receiptId,UUID movementId,List<ReceiptDocumentLineResult> lines) {
+        public ReceiptDocumentResult { lines=List.copyOf(lines); }
+    }
+    public record ReceiptDocumentSubmission(ReceiptDocumentResult result,boolean created) { }
     /** A null expectedVersion requests an atomic quantity operation against the current locked state. */
     public record StockChange(UUID requestId,UUID positionId,Long expectedVersion,long quantity,String reason,String evidenceReference) {}
     public record AllocationChange(StockChange stock,UUID allocationId) {}

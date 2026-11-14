@@ -23,7 +23,8 @@ public class KafkaHealthIndicator implements HealthIndicator, KafkaAvailability,
 
     @Override
     public Health health() {
-        return available() ? Health.up().build() : Health.down().build();
+        return available()?Health.up().withDetail("state","available").build()
+                :Health.down().withDetail("state","unavailable").build();
     }
 
     @Override

@@ -94,7 +94,13 @@ stockrescue:
       topic: ${INVENTORY_EVENTS_TOPIC:stockrescue.inventory.events.v1}
       consumer-name: inventory-change-projection-v1
       listener-startup-retry: 5s
-      consumer-retry-interval: 1s
+      listener-enabled: ${INVENTORY_PROJECTION_LISTENER_ENABLED:true}
+      listener-restart-initial-backoff: 1s
+      listener-restart-maximum-backoff: 30s
+      listener-restart-maximum-attempts: 5
+      consumer-retry-initial: 1s
+      consumer-retry-maximum: 30s
+      consumer-blocked-retry-interval: 5m
     outbox-relay:
       enabled: ${INVENTORY_OUTBOX_RELAY_ENABLED:true}
       fixed-delay: ${INVENTORY_OUTBOX_RELAY_DELAY:1000}

@@ -37,6 +37,8 @@ public class InventoryOutboxRepository {
                             JOIN stockrescue.inventory_outbox_delivery prior_delivery ON prior_delivery.event_id=prior.id
                             WHERE prior.org_id=e.org_id AND prior.store_id=e.store_id AND prior.position_id=e.position_id
                                 AND prior.aggregate_version<e.aggregate_version AND prior_delivery.published_at IS NULL
+                                AND NOT EXISTS (SELECT 1 FROM stockrescue.inventory_outbox_redrive_attempt ack
+                                    WHERE ack.event_id=prior.id AND ack.published_at IS NOT NULL)
                         )
                     ORDER BY m.recorded_at,e.id
                     LIMIT :limit
@@ -106,7 +108,11 @@ public class InventoryOutboxRepository {
     }
 
     public long pendingCount() {
-        return jdbc.sql("SELECT count(*) FROM stockrescue.inventory_outbox_delivery WHERE published_at IS NULL")
+        return jdbc.sql("""
+                SELECT count(*) FROM stockrescue.inventory_outbox_delivery d
+                WHERE d.published_at IS NULL AND NOT EXISTS (SELECT 1 FROM stockrescue.inventory_outbox_redrive_attempt a
+                    WHERE a.event_id=d.event_id AND a.published_at IS NOT NULL)
+                """)
                 .query(Long.class).single();
     }
 
@@ -116,7 +122,8 @@ public class InventoryOutboxRepository {
                 FROM stockrescue.inventory_outbox_delivery d
                 JOIN stockrescue.inventory_outbox_event e ON e.id=d.event_id
                 JOIN stockrescue.stock_movement m ON m.org_id=e.org_id AND m.store_id=e.store_id AND m.id=e.movement_id
-                WHERE d.published_at IS NULL
+                WHERE d.published_at IS NULL AND NOT EXISTS (SELECT 1 FROM stockrescue.inventory_outbox_redrive_attempt a
+                    WHERE a.event_id=d.event_id AND a.published_at IS NOT NULL)
                 """).query(Double.class).single();
     }
 
