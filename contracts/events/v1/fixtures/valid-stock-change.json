@@ -1,0 +1,20 @@
+{
+  "eventId": "3c1c8c1d-d227-4bb7-9a5d-0b9475399232",
+  "eventType": "InventoryStockChanged",
+  "schemaVersion": 1,
+  "occurredAt": "2026-11-12T17:00:00Z",
+  "tenantId": "2c3048dd-20bf-4b63-b9a5-71f4b6a40ea9",
+  "aggregateType": "INVENTORY_POSITION",
+  "aggregateId": "25aac0e5-4862-46f7-a2bd-557f40f53353",
+  "aggregateVersion": 2,
+  "correlationId": "225c4a84-b42f-4da5-85a2-3ce5a6cb8f7e",
+  "causationId": "6b911f11-409f-4e41-bdf9-2afec2c5543c",
+  "dataClassification": "INTERNAL",
+  "data": {
+    "storeId": "2c1ddcd9-b340-4f0d-8520-ebba4b7485e2",
+    "movementId": "6b911f11-409f-4e41-bdf9-2afec2c5543c",
+    "unit": "EA",
+    "delta": { "onHand": 3, "reserved": 0, "quarantined": 0, "otherBlocked": 0 },
+    "position": { "onHand": 10, "reserved": 2, "quarantined": 1, "otherBlocked": 0, "available": 7, "trust": "UNVERIFIED" }
+  }
+}

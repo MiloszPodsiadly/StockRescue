@@ -11,6 +11,7 @@ import { StorePage } from './features/stores/store-page'
 import { ZonesPage } from './features/configuration/zones-page'
 import { LanePage, LanesPage } from './features/configuration/lanes-page'
 import { SettingsPage } from './features/organizations/settings-page'
+import { InventoryPage } from './features/inventory/inventory-page'
 
 const root = createRootRoute({ component: RootLayout, notFoundComponent: MissingPage, errorComponent: RouteFailure })
 const home = createRoute({ getParentRoute: () => root, path: '/', component: App })
@@ -29,5 +30,6 @@ const catalog = createRoute({ getParentRoute: () => root, path: '/organizations/
 const product = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/catalog/products/$productId', component: lazyRouteComponent(() => import('./features/catalog/catalog-page'), 'ProductPage') })
 const lot = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/catalog/lots/$lotId', component: lazyRouteComponent(() => import('./features/catalog/lot-page'), 'LotPage') })
 const locations = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/stores/$storeId/storage-locations', component: lazyRouteComponent(() => import('./features/catalog/locations-panel'), 'LocationsPage') })
+const inventory = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/stores/$storeId/inventory', component: InventoryPage })
 
-export const router = createRouter({ routeTree: root.addChildren([home, signIn, signUp, account, members, acceptInvitation, stores, store, zones, lanes, lane, settings, catalog, product, lot, locations]) })
+export const router = createRouter({ routeTree: root.addChildren([home, signIn, signUp, account, members, acceptInvitation, stores, store, zones, lanes, lane, settings, catalog, product, lot, locations, inventory]) })

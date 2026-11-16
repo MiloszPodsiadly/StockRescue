@@ -112,6 +112,16 @@ jobs:
       - run: pnpm --dir frontend exec playwright install --with-deps chromium
       - run: docker compose --env-file .env.example config --quiet
       - run: python scripts/integration-check.py --browser
+      - name: Upload sanitized Compose diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compose-integration-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .tools/stockrescue-check-*-failure.log
+            .tools/stockrescue-check-*-cleanup.log
+          if-no-files-found: warn
+          retention-days: 7
 
   windows:
     name: Windows toolchain

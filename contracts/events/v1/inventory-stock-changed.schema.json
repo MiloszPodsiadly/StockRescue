@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:stockrescue:inventory-stock-changed:v1",
+  "title": "InventoryStockChanged v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId", "eventType", "schemaVersion", "occurredAt", "tenantId", "aggregateType",
+    "aggregateId", "aggregateVersion", "correlationId", "causationId", "dataClassification", "data"
+  ],
+  "properties": {
+    "eventId": { "type": "string", "format": "uuid" },
+    "eventType": { "const": "InventoryStockChanged" },
+    "schemaVersion": { "const": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "type": "string", "format": "uuid" },
+    "aggregateType": { "const": "INVENTORY_POSITION" },
+    "aggregateId": { "type": "string", "format": "uuid" },
+    "aggregateVersion": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "correlationId": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+        { "type": "null" }
+      ]
+    },
+    "causationId": { "type": "string", "format": "uuid" },
+    "dataClassification": { "const": "INTERNAL" },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["storeId", "movementId", "unit", "delta", "position"],
+      "properties": {
+        "storeId": { "type": "string", "format": "uuid" },
+        "movementId": { "type": "string", "format": "uuid" },
+        "unit": { "const": "EA" },
+        "delta": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["onHand", "reserved", "quarantined", "otherBlocked"],
+          "properties": {
+            "onHand": { "$ref": "#/$defs/quantityDelta" },
+            "reserved": { "$ref": "#/$defs/quantityDelta" },
+            "quarantined": { "$ref": "#/$defs/quantityDelta" },
+            "otherBlocked": { "$ref": "#/$defs/quantityDelta" }
+          }
+        },
+        "position": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["onHand", "reserved", "quarantined", "otherBlocked", "available", "trust"],
+          "properties": {
+            "onHand": { "$ref": "#/$defs/quantity" },
+            "reserved": { "$ref": "#/$defs/quantity" },
+            "quarantined": { "$ref": "#/$defs/quantity" },
+            "otherBlocked": { "$ref": "#/$defs/quantity" },
+            "available": { "$ref": "#/$defs/quantity" },
+            "trust": { "enum": ["UNVERIFIED", "CLEAN", "FROZEN"] }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "quantity": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 },
+    "quantityDelta": { "type": "integer", "minimum": -9223372036854775807, "maximum": 9223372036854775807 }
+  }
+}

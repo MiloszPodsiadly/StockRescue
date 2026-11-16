@@ -31,7 +31,7 @@ function ScopedOrganization({ actorId, organizationId, onSignOut, children }: { 
       void client.cancelQueries({ queryKey: ['identity', actorId] })
       client.removeQueries({ queryKey: ['identity', actorId] })
     }
-  }, [organization.error, actorId, client])
+  }, [organization.error, actorId, organizationId, client])
   const unavailable = organization.isError || selection.selectionError
   const ready = organization.data && !unavailable && !selection.switching
   return <WorkspaceFrame onSignOut={onSignOut} organizationId={ready ? organizationId : undefined} administrator={Boolean(ready && organization.data?.role === 'ORG_ADMIN')} sidebar={!unavailable && <OrganizationPicker selection={selection} current={organization.data} />}>

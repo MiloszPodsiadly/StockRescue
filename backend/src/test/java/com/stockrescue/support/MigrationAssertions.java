@@ -1,7 +1,6 @@
 package com.stockrescue.support;
 
 import java.util.List;
-import java.util.stream.IntStream;
 
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationInfo;
@@ -12,12 +11,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Shared assertions for the current versioned migration inventory. */
 public final class MigrationAssertions {
-    public static final int CURRENT_VERSION = 11;
+    public static final int CURRENT_VERSION = 1;
     private static final MigrationVersion CURRENT_MIGRATION =
             MigrationVersion.fromVersion(Integer.toString(CURRENT_VERSION));
-    private static final List<MigrationVersion> EXPECTED_VERSIONS = IntStream.rangeClosed(1, CURRENT_VERSION)
-            .mapToObj(version -> MigrationVersion.fromVersion(Integer.toString(version)))
-            .toList();
+    private static final List<MigrationVersion> EXPECTED_VERSIONS =
+            List.of(MigrationVersion.fromVersion(Integer.toString(CURRENT_VERSION)));
 
     private MigrationAssertions() {}
 
@@ -40,10 +38,4 @@ public final class MigrationAssertions {
                         assertThat(migration.getState()).isEqualTo(MigrationState.SUCCESS));
     }
 
-    public static int migrationsAfter(int baselineVersion) {
-        if (baselineVersion < 0 || baselineVersion > CURRENT_VERSION) {
-            throw new IllegalArgumentException("Invalid migration baseline");
-        }
-        return CURRENT_VERSION - baselineVersion;
-    }
 }

@@ -61,6 +61,11 @@ class HttpFoundationTest extends InfrastructureTestBase {
         var valid = get("/api/health", "developer-check_01");
         assertThat(valid.statusCode()).isEqualTo(200);
         assertThat(valid.headers().firstValue(CorrelationIdFilter.HEADER_NAME)).contains("developer-check_01");
+        for (String boundary : new String[]{"A", "A".repeat(64)}) {
+            var accepted = get("/api/health", boundary);
+            assertThat(accepted.statusCode()).isEqualTo(200);
+            assertThat(accepted.headers().firstValue(CorrelationIdFilter.HEADER_NAME)).contains(boundary);
+        }
 
         for (String value : new String[]{"unsafe value", "<unsafe>", "a".repeat(65), ""}) {
             var invalid = get("/api/health", value);

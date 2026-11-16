@@ -130,9 +130,12 @@ public class AccessPolicy {
 
     private List<StoreAction> storeActions(StoreRole role) {
         return switch(role) {
-            case STORE_MANAGER -> List.of(StoreAction.READ_STORE,StoreAction.EDIT_STORE,StoreAction.MANAGE_STORAGE_ZONES,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.MANAGE_STORAGE_LOCATIONS,StoreAction.REGISTER_STORE_LOT);
-            case INVENTORY_OPERATOR -> List.of(StoreAction.READ_STORE,StoreAction.REGISTER_SOURCE_EVIDENCE);
-            case READ_ONLY_ANALYST -> List.of(StoreAction.READ_STORE);
+            case STORE_MANAGER -> List.of(StoreAction.READ_STORE,StoreAction.EDIT_STORE,StoreAction.MANAGE_STORAGE_ZONES,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.MANAGE_STORAGE_LOCATIONS,StoreAction.REGISTER_STORE_LOT,
+                    StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.ADJUST_STOCK,
+                    StoreAction.WRITE_OFF_STOCK,StoreAction.QUARANTINE_STOCK,StoreAction.RECORD_SALE,StoreAction.MANAGE_INVENTORY_ALLOCATIONS,StoreAction.RECONCILE_INVENTORY);
+            case INVENTORY_OPERATOR -> List.of(StoreAction.READ_STORE,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,
+                    StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.RECORD_SALE,StoreAction.QUARANTINE_STOCK);
+            case READ_ONLY_ANALYST -> List.of(StoreAction.READ_STORE,StoreAction.READ_INVENTORY);
         };
     }
 }

@@ -137,11 +137,26 @@ test('scheduled lane costs can be reviewed, cancelled and reconciled across a Co
 
     let cancellationPosts = 0
     let cancellationResolutionPosts = 0
+    const reconciliationEvents: string[] = []
     page.on('request', request => {
-      if (request.method() !== 'POST') return
       const path = new URL(request.url()).pathname
-      if (path.endsWith('/scheduled-revisions/cancel')) cancellationPosts += 1
-      if (path.endsWith('/scheduled-revisions/cancellation-resolution')) cancellationResolutionPosts += 1
+      if (request.method() === 'POST' && path.endsWith('/scheduled-revisions/cancel')) cancellationPosts += 1
+      if (request.method() === 'POST' && path.endsWith('/scheduled-revisions/cancellation-resolution')) cancellationResolutionPosts += 1
+      if (path === '/api/v1/auth/csrf' || path === apiLanePath || path.endsWith('/scheduled-revisions/cancel') || path.endsWith('/scheduled-revisions/cancellation-resolution')) {
+        reconciliationEvents.push(`${Date.now()} -> ${request.method()} ${path}`)
+      }
+    })
+    page.on('response', response => {
+      const path = new URL(response.url()).pathname
+      if (path === '/api/v1/auth/csrf' || path === apiLanePath || path.endsWith('/scheduled-revisions/cancel') || path.endsWith('/scheduled-revisions/cancellation-resolution')) {
+        reconciliationEvents.push(`${Date.now()} <- ${response.status()} ${path}`)
+      }
+    })
+    page.on('requestfailed', request => {
+      const path = new URL(request.url()).pathname
+      if (path === '/api/v1/auth/csrf' || path === apiLanePath || path.endsWith('/scheduled-revisions/cancel') || path.endsWith('/scheduled-revisions/cancellation-resolution')) {
+        reconciliationEvents.push(`${Date.now()} x ${request.method()} ${path}: ${request.failure()?.errorText ?? 'unknown'}`)
+      }
     })
     await page.getByRole('button', { name: 'Review and cancel scheduled costs' }).click()
     await expect(page.getByRole('heading', { name: 'Review and cancel scheduled costs' })).toBeVisible()
@@ -201,12 +216,26 @@ test('scheduled lane costs can be reviewed, cancelled and reconciled across a Co
       await expect(page.getByRole('button', { name: 'Approve cost revision' })).toHaveCount(0)
       await expect(page.getByRole('button', { name: 'Reload lane and history before continuing' })).toBeEnabled()
     }
-    await expectLaneRecoveryBlocked()
-    for (let retry = 0; retry < 2; retry += 1) {
+    const expectResolutionPosts = async (expectedResolutionPosts: number) => {
+      try {
+        await expect.poll(() => cancellationResolutionPosts, { timeout: 10000 }).toBe(expectedResolutionPosts)
+      } catch (error) {
+        console.log(`Cancellation reconciliation events:\n${reconciliationEvents.join('\n')}`)
+        console.log(`Visible alerts: ${(await page.locator('[role="alert"]').allTextContents()).join(' | ')}`)
+        throw error
+      }
+    }
+    const retryLaneRecovery = async (expectedResolutionPosts: number) => {
       await page.getByRole('button', { name: 'Reload lane and history before continuing' }).click()
+      await expectResolutionPosts(expectedResolutionPosts)
       await expectLaneRecoveryBlocked()
     }
+    await expectLaneRecoveryBlocked()
+    for (let retry = 0; retry < 2; retry += 1) {
+      await retryLaneRecovery(2 + retry)
+    }
     await page.getByRole('button', { name: 'Reload lane and history before continuing' }).click()
+    await expectResolutionPosts(4)
     await expect(page.locator('[role="status"]').filter({ hasText: 'Saved history confirms 2 reviewed scheduled costs cancelled.' })).toBeVisible()
     await page.unroute('**/scheduled-revisions/cancel')
     await page.unroute(`**${apiLanePath}`)

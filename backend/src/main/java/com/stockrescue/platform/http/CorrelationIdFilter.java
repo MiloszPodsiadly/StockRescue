@@ -3,8 +3,8 @@ package com.stockrescue.platform.http;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
+import com.stockrescue.platform.correlation.CorrelationIds;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -24,7 +24,6 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
 
     public static final String HEADER_NAME = "X-Correlation-ID";
     private static final Logger LOG = LoggerFactory.getLogger(CorrelationIdFilter.class);
-    private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private final ApiProblems problems;
 
     public CorrelationIdFilter(ApiProblems problems) {
@@ -36,7 +35,7 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
                                   FilterChain chain) throws ServletException, IOException {
         var values = Collections.list(request.getHeaders(HEADER_NAME));
         boolean invalid = values.size() > 1
-                || (values.size() == 1 && !SAFE_ID.matcher(values.getFirst()).matches());
+                || (values.size() == 1 && !CorrelationIds.isValid(values.getFirst()));
         String correlationId = values.isEmpty() || invalid
                 ? UUID.randomUUID().toString() : values.getFirst();
         response.setHeader(HEADER_NAME, correlationId);
