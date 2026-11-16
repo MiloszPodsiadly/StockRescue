@@ -179,6 +179,14 @@ movement history, reconciliation findings and outbox event contents are immutabl
 Delivery leases are stored separately from event contents. The inbox and derived
 change feed provide scoped persistence for asynchronous processing.
 
+Before an inventory mutation, the application records a bounded command intent for
+the current actor, organization, store and position (or receipt document). Its
+payload stays server-side; recovery lists expose only intent metadata and use
+bounded 100-item pages, with exact-subject checks for the active form. Execution
+rechecks current authorization and uses the normal inventory command path. A pending
+intent remains until its committed result is acknowledged or a rejected request is
+explicitly reviewed, so reloads and concurrent tabs cannot create a fresh request.
+
 Inventory changes commit to PostgreSQL before Kafka delivery. A bounded relay
 claims rows with expiring fenced leases, publishes in aggregate-version order and
 marks delivery only after broker acknowledgement. During a broker outage, stock
@@ -220,10 +228,13 @@ request key. Position, allocation transitions, receipt, command outcome, audit a
 pending event commit together. An uncertain response is recovered with the captured
 request identifier and original values.
 
-The multi-line receipt endpoint treats up to 50 distinct stock positions as one
-physical document: each line advances its own position and emits its own ordered
-event while sharing one movement and receipt header. Lines that fail current lot
-safety review enter quarantine within that same transaction.
+The multi-line receipt endpoint retains up to 50 original supplier lines in one
+physical document. It groups lines by product, lot and storage location, requires
+one expected version per group, and adds quantities with overflow checks. Each
+position advances once and emits one ordered event; every original line keeps its
+own reference, quantity and disposition under the shared movement and receipt
+header. Lines that fail current lot safety review enter quarantine as one aggregate
+allocation for their position group.
 
 Reconciliation takes a store-scoped exclusive transaction lock while stock commands
 take its shared form, then rebuilds balances and allocation ownership from immutable
@@ -342,10 +353,10 @@ amount represents an explicitly entered assumption.
 
 ## Transactions, history and persistence
 
-Application records belong to the `stockrescue` schema. Flyway history stays in
-`public.flyway_schema_history`, preserving the original baseline and its checksum.
-Append-only migrations evolve the schema and are validated at application startup.
-Pooled JDBC connections select the application schema explicitly.
+Application records belong to the `stockrescue` schema. Flyway records the
+consolidated schema baseline in `public.flyway_schema_history`; local databases
+must be recreated when that baseline changes. Pooled JDBC connections select
+the application schema explicitly.
 
 UUIDs identify business records. PostgreSQL checks, unique constraints and
 organization-aware foreign keys enforce relationship and value invariants.

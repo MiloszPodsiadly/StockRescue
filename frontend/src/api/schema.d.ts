@@ -629,6 +629,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List current-actor inventory intents without returning their private command payloads */
+        get: operations["listPendingInventoryCommandIntents"];
+        put?: never;
+        /** Durably prepare one validated stock command before execution */
+        post: operations["prepareInventoryCommandIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Acknowledge an intent only after its command receipt has committed */
+        post: operations["acknowledgeInventoryCommandIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run the exact prepared command through current inventory authorization and ledger services */
+        post: operations["executeInventoryCommandIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/review-rejected": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close a visibly rejected draft after confirming it has no committed command receipt */
+        post: operations["reviewRejectedInventoryCommandIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/commands/{operation}/{requestId}": {
         parameters: {
             query?: never;
@@ -1623,6 +1692,14 @@ export interface components {
             reference: string | null;
             source: string;
         };
+        ExecutionResponse: {
+            /** Format: uuid */
+            id: string;
+            operation: string;
+            outcome: components["schemas"]["InventoryCommandResponse"] | components["schemas"]["ReceiptDocumentResponse"];
+            /** Format: uuid */
+            requestId: string;
+        };
         FindingPageResponse: {
             hasMore: boolean;
             items: components["schemas"]["FindingResponse"][];
@@ -1711,6 +1788,17 @@ export interface components {
             matches: components["schemas"]["GtinMatchResponse"][];
             /** Format: int32 */
             offset: number;
+        };
+        IntentSummary: {
+            /** Format: uuid */
+            id: string;
+            operation: string;
+            /** Format: date-time */
+            preparedAt: string;
+            /** Format: uuid */
+            requestId: string;
+            state: string;
+            subject: string;
         };
         InventoryCommandResponse: {
             /** Format: uuid */
@@ -2028,6 +2116,10 @@ export interface components {
             hasMore?: boolean;
             items?: components["schemas"]["ParkedDiagnostic"][];
         };
+        PendingIntentsResponse: {
+            hasMore?: boolean;
+            items: components["schemas"]["IntentSummary"][];
+        };
         PermissionsResponse: {
             allStoreActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
             organization: components["schemas"]["OrganizationResponse"];
@@ -2045,6 +2137,15 @@ export interface components {
             role: "STORE_MANAGER" | "INVENTORY_OPERATOR" | "READ_ONLY_ANALYST";
             /** Format: uuid */
             storeId: string;
+        };
+        PrepareRequest: {
+            /** @enum {string} */
+            operation: "RECEIPT_DOCUMENT" | "RESERVE" | "RELEASE" | "ADJUST" | "WRITE_OFF" | "QUARANTINE" | "HOLD" | "RELEASE_HOLD" | "SALE";
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Format: uuid */
+            prepareId: string;
         };
         ProductPage: {
             canCreate: boolean;
@@ -2095,8 +2196,12 @@ export interface components {
             /** Format: int64 */
             quantity: number;
         };
+        /** @description One result per original supplier line. Quantity is line-specific; stock totals and version reflect the final grouped position. */
         ReceiptDocumentLineResponse: {
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Quarantine allocation shared by all source lines grouped into this position, when present
+             */
             allocationId: string | null;
             /** Format: int64 */
             available: number;
@@ -2107,6 +2212,11 @@ export interface components {
             otherBlocked: number;
             /** Format: uuid */
             positionId: string;
+            /**
+             * Format: int64
+             * @description Physical quantity on this original supplier line
+             */
+            quantity: number;
             /** Format: int64 */
             quarantined: number;
             /** Format: int64 */
@@ -7347,6 +7457,369 @@ export interface operations {
             };
             /** @description Inventory dependency temporarily unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listPendingInventoryCommandIntents: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+                subject?: string;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingIntentsResponse"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or store unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    prepareInventoryCommandIntent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrepareRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntentSummary"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or store unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    acknowledgeInventoryCommandIntent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                intentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntentSummary"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or store unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    executeInventoryCommandIntent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                intentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionResponse"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or store unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    reviewRejectedInventoryCommandIntent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                storeId: string;
+                intentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntentSummary"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or store unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

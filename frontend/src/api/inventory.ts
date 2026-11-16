@@ -6,6 +6,10 @@ export type AvailableByLot = components['schemas']['AvailableByLotResponse']
 export type InventoryMovement = components['schemas']['MovementResponse']
 export type InventoryAllocation = components['schemas']['AllocationResponse']
 export type InventoryCommand = components['schemas']['InventoryCommandResponse']
+export type InventoryCommandIntent = components['schemas']['IntentSummary']
+export type InventoryCommandIntentPrepare = components['schemas']['PrepareRequest']
+export type InventoryCommandIntentExecution = components['schemas']['ExecutionResponse']
+export type InventoryCommandIntentOperation = NonNullable<InventoryCommandIntentPrepare['operation']>
 export type InventoryReceipt = components['schemas']['ReceiptRequest']
 export type InventoryReceiptDocument = components['schemas']['ReceiptDocumentRequest']
 export type InventoryReceiptDocumentResult = components['schemas']['ReceiptDocumentResponse']
@@ -93,6 +97,43 @@ export async function writeOffInventoryStock(organizationId: string, storeId: st
 
 export async function getInventoryCommandOutcome(organizationId: string, storeId: string, operation: InventoryOperation, requestId: string, signal: AbortSignal) {
   const { data, error, response } = await api.GET(`${base}/commands/{operation}/{requestId}`, { params: { path: { organizationId, storeId, operation, requestId } }, signal: requestSignal(signal) })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function listPendingInventoryCommandIntents(organizationId: string, storeId: string, signal: AbortSignal,
+  query: { offset?: number, limit?: number, subject?: string } = {}) {
+  const { data, error, response } = await api.GET(`${base}/command-intents`, { params: { path: { organizationId, storeId }, query: {
+    offset: query.offset ?? 0, limit: query.limit ?? 100, ...(query.subject ? { subject: query.subject } : {}),
+  } }, signal: requestSignal(signal) })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function prepareInventoryCommandIntent(organizationId: string, storeId: string, body: InventoryCommandIntentPrepare, signal: AbortSignal) {
+  const { data, error, response } = await api.POST(`${base}/command-intents`, { params: { path: { organizationId, storeId }, ...await csrf(signal) }, body, signal: requestSignal(signal) })
+  signal.throwIfAborted()
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function executeInventoryCommandIntent(organizationId: string, storeId: string, intentId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.POST(`${base}/command-intents/{intentId}/execute`, { params: { path: { organizationId, storeId, intentId }, ...await csrf(signal) }, signal: requestSignal(signal) })
+  signal.throwIfAborted()
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function acknowledgeInventoryCommandIntent(organizationId: string, storeId: string, intentId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.POST(`${base}/command-intents/{intentId}/acknowledge`, { params: { path: { organizationId, storeId, intentId }, ...await csrf(signal) }, signal: requestSignal(signal) })
+  signal.throwIfAborted()
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function reviewRejectedInventoryCommandIntent(organizationId: string, storeId: string, intentId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.POST(`${base}/command-intents/{intentId}/review-rejected`, { params: { path: { organizationId, storeId, intentId }, ...await csrf(signal) }, signal: requestSignal(signal) })
+  signal.throwIfAborted()
   if (!data) throw new ApiError(response, error)
   return data
 }

@@ -19,7 +19,7 @@ public final class InventoryCommands {
     public record ReceiveGoodsDocument(UUID requestId,String supplierKey,String documentType,String documentReference,
             Instant physicallyReceivedAt,String reason,String evidenceReference,List<ReceiveGoodsDocumentLine> lines) { }
     public record ReceiveGoodsDocumentLine(String documentLineReference,PositionReference position,long quantity,Long expectedVersion) { }
-    public record ReceiptDocumentLineResult(String documentLineReference,UUID positionId,long version,StockBuckets buckets,
+    public record ReceiptDocumentLineResult(String documentLineReference,long quantity,UUID positionId,long version,StockBuckets buckets,
             long available,UUID allocationId) { }
     public record ReceiptDocumentResult(UUID receiptId,UUID movementId,List<ReceiptDocumentLineResult> lines) {
         public ReceiptDocumentResult { lines=List.copyOf(lines); }

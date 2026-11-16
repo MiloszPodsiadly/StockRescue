@@ -45,6 +45,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 @Service
 public class InventoryService {
@@ -54,8 +55,10 @@ public class InventoryService {
     private record NormalizedReceiptLine(String documentLineReference,PositionReference position,long quantity,long expectedVersion) { }
     private record NormalizedReceiptDocument(UUID requestId,String supplierKey,String documentType,String documentReference,
             Instant physicallyReceivedAt,String reason,String evidenceReference,List<NormalizedReceiptLine> lines) { }
-    private record PreparedReceiptLine(NormalizedReceiptLine request,StockPosition before,Delta delta,StockBuckets buckets,
-            long version,UUID allocationId) { }
+    private record PreparedReceiptPosition(List<NormalizedReceiptLine> sourceLines,StockPosition before,long quantity,
+            Delta delta,StockBuckets buckets,long version,UUID allocationId) {
+        private PreparedReceiptPosition { sourceLines=List.copyOf(sourceLines); }
+    }
     private final AccessPolicy access;
     private final InventoryRepository inventory;
     private final FoodSafetyEvaluationService safety;
@@ -116,28 +119,41 @@ public class InventoryService {
         if(inventory.receiptDocumentExists(org,normalized.supplierKey(),normalized.documentType(),normalized.documentReference()))
             throw failure(Kind.DOCUMENT_ALREADY_RECEIVED);
 
-        var identities=normalized.lines().stream().map(line->new PositionIdentity(line.position().locationId(),
-                line.position().productId(),line.position().lotId())).toList();
+        var groupedLines=new LinkedHashMap<PositionIdentity,List<NormalizedReceiptLine>>();
+        for(var line:normalized.lines()) {
+            var identity=new PositionIdentity(line.position().locationId(),line.position().productId(),line.position().lotId());
+            groupedLines.computeIfAbsent(identity,ignored->new ArrayList<>()).add(line);
+        }
+        var identities=List.copyOf(groupedLines.keySet());
         inventory.lockActiveContexts(org,store,identities);
 
         var positions=new LinkedHashMap<PositionIdentity,StockPosition>();
-        for(var identity:identities.stream().distinct().sorted(Comparator.comparing(PositionIdentity::productId)
+        for(var identity:identities.stream().sorted(Comparator.comparing(PositionIdentity::productId)
                 .thenComparing(PositionIdentity::lotId).thenComparing(PositionIdentity::locationId)).toList()) {
             positions.computeIfAbsent(identity,key->inventory.positionByIdentity(org,store,key.locationId(),key.lotId())
                     .orElseGet(()->inventory.createPosition(UUID.randomUUID(),org,store,key.locationId(),key.productId(),key.lotId())));
         }
         var locked=inventory.lockPositions(org,store,positions.values().stream().map(StockPosition::id).toList());
         var lockedById=locked.stream().collect(java.util.stream.Collectors.toMap(StockPosition::id,position->position));
-        var prepared=new ArrayList<PreparedReceiptLine>(normalized.lines().size());
-        for(var line:normalized.lines()) {
-            var identity=new PositionIdentity(line.position().locationId(),line.position().productId(),line.position().lotId());
+        var prepared=new ArrayList<PreparedReceiptPosition>(groupedLines.size());
+        for(var entry:groupedLines.entrySet()) {
+            var identity=entry.getKey();
             var candidate=positions.get(identity);
             var before=lockedById.get(candidate.id());
             if(before==null) throw new OrganizationUnavailableException();
-            if(line.expectedVersion()!=before.version()) throw failure(Kind.CONFLICT);
+            var sourceLines=entry.getValue();
+            long expectedVersion=sourceLines.getFirst().expectedVersion();
+            if(sourceLines.stream().anyMatch(line->line.expectedVersion()!=expectedVersion) || expectedVersion!=before.version())
+                throw failure(Kind.CONFLICT);
+            long quantity=0;
+            try {
+                for(var line:sourceLines) quantity=Math.addExact(quantity,line.quantity());
+            } catch(ArithmeticException overflow) {
+                throw failure(Kind.INVALID_REQUEST);
+            }
             if(before.trust()==Trust.FROZEN) throw failure(Kind.POSITION_FROZEN);
             boolean quarantine=!eligible(actor,org,store,before);
-            var delta=new Delta(line.quantity(),0,quarantine?line.quantity():0,0);
+            var delta=new Delta(quantity,0,quarantine?quantity:0,0);
             StockBuckets buckets;long version;
             try {
                 buckets=before.buckets().apply(delta);
@@ -145,28 +161,31 @@ public class InventoryService {
             } catch(ArithmeticException | IllegalArgumentException invalid) {
                 throw failure(Kind.INVALID_REQUEST);
             }
-            prepared.add(new PreparedReceiptLine(line,before,delta,buckets,version,quarantine?UUID.randomUUID():null));
+            prepared.add(new PreparedReceiptPosition(sourceLines,before,quantity,delta,buckets,version,quarantine?UUID.randomUUID():null));
         }
 
         UUID movementId=UUID.randomUUID(),receiptId=UUID.randomUUID();
-        var result=new ReceiptDocumentResult(receiptId,movementId,prepared.stream().map(line->
-                new ReceiptDocumentLineResult(line.request().documentLineReference(),line.before().id(),line.version(),line.buckets(),
-                        line.buckets().available(),line.allocationId())).toList());
+        var resultLines=prepared.stream().flatMap(position->position.sourceLines().stream().map(line->
+                new ReceiptDocumentLineResult(line.documentLineReference(),line.quantity(),position.before().id(),position.version(),
+                        position.buckets(),position.buckets().available(),position.allocationId())))
+                .sorted(Comparator.comparing(ReceiptDocumentLineResult::documentLineReference)).toList();
+        var result=new ReceiptDocumentResult(receiptId,movementId,resultLines);
         var command=new CommandReceipt(UUID.randomUUID(),org,store,actor,member.membershipId(),InventoryOperation.RECEIVE,
                 normalized.requestId(),digest,json.writeValueAsString(result));
         if(!inventory.recordCommand(command)) throw failure(Kind.IDEMPOTENCY_CONFLICT);
         inventory.recordMovement(movementId,command,normalized.reason(),normalized.evidenceReference());
 
-        for(var line:prepared) {
-            var after=inventory.postLine(org,store,movementId,line.before().id(),line.before().version(),line.delta(),Trust.UNVERIFIED);
-            if(line.allocationId()!=null) inventory.openAllocation(org,store,after.id(),line.allocationId(),"QUARANTINED",actor,
-                    member.membershipId(),line.request().quantity(),movementId);
-            audit(actor,org,InventoryOperation.RECEIVE,line.before(),new Result(movementId,after.id(),after.version(),after.buckets(),
-                    line.allocationId(),receiptId),normalized.reason(),normalized.evidenceReference());
+        for(var position:prepared) {
+            var after=inventory.postLine(org,store,movementId,position.before().id(),position.before().version(),position.delta(),Trust.UNVERIFIED);
+            if(position.allocationId()!=null) inventory.openAllocation(org,store,after.id(),position.allocationId(),"QUARANTINED",actor,
+                    member.membershipId(),position.quantity(),movementId);
+            audit(actor,org,InventoryOperation.RECEIVE,position.before(),new Result(movementId,after.id(),after.version(),after.buckets(),
+                    position.allocationId(),receiptId),normalized.reason(),normalized.evidenceReference());
         }
         inventory.recordReceiptDocument(receiptId,org,store,movementId,normalized.supplierKey(),normalized.documentType(),
-                normalized.documentReference(),normalized.physicallyReceivedAt(),prepared.stream().map(line->new ReceiptLine(
-                        line.before().id(),line.request().documentLineReference(),line.request().quantity(),line.allocationId()!=null)).toList());
+                normalized.documentReference(),normalized.physicallyReceivedAt(),prepared.stream().flatMap(position->position.sourceLines().stream()
+                        .map(line->new ReceiptLine(position.before().id(),line.documentLineReference(),line.quantity(),position.allocationId()!=null)))
+                        .sorted(Comparator.comparing(ReceiptLine::documentLineReference)).toList());
         return new ReceiptDocumentSubmission(result,true);
     }
 
@@ -180,20 +199,21 @@ public class InventoryService {
         var document=text(request.documentReference(),200);var reason=text(request.reason(),500);
         var evidence=text(request.evidenceReference(),256);
         var received=request.physicallyReceivedAt().truncatedTo(ChronoUnit.MICROS);
-        var lineReferences=new HashSet<String>();var positions=new HashSet<PositionIdentity>();
+        var lineReferences=new HashSet<String>();
         var lines=new ArrayList<NormalizedReceiptLine>(request.lines().size());
         for(ReceiveGoodsDocumentLine line:request.lines()) {
             if(line==null || line.position()==null || line.position().locationId()==null || line.position().productId()==null
                     || line.position().lotId()==null || line.quantity()<=0 || line.expectedVersion()==null
                     || line.expectedVersion()<0 || line.expectedVersion()==Long.MAX_VALUE) throw failure(Kind.INVALID_REQUEST);
             String lineReference=text(line.documentLineReference(),64);
-            var identity=new PositionIdentity(line.position().locationId(),line.position().productId(),line.position().lotId());
-            if(!lineReferences.add(lineReference) || !positions.add(identity)) throw failure(Kind.INVALID_REQUEST);
+            if(!lineReferences.add(lineReference)) throw failure(Kind.INVALID_REQUEST);
             lines.add(new NormalizedReceiptLine(lineReference,line.position(),line.quantity(),line.expectedVersion()));
         }
         lines.sort(Comparator.comparing(NormalizedReceiptLine::documentLineReference));
         return new NormalizedReceiptDocument(request.requestId(),supplier,documentType,document,received,reason,evidence,List.copyOf(lines));
     }
+
+    void validateGoodsDocumentIntent(ReceiveGoodsDocument request) { normalizeDocument(request); }
 
     private byte[] documentFingerprint(UUID store,NormalizedReceiptDocument document) {
         var values=new ArrayList<Object>();
@@ -214,7 +234,7 @@ public class InventoryService {
         var recorded=previous.orElseThrow();
         if(!recorded.storeId().equals(store) || !MessageDigest.isEqual(recorded.payloadDigest(),digest))
             throw failure(Kind.IDEMPOTENCY_CONFLICT);
-        return json.readValue(recorded.outcome(),ReceiptDocumentResult.class);
+        return receiptDocumentResult(recorded.outcome(),org,store);
     }
 
     @Transactional public Result reserveStock(UUID actor,UUID org,UUID store,StockChange request) { return change(actor,org,store,InventoryOperation.RESERVE,request,null); }
@@ -334,6 +354,13 @@ public class InventoryService {
                 || command.expectedVersion()!=null && (command.expectedVersion()<0 || command.expectedVersion()==Long.MAX_VALUE)) throw failure(Kind.INVALID_REQUEST);
         return new StockChange(command.requestId(),command.positionId(),command.expectedVersion(),command.quantity(),text(command.reason(),500),text(command.evidenceReference(),256));
     }
+
+    void validateStockIntent(UUID org,UUID store,InventoryOperation operation,StockChange command,UUID allocationId) {
+        normalize(command,operation);
+        if((operation==InventoryOperation.RELEASE || operation==InventoryOperation.RELEASE_HOLD) && allocationId==null)
+            throw failure(Kind.INVALID_REQUEST);
+        if(inventory.position(org,store,command.positionId(),false).isEmpty()) throw new OrganizationUnavailableException();
+    }
     private static String text(String value,int maximum) {
         if(value==null || value.isBlank() || value.length()>maximum || value.codePoints().anyMatch(Character::isISOControl)) throw failure(Kind.INVALID_REQUEST);
         return value.strip();
@@ -402,6 +429,23 @@ public class InventoryService {
         var receipt=inventory.command(org,actor,InventoryOperation.RECEIVE,requestId).orElseThrow(OrganizationUnavailableException::new);
         if(!receipt.storeId().equals(store) || !json.readTree(receipt.outcome()).has("lines"))
             throw new OrganizationUnavailableException();
-        return json.readValue(receipt.outcome(),ReceiptDocumentResult.class);
+        return receiptDocumentResult(receipt.outcome(),org,store);
+    }
+
+    private ReceiptDocumentResult receiptDocumentResult(String outcome,UUID org,UUID store) {
+        var result=json.readTree(outcome);
+        var lines=result.path("lines");
+        var missingQuantity=false;
+        for(var line:lines) missingQuantity|=!line.hasNonNull("quantity");
+        if(!missingQuantity) return json.readValue(outcome,ReceiptDocumentResult.class);
+        var receiptId=UUID.fromString(result.path("receiptId").asString());
+        var quantities=inventory.receiptLineQuantities(org,store,receiptId);
+        for(var line:lines) {
+            if(line.hasNonNull("quantity")) continue;
+            var quantity=quantities.getOrDefault(line.path("documentLineReference").asString(),0L);
+            if(quantity<=0) throw new OrganizationUnavailableException();
+            ((ObjectNode)line).put("quantity",quantity);
+        }
+        return json.readValue(result.toString(),ReceiptDocumentResult.class);
     }
 }

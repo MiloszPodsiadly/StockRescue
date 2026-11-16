@@ -255,6 +255,15 @@ public class InventoryRepository {
         }
     }
 
+    public Map<String,Long> receiptLineQuantities(UUID org,UUID store,UUID receipt) {
+        var quantities=new HashMap<String,Long>();
+        jdbc.sql("SELECT document_line_reference,quantity FROM stockrescue.goods_receipt_line WHERE org_id=:org AND store_id=:store AND receipt_id=:receipt")
+                .param("org",org).param("store",store).param("receipt",receipt)
+                .query((row,index)->Map.entry(row.getString("document_line_reference"),row.getLong("quantity")))
+                .list().forEach(line->quantities.put(line.getKey(),line.getValue()));
+        return Map.copyOf(quantities);
+    }
+
     public Optional<StockPosition> position(UUID org, UUID store, UUID id, boolean lock) {
         if (lock) requireWriteTransaction();
         return jdbc.sql("SELECT * FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND id=:id"

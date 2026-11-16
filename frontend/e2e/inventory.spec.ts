@@ -1,10 +1,11 @@
 import { expect, test } from '@playwright/test'
-import type { Browser, BrowserContext } from '@playwright/test'
+import type { Browser, BrowserContext, Page } from '@playwright/test'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { basename, dirname, resolve } from 'node:path'
 import type { components } from '../src/api/schema'
+import { clickWhenAdmitted } from './support/admission'
 
 type Product = components['schemas']['ProductResponse']
 type Lot = components['schemas']['LotResponse']
@@ -55,25 +56,50 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
   const inventoryPath = `${organizationPath}/stores/${store.id}/inventory`
   const positionPath = `${inventoryPath}/positions`
   const page = await owner.context.newPage()
+  let analyst: BrowserAccount | undefined
   await page.setViewportSize({ width: 390, height: 844 })
   try {
     await page.goto(`/organizations/${organization.id}/stores/${store.id}/inventory`)
     await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
     const receipt = page.getByRole('region', { name: 'Physical goods receipt' })
-    let documentPosts = 0
-    page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/inventory/receipt-documents')) documentPosts++ })
+    let documentPrepares = 0
+    let lostReceiptPrepareId = ''
+    let prepareAcknowledgementDropped = false
+    await page.route(`**${inventoryPath}/command-intents`, async route => {
+      if (route.request().method() !== 'POST') { await route.continue(); return }
+      const payload = route.request().postDataJSON() as components['schemas']['PrepareRequest']
+      if (payload.operation === 'RECEIPT_DOCUMENT') {
+        documentPrepares++
+        if (!prepareAcknowledgementDropped) {
+          prepareAcknowledgementDropped = true
+          lostReceiptPrepareId = payload.prepareId
+          const response = await route.fetch()
+          expect(response.status()).toBe(200)
+          await route.abort('connectionreset')
+          return
+        }
+      }
+      await route.continue()
+    })
     await chooseByKeyboard(page, receipt.getByLabel('Line 1 product'), product.id)
     await chooseByKeyboard(page, receipt.getByLabel('Line 1 lot'), lot.id)
     await chooseByKeyboard(page, receipt.getByLabel('Line 1 storage location'), location.id)
     await expect(receipt.getByText(/No position exists yet/)).toBeVisible()
-    await keyboardFill(page, receipt.getByLabel('Line 1 received quantity (EA)'), '10')
+    await keyboardFill(page, receipt.getByLabel('Line 1 received quantity (EA)'), '7')
     await keyboardFill(page, receipt.getByLabel('Line 1 reference'), '1')
     await receipt.getByRole('button', { name: 'Add receipt line' }).click()
     await chooseByKeyboard(page, receipt.getByLabel('Line 2 product'), product.id)
     await chooseByKeyboard(page, receipt.getByLabel('Line 2 lot'), lot.id)
-    await chooseByKeyboard(page, receipt.getByLabel('Line 2 storage location'), secondLocation.id)
-    await keyboardFill(page, receipt.getByLabel('Line 2 received quantity (EA)'), '4')
+    await chooseByKeyboard(page, receipt.getByLabel('Line 2 storage location'), location.id)
+    await keyboardFill(page, receipt.getByLabel('Line 2 received quantity (EA)'), '3')
     await keyboardFill(page, receipt.getByLabel('Line 2 reference'), '2')
+    await receipt.getByRole('button', { name: 'Add receipt line' }).click()
+    await chooseByKeyboard(page, receipt.getByLabel('Line 3 product'), product.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 3 lot'), lot.id)
+    await chooseByKeyboard(page, receipt.getByLabel('Line 3 storage location'), secondLocation.id)
+    await keyboardFill(page, receipt.getByLabel('Line 3 received quantity (EA)'), '4')
+    await keyboardFill(page, receipt.getByLabel('Line 3 reference'), '3')
+    await expect(receipt.getByText(/quantities will aggregate into one stock movement/i)).toBeVisible()
     await keyboardFill(page, receipt.getByLabel('Supplier identity key'), `supplier:${suffix}`)
     await keyboardFill(page, receipt.getByLabel('Source document reference'), `DELIVERY-${suffix}`)
     await receipt.getByLabel('Physically received at').fill(localDateTime(new Date(Date.now() - 60000)))
@@ -91,9 +117,25 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await confirmReceipt.focus()
     await page.keyboard.press('Enter')
     await page.keyboard.press('Enter')
-    await expect(receipt.getByRole('region', { name: 'Committed receipt lines' })).toContainText('Line 1')
-    await expect(receipt.getByRole('region', { name: 'Committed receipt lines' })).toContainText('Line 2')
-    expect(documentPosts).toBe(1)
+    const receiptRecovery = page.getByRole('region', { name: 'Recover pending operation' })
+    await expect(receiptRecovery).toBeVisible()
+    const receiptIntentList = await read<{ items: components['schemas']['IntentSummary'][] }>(owner.context, `${inventoryPath}/command-intents`)
+    expect(receiptIntentList.items.map(intent => intent.id)).toEqual([lostReceiptPrepareId])
+    expect(JSON.stringify(receiptIntentList)).not.toContain('Physically checked sealed units at both receiving positions')
+    expect(JSON.stringify(receiptIntentList)).not.toContain(`DELIVERY-${suffix}`)
+    const beforeReceiptRecovery = await read<{ items: InventoryPosition[] }>(owner.context, positionPath)
+    expect(beforeReceiptRecovery.items).toHaveLength(0)
+    await receiptRecovery.getByRole('button', { name: 'Recover exact request' }).click()
+    await expect(receiptRecovery.getByRole('status')).toContainText('Line 1')
+    await expect(receiptRecovery.getByRole('status')).toContainText('Line 2')
+    await expect(receiptRecovery.getByRole('status')).toContainText('Line 3')
+    await expect(receiptRecovery.getByRole('status')).toContainText('Line 1: 7 EA')
+    await expect(receiptRecovery.getByRole('status')).toContainText('Line 2: 3 EA')
+    expect(documentPrepares).toBe(1)
+    await receiptRecovery.getByRole('button', { name: 'Acknowledge saved result' }).click()
+    await expect(receiptRecovery).toHaveCount(0)
+    await expect(receipt.getByLabel('Line 1 received quantity (EA)')).toHaveValue('')
+    await page.unroute(`**${inventoryPath}/command-intents`)
     const positionRow = page.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: location.code })
     await expect(positionRow).toContainText('10 EA')
     const secondPositionRow = page.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: secondLocation.code })
@@ -117,21 +159,31 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await keyboardFill(page, receipt.getByLabel('Evidence source link or reference'), `atomic-receipt:${suffix}`)
     await receipt.getByLabel(/I confirmed all quantities are physically present/).check()
     let failedDocumentStatus = 0
-    await page.route(`**${inventoryPath}/receipt-documents`, async route => {
+    await page.route(`**${inventoryPath}/command-intents`, async route => {
       if (route.request().method() !== 'POST') { await route.continue(); return }
-      const payload = route.request().postDataJSON() as components['schemas']['ReceiptDocumentRequest']
-      const staleSecondLine = { ...payload, lines: payload.lines.map((line, index) => index === 1 ? { ...line, expectedVersion: 99 } : line) }
-      const response = await route.fetch({ postData: JSON.stringify(staleSecondLine) })
+      const prepare = route.request().postDataJSON() as components['schemas']['PrepareRequest']
+      if (prepare.operation !== 'RECEIPT_DOCUMENT') { await route.continue(); return }
+      const payload = prepare.payload as components['schemas']['ReceiptDocumentRequest']
+      const staleSecondLine = { ...prepare, payload: { ...payload, lines: payload.lines.map((line, index) => index === 1 ? { ...line, expectedVersion: 99 } : line) } }
+      await route.fulfill({ response: await route.fetch({ postData: JSON.stringify(staleSecondLine) }) })
+    })
+    await page.route(`**${inventoryPath}/command-intents/*/execute`, async route => {
+      const response = await route.fetch()
       failedDocumentStatus = response.status()
       await route.fulfill({ response })
     })
     await receipt.getByRole('button', { name: 'Confirm physical receipt document' }).click()
-    await expect(receipt.getByRole('alert')).toContainText(/rejected|conflict|version/i)
+    const rejectedReceipt = page.getByRole('region', { name: 'Recover pending operation' })
+    await expect(rejectedReceipt).toBeVisible()
+    await rejectedReceipt.getByRole('button', { name: 'Recover exact request' }).click()
+    await expect(rejectedReceipt.getByRole('alert')).toBeVisible()
     expect(failedDocumentStatus).toBe(409)
     const afterRollback = await read<{ items: InventoryPosition[] }>(owner.context, positionPath)
     expect(afterRollback.items.filter(item => item.locationId === rollbackLocationOne.id || item.locationId === rollbackLocationTwo.id)).toHaveLength(0)
-    await page.unroute(`**${inventoryPath}/receipt-documents`)
-    await receipt.getByRole('button', { name: 'Review rejected document' }).click()
+    await rejectedReceipt.getByRole('button', { name: 'Review rejected request' }).click()
+    await expect(rejectedReceipt).toHaveCount(0)
+    await page.unroute(`**${inventoryPath}/command-intents`)
+    await page.unroute(`**${inventoryPath}/command-intents/*/execute`)
     const reviewPosition = positionRow.getByRole('button', { name: 'Review position' })
     await reviewPosition.focus()
     await page.keyboard.press('Enter')
@@ -140,12 +192,7 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await submitOperation(page, 'reserve', '6', 'Reserve six picked units for an order')
     await expect(positionRow).toContainText('6 EA')
 
-    await submitOperation(page, 'reserve', '5', 'Request more than the remaining available quantity')
-    const rejected = operations.getByRole('alert')
-    await expect(rejected).toContainText(/quantity|available stock/i)
-    const reviewRejectedCommand = operations.getByRole('button', { name: 'Review rejected command' })
-    await reviewRejectedCommand.focus()
-    await page.keyboard.press('Enter')
+    await submitOperation(page, 'reserve', '5', 'Request more than the remaining available quantity', true)
     await expect(page.getByRole('region', { name: 'Selected inventory position' })).toBeVisible()
 
     const initialPositions = await read<{ items: InventoryPosition[] }>(owner.context, positionPath)
@@ -235,23 +282,29 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     expect(persisted.quarantined).toBe(3)
     expect(persisted.available).toBe(1)
 
-    const lostResponseRequests: Record<string, unknown>[] = []
-    const outcomeLookups: string[] = []
-    page.on('request', request => {
-      const pathname = new URL(request.url()).pathname
-      if (request.method() === 'GET' && pathname.includes('/commands/ADJUST/')) outcomeLookups.push(pathname)
+    analyst = await account(browser)
+    const invitation = await write<{ token: string }>(owner.context, `${organizationPath}/invitations`, {
+      email: analyst.email, reason: 'Read-only stock review', storeGrants: [{ storeId: store.id, role: 'READ_ONLY_ANALYST' }],
+    }, 201)
+    await write(analyst.context, '/api/v1/invitations/accept', { token: invitation.token }, 202)
+    const members = await read<MemberPage>(owner.context, `${organizationPath}/members`)
+    const invited = members.items.find(member => member.userId === analyst!.id)!
+    await write(owner.context, `${organizationPath}/members/${invited.id}/approve`, { version: invited.version, verifiedUserId: analyst.id, reason: 'Verified the analyst account' }, 200)
+
+    let preparedAdjustment: components['schemas']['PrepareRequest'] | undefined
+    let executionAcknowledgementDropped = false
+    owner.context.on('request', request => {
+      if (request.method() === 'POST' && new URL(request.url()).pathname === `${inventoryPath}/command-intents`) {
+        const body = request.postDataJSON() as components['schemas']['PrepareRequest']
+        if (body.operation === 'ADJUST') preparedAdjustment = body
+      }
     })
-    let firstAcknowledgementDropped = false
-    const adjustmentPath = `${positionPath}/${position.id}/adjustments`
-    await page.route(`**${adjustmentPath}`, async route => {
-      if (route.request().method() !== 'POST') { await route.continue(); return }
-      lostResponseRequests.push(route.request().postDataJSON() as Record<string, unknown>)
-      if (!firstAcknowledgementDropped) {
-        firstAcknowledgementDropped = true
-        const response = await route.fetch()
-        expect(response.status()).toBe(200)
+    await owner.context.route(`**${inventoryPath}/command-intents/*/execute`, async route => {
+      const response = await route.fetch()
+      if (!executionAcknowledgementDropped && response.status() === 200) {
+        executionAcknowledgementDropped = true
         await route.abort('connectionreset')
-      } else await route.continue()
+      } else await route.fulfill({ response })
     })
     const mainRow = page.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: location.code })
     await mainRow.getByRole('button', { name: 'Review position' }).click()
@@ -262,51 +315,123 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await retryOperations.getByLabel('Evidence link or source reference').fill(`count-sheet:${suffix}`)
     await retryOperations.getByLabel(/I reviewed this position/).check()
     await retryOperations.getByRole('button', { name: 'Adjust physical count' }).click()
-    await expect(retryOperations.getByRole('button', { name: 'Retry exact operation' })).toBeVisible()
-    await expect(retryOperations.getByRole('status')).toContainText(/may have been committed/i)
-    const requestId = lostResponseRequests[0]?.requestId
+    const uncertainRecovery = page.getByRole('region', { name: 'Recover pending operation' })
+    await expect(uncertainRecovery).toBeVisible()
+    expect(executionAcknowledgementDropped).toBe(true)
+    expect(preparedAdjustment?.operation).toBe('ADJUST')
+    const requestId = preparedAdjustment?.payload && (preparedAdjustment.payload as components['schemas']['StockCommandRequest']).requestId
     expect(requestId).toBeTruthy()
-    await page.getByRole('link', { name: store.name }).click()
-    await expect(page.getByRole('heading', { name: store.name })).toBeVisible()
-    await page.goBack()
+    await page.reload()
     await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
+    const recoveredAfterReload = page.getByRole('region', { name: 'Recover pending operation' })
+    await expect(recoveredAfterReload).toContainText(requestId!)
+    const ownerPendingIntents = await read<{ items: components['schemas']['IntentSummary'][] }>(owner.context, `${inventoryPath}/command-intents`)
+    expect(ownerPendingIntents.items).toHaveLength(1)
+    expect(ownerPendingIntents.items[0].id).toBe(preparedAdjustment!.prepareId)
+    expect(Object.keys(ownerPendingIntents.items[0])).not.toContain('payload')
+    expect(JSON.stringify(ownerPendingIntents)).not.toContain('Recorded a final count correction after recovery')
+    expect(JSON.stringify(ownerPendingIntents)).not.toContain(`count-sheet:${suffix}`)
+    const browserDurableData = await page.evaluate(() => [localStorage, sessionStorage].flatMap(storage => Array.from({ length: storage.length }, (_, index) => {
+      const key = storage.key(index)!
+      return `${key}=${storage.getItem(key)}`
+    })).join('\n'))
+    expect(browserDurableData).not.toContain('Recorded a final count correction after recovery')
+    expect(browserDurableData).not.toContain(`count-sheet:${suffix}`)
+    const beforeActorSwitch = await snapshot(owner.context, positionPath, position.id)
+    expect(beforeActorSwitch.version).toBe(persisted.version + 1)
+    expect(beforeActorSwitch.onHand).toBe((persisted.onHand ?? 0) + 1)
+
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+    await expect(page).toHaveURL(/\/sign-in$/)
+    csrfTokens.delete(owner.context)
+    await signIn(page, analyst.email)
+    await page.goto(`/organizations/${organization.id}/stores/${store.id}/inventory`)
+    await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Recover pending operation' })).toHaveCount(0)
+    const analystIntents = await read<{ items: components['schemas']['IntentSummary'][] }>(owner.context, `${inventoryPath}/command-intents`)
+    expect(analystIntents.items).toHaveLength(0)
+    const hiddenIntent = await write<components['schemas']['ApiProblem']>(owner.context,
+      `${inventoryPath}/command-intents/${preparedAdjustment!.prepareId}/execute`, undefined, 404)
+    expect(hiddenIntent.code).toBe('RESOURCE_NOT_FOUND')
+    const unchangedWhileSwitched = await snapshot(owner.context, positionPath, position.id)
+    expect(unchangedWhileSwitched.version).toBe(beforeActorSwitch.version)
+    expect(unchangedWhileSwitched.onHand).toBe(beforeActorSwitch.onHand)
+    expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0)
+
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+    await expect(page).toHaveURL(/\/sign-in$/)
+    csrfTokens.delete(owner.context)
+    await signIn(page, owner.email)
+    await page.goto(`/organizations/${organization.id}/stores/${store.id}/inventory`)
+    await expect(page.getByRole('region', { name: 'Recover pending operation' })).toContainText(requestId!)
+    const otherOrganization = await write<{ id: string }>(analyst!.context, '/api/v1/organizations', {
+      requestId: randomUUID(), name: `Second inventory cooperative ${randomUUID().slice(0, 8)}`,
+    }, 201)
+    const otherOrganizationPath = `/api/v1/organizations/${otherOrganization.id}`
+    const otherStore = await write<Store>(analyst!.context, `${otherOrganizationPath}/stores`, {
+      requestId: randomUUID(), code: 'OTHER', name: 'Other tenant inventory', zoneId: 'Europe/Warsaw',
+    }, 201)
+    const otherInvitation = await write<{ token: string }>(analyst!.context, `${otherOrganizationPath}/invitations`, {
+      email: owner.email, reason: 'Verify tenant isolation during inventory recovery',
+      storeGrants: [{ storeId: otherStore.id, role: 'READ_ONLY_ANALYST' }],
+    }, 201)
+    await write(owner.context, '/api/v1/invitations/accept', { token: otherInvitation.token }, 202)
+    const otherMembers = await read<MemberPage>(analyst!.context, `${otherOrganizationPath}/members`)
+    const ownerMembership = otherMembers.items.find(member => member.userId === owner.id)!
+    await write(analyst!.context, `${otherOrganizationPath}/members/${ownerMembership.id}/approve`, {
+      version: ownerMembership.version, verifiedUserId: owner.id, reason: 'Verified the tenant access',
+    }, 200)
+    const otherInventoryPath = `/api/v1/organizations/${otherOrganization.id}/stores/${otherStore.id}/inventory`
+    await page.goto(`/organizations/${otherOrganization.id}/stores/${otherStore.id}/inventory`)
+    await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Recover pending operation' })).toHaveCount(0)
+    expect((await read<{ items: components['schemas']['IntentSummary'][] }>(owner.context, `${otherInventoryPath}/command-intents`)).items).toHaveLength(0)
+    await page.goBack()
+    await expect(page.getByRole('region', { name: 'Recover pending operation' })).toContainText(requestId!)
+    const secondTab = await owner.context.newPage()
+    await secondTab.goto(`/organizations/${organization.id}/stores/${store.id}/inventory`)
+    const secondTabRecovery = secondTab.getByRole('region', { name: 'Recover pending operation' })
+    await expect(secondTabRecovery).toContainText(requestId!)
+    await Promise.all([
+      recoveredAfterReload.getByRole('button', { name: 'Recover exact request' }).click(),
+      secondTabRecovery.getByRole('button', { name: 'Recover exact request' }).click(),
+    ])
+    await expect(recoveredAfterReload.getByRole('status')).toContainText('committed successfully')
+    await expect(secondTabRecovery.getByRole('status')).toContainText('committed successfully')
+    const recoveredMovement = await recoveredAfterReload.getByRole('status').innerText()
+    const recoveredMovementId = recoveredMovement.match(/Movement ([0-9a-f-]+)/)?.[1]
+    expect(recoveredMovementId).toBeTruthy()
+    await expect(secondTabRecovery.getByRole('status')).toContainText(recoveredMovementId!)
+    await Promise.all([
+      recoveredAfterReload.getByRole('button', { name: 'Acknowledge saved result' }).click(),
+      secondTabRecovery.getByRole('button', { name: 'Acknowledge saved result' }).click(),
+    ])
+    await expect(recoveredAfterReload).toHaveCount(0)
+    await expect(secondTabRecovery).toHaveCount(0)
+    await secondTab.close()
     const refreshedMainRow = page.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: location.code })
     await refreshedMainRow.getByRole('button', { name: 'Review position' }).click()
-    const recoveredOperations = page.getByRole('region', { name: 'Inventory operations' })
-    await expect(recoveredOperations.getByRole('button', { name: 'Check saved result' })).toBeVisible()
-    await recoveredOperations.getByRole('button', { name: 'Check saved result' }).click()
-    await expect(recoveredOperations).toContainText('The committed result was found')
     await expect(page.getByRole('region', { name: 'Selected inventory position' })).toContainText('9 EA')
-    expect(outcomeLookups).toEqual([`${inventoryPath}/commands/ADJUST/${requestId}`])
-    await page.unroute(`**${adjustmentPath}`)
-    expect(lostResponseRequests).toHaveLength(1)
+    await owner.context.unroute(`**${inventoryPath}/command-intents/*/execute`)
     const recoveredMovements = await read<MovementPage>(owner.context, `${positionPath}/${position.id}/movements?afterVersion=0&limit=100`)
     expect(recoveredMovements.items.filter(item => item.operation === 'ADJUST' && item.reason === 'Recorded a final count correction after recovery')).toHaveLength(1)
     const afterRetry = await snapshot(owner.context, positionPath, position.id)
     expect(afterRetry.version).toBe(persisted.version + 1)
 
-    const analyst = await account(browser)
-    const invitation = await write<{ token: string }>(owner.context, `${organizationPath}/invitations`, {
-      email: analyst.email, reason: 'Read-only stock review', storeGrants: [{ storeId: store.id, role: 'READ_ONLY_ANALYST' }],
-    }, 201)
-    await write(analyst.context, '/api/v1/invitations/accept', { token: invitation.token }, 202)
-    const members = await read<MemberPage>(owner.context, `${organizationPath}/members`)
-    const invited = members.items.find(member => member.userId === analyst.id)!
-    await write(owner.context, `${organizationPath}/members/${invited.id}/approve`, { version: invited.version, verifiedUserId: analyst.id, reason: 'Verified the analyst account' }, 200)
-    const denied = await write<components['schemas']['ApiProblem']>(analyst.context, `${positionPath}/${position.id}/reservations`, commandBody(afterRetry.version, 1, 'Read-only role must not reserve stock'), 403)
+    const denied = await write<components['schemas']['ApiProblem']>(analyst!.context, `${positionPath}/${position.id}/reservations`, commandBody(afterRetry.version, 1, 'Read-only role must not reserve stock'), 403)
     expect(denied.code).toBe('ACCESS_DENIED')
-    const analystPage = await analyst.context.newPage()
+    const analystPage = await analyst!.context.newPage()
     try {
       await analystPage.goto(`/organizations/${organization.id}/stores/${store.id}/inventory`)
       const analystPosition = analystPage.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: location.code })
       await analystPosition.getByRole('button', { name: 'Review position' }).click()
       await expect(analystPage.getByRole('region', { name: 'Selected inventory position' })).toContainText('Your current role has no stock-changing actions for this position.')
       await expect(analystPage.getByRole('region', { name: 'Inventory operations' })).toHaveCount(0)
-    } finally { await analystPage.close(); await analyst.context.close() }
-  } finally { await page.close(); await owner.context.close() }
+    } finally { await analystPage.close() }
+  } finally { await analyst?.context.close(); await page.close(); await owner.context.close() }
 })
 
-async function submitOperation(page: import('@playwright/test').Page, operation: string, quantity: string, reason: string) {
+async function submitOperation(page: import('@playwright/test').Page, operation: string, quantity: string, reason: string, expectRejected = false) {
   const form = page.getByRole('region', { name: 'Inventory operations' })
   await expect(form.getByLabel('Operation')).toHaveValue(operation)
   await keyboardFill(page, form.getByLabel('Quantity (EA)'), quantity)
@@ -319,6 +444,17 @@ async function submitOperation(page: import('@playwright/test').Page, operation:
   const submit = form.getByRole('button', { name: label })
   await submit.focus()
   await page.keyboard.press('Enter')
+  const recovery = page.getByRole('region', { name: 'Recover pending operation' })
+  await expect(recovery).toBeVisible()
+  await recovery.getByRole('button', { name: 'Recover exact request' }).click()
+  if (expectRejected) {
+    await expect(recovery.getByRole('alert')).toBeVisible()
+    await recovery.getByRole('button', { name: 'Review rejected request' }).click()
+  } else {
+    await expect(recovery.getByRole('status')).toContainText('committed successfully')
+    await recovery.getByRole('button', { name: 'Acknowledge saved result' }).click()
+  }
+  await expect(recovery).toHaveCount(0)
 }
 
 async function keyboardFill(page: import('@playwright/test').Page, field: import('@playwright/test').Locator, value: string) {
@@ -396,6 +532,14 @@ async function admitted<T>(operation: () => Promise<{ status(): number, json(): 
 
 function localDateTime(date: Date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+
+async function signIn(page: Page, email: string) {
+  await page.goto('/sign-in')
+  await page.getByLabel('Email address').fill(email)
+  await clickWhenAdmitted(page, page.getByRole('button', { name: 'Sign in', exact: true }),
+    page.getByRole('heading', { name: "You're signed in.", exact: true }),
+    async () => { await page.getByLabel('Password', { exact: true }).fill('real-inventory-owner-passphrase') })
 }
 
 async function restartIsolated(context: BrowserContext) {

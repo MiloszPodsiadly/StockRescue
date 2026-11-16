@@ -4160,6 +4160,370 @@ paths:
         null
       tags:
       - inventory-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents:
+    get:
+      operationId: listPendingInventoryCommandIntents
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - in: query
+        name: subject
+        required: false
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PendingIntentsResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: List current-actor inventory intents without returning their private
+        command payloads
+      tags:
+      - inventory-command-intent-controller
+    post:
+      operationId: prepareInventoryCommandIntent
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrepareRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntentSummary"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Durably prepare one validated stock command before execution
+      tags:
+      - inventory-command-intent-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/acknowledge:
+    post:
+      operationId: acknowledgeInventoryCommandIntent
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: intentId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntentSummary"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Acknowledge an intent only after its command receipt has committed
+      tags:
+      - inventory-command-intent-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/execute:
+    post:
+      operationId: executeInventoryCommandIntent
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: intentId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Run the exact prepared command through current inventory authorization
+        and ledger services
+      tags:
+      - inventory-command-intent-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/review-rejected:
+    post:
+      operationId: reviewRejectedInventoryCommandIntent
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: intentId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntentSummary"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Close a visibly rejected draft after confirming it has no committed
+        command receipt
+      tags:
+      - inventory-command-intent-controller
   /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/commands/{operation}/{requestId}:
     get:
       operationId: getInventoryCommandOutcome
@@ -8973,6 +9337,26 @@ components:
       required:
       - reference
       - source
+    ExecutionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        operation:
+          type: string
+        outcome:
+          oneOf:
+          - $ref: "#/components/schemas/InventoryCommandResponse"
+          - $ref: "#/components/schemas/ReceiptDocumentResponse"
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - id
+      - operation
+      - outcome
+      - requestId
     FindingPageResponse:
       type: object
       properties:
@@ -9206,6 +9590,34 @@ components:
       - matchSetRevision
       - matches
       - offset
+    IntentSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        operation:
+          type: string
+          minLength: 1
+        preparedAt:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          minLength: 1
+        subject:
+          type: string
+          minLength: 1
+      required:
+      - id
+      - operation
+      - preparedAt
+      - requestId
+      - state
+      - subject
     InventoryCommandResponse:
       type: object
       properties:
@@ -10013,6 +10425,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ParkedDiagnostic"
+    PendingIntentsResponse:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/IntentSummary"
+      required:
+      - items
     PermissionsResponse:
       type: object
       properties:
@@ -10093,6 +10516,31 @@ components:
       required:
       - role
       - storeId
+    PrepareRequest:
+      type: object
+      properties:
+        operation:
+          type: string
+          enum:
+          - RECEIPT_DOCUMENT
+          - RESERVE
+          - RELEASE
+          - ADJUST
+          - WRITE_OFF
+          - QUARANTINE
+          - HOLD
+          - RELEASE_HOLD
+          - SALE
+        payload:
+          type: object
+          additionalProperties: {}
+        prepareId:
+          type: string
+          format: uuid
+      required:
+      - operation
+      - payload
+      - prepareId
     ProductPage:
       type: object
       properties:
@@ -10239,12 +10687,16 @@ components:
       - quantity
     ReceiptDocumentLineResponse:
       type: object
+      description: One result per original supplier line. Quantity is line-specific;
+        stock totals and version reflect the final grouped position.
       properties:
         allocationId:
           type:
           - string
           - "null"
           format: uuid
+          description: "Quarantine allocation shared by all source lines grouped into\
+            \ this position, when present"
         available:
           type: integer
           format: int64
@@ -10259,6 +10711,10 @@ components:
         positionId:
           type: string
           format: uuid
+        quantity:
+          type: integer
+          format: int64
+          description: Physical quantity on this original supplier line
         quarantined:
           type: integer
           format: int64
@@ -10275,6 +10731,7 @@ components:
       - onHand
       - otherBlocked
       - positionId
+      - quantity
       - quarantined
       - reserved
       - version

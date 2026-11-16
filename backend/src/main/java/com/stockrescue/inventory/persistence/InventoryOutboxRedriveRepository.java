@@ -47,13 +47,15 @@ public class InventoryOutboxRedriveRepository {
     }
 
     public boolean storeExists(UUID organizationId,UUID storeId) {
-        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM stockrescue.store WHERE org_id=:org AND id=:store)")
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM stockrescue.store WHERE org_id=:org AND id=:store AND active)")
                 .param("org",organizationId).param("store",storeId).query(Boolean.class).single();
     }
 
     public List<ParkedEvent> parked(UUID organizationId,UUID storeId,int offset,int limit) {
         var rows=jdbc.sql("""
-                SELECT e.id,d.parked_at,d.claim_version,d.attempt_count,
+                SELECT e.id,e.org_id,e.store_id,e.movement_id,e.position_id,e.aggregate_version,e.event_type,e.schema_version,
+                    e.payload::text AS payload,e.correlation_id,m.recorded_at AS occurred_at,
+                    d.lease_owner,d.claim_version,d.attempt_count,d.lease_until,d.parked_at,
                     coalesce(a.generation,0) AS generation,
                     CASE WHEN a.published_at IS NOT NULL THEN 'PUBLISHED'
                          WHEN a.blocked_at IS NOT NULL THEN 'BLOCKED'
@@ -62,19 +64,29 @@ public class InventoryOutboxRedriveRepository {
                          WHEN a.id IS NOT NULL THEN 'REDRIVE_QUEUED'
                          ELSE 'PARKED' END AS state,
                     coalesce(a.attempt_count,0) AS redrive_attempt_count,
-                    coalesce(a.recorded_at,d.parked_at) AS latest_attempt_at,a.last_error_code
+                    coalesce(a.recorded_at,d.parked_at) AS latest_attempt_at,a.last_error_code,
+                    l.movement_id IS NOT NULL AS source_line_found,
+                    l.delta_on_hand,l.delta_reserved,l.delta_quarantined,l.delta_other_blocked,l.initialization_after,l.trust_after,
+                    coalesce(history.source_version_count,0) AS source_version_count,
+                    coalesce(history.on_hand,0) AS on_hand,coalesce(history.reserved,0) AS reserved,
+                    coalesce(history.quarantined,0) AS quarantined,coalesce(history.other_blocked,0) AS other_blocked
                 FROM stockrescue.inventory_outbox_delivery d
                 JOIN stockrescue.inventory_outbox_event e ON e.id=d.event_id
+                JOIN stockrescue.stock_movement m ON m.org_id=e.org_id AND m.store_id=e.store_id AND m.id=e.movement_id
+                LEFT JOIN stockrescue.stock_movement_line l ON l.org_id=e.org_id AND l.store_id=e.store_id
+                    AND l.movement_id=e.movement_id AND l.position_id=e.position_id AND l.position_version=e.aggregate_version
+                LEFT JOIN LATERAL (SELECT count(*) AS source_version_count,
+                        coalesce(sum(h.delta_on_hand),0) AS on_hand,coalesce(sum(h.delta_reserved),0) AS reserved,
+                        coalesce(sum(h.delta_quarantined),0) AS quarantined,coalesce(sum(h.delta_other_blocked),0) AS other_blocked
+                    FROM stockrescue.stock_movement_line h WHERE h.org_id=e.org_id AND h.store_id=e.store_id
+                        AND h.position_id=e.position_id AND h.position_version<=e.aggregate_version) history ON true
                 LEFT JOIN LATERAL (SELECT latest.* FROM stockrescue.inventory_outbox_redrive_attempt latest
                     WHERE latest.event_id=e.id ORDER BY latest.generation DESC LIMIT 1) a ON true
                 WHERE d.org_id=:org AND d.store_id=:store AND d.parked_at IS NOT NULL
                 ORDER BY d.parked_at,e.id OFFSET :offset LIMIT :limit
                 """).param("org",organizationId).param("store",storeId).param("offset",offset)
-                .param("limit",limit).query((row,index)->new ParkedRow(row.getObject("id",UUID.class),
-                        row.getTimestamp("parked_at").toInstant(),row.getLong("claim_version"),row.getInt("attempt_count"),
-                        row.getLong("generation"),row.getString("state"),row.getInt("redrive_attempt_count"),
-                        row.getTimestamp("latest_attempt_at").toInstant(),row.getString("last_error_code"))).list();
-        return rows.stream().map(this::parkedEvent).toList();
+                .param("limit",limit).query((row,index)->parkedEvent(row,index)).list();
+        return rows;
     }
 
     @Transactional
@@ -249,6 +261,10 @@ public class InventoryOutboxRedriveRepository {
                         row.getBigDecimal("reserved"),row.getBigDecimal("quarantined"),row.getBigDecimal("other_blocked")))
                 .optional().orElse(new RawEvidence(0,0,0,0,"MISSING","MISSING",0,BigDecimal.ZERO,
                         BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO));
+        return sourceEvidence(event,raw);
+    }
+
+    private SourceEvidence sourceEvidence(OutboxEvent event,RawEvidence raw) {
         String fingerprint=InventoryOutboxFingerprint.hex("source",event.id(),event.organizationId(),event.storeId(),event.movementId(),
                 event.positionId(),event.aggregateVersion(),event.eventType(),event.schemaVersion(),event.payload(),event.correlationId(),
                 event.occurredAt(),raw.deltaOnHand(),raw.deltaReserved(),raw.deltaQuarantined(),raw.deltaOtherBlocked(),
@@ -285,6 +301,24 @@ public class InventoryOutboxRedriveRepository {
         if(event==null) throw new IllegalStateException("Parked outbox event disappeared from immutable history");
         return new ParkedEvent(event,sourceEvidence(event),row.parkedAt(),row.claimVersion(),row.attemptCount(),
                 row.generation(),row.state(),row.redriveAttemptCount(),row.latestAttemptAt(),row.lastErrorCode());
+    }
+
+    private ParkedEvent parkedEvent(ResultSet row,int index) throws SQLException {
+        var event=new OutboxEvent(row.getObject("id",UUID.class),row.getObject("org_id",UUID.class),row.getObject("store_id",UUID.class),
+                row.getObject("movement_id",UUID.class),row.getObject("position_id",UUID.class),row.getLong("aggregate_version"),
+                row.getString("event_type"),row.getInt("schema_version"),row.getString("payload"),row.getString("correlation_id"),
+                row.getTimestamp("occurred_at").toInstant(),row.getObject("lease_owner",UUID.class),row.getLong("claim_version"),
+                row.getInt("attempt_count"),instant(row,"lease_until"));
+        RawEvidence raw=row.getBoolean("source_line_found")
+                ?new RawEvidence(row.getLong("delta_on_hand"),row.getLong("delta_reserved"),row.getLong("delta_quarantined"),
+                        row.getLong("delta_other_blocked"),row.getString("initialization_after"),row.getString("trust_after"),
+                        row.getLong("source_version_count"),row.getBigDecimal("on_hand"),row.getBigDecimal("reserved"),
+                        row.getBigDecimal("quarantined"),row.getBigDecimal("other_blocked"))
+                :new RawEvidence(0,0,0,0,"MISSING","MISSING",0,BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO);
+        var source=sourceEvidence(event,raw);
+        return new ParkedEvent(event,source,row.getTimestamp("parked_at").toInstant(),row.getLong("claim_version"),
+                row.getInt("attempt_count"),row.getLong("generation"),row.getString("state"),
+                row.getInt("redrive_attempt_count"),row.getTimestamp("latest_attempt_at").toInstant(),row.getString("last_error_code"));
     }
 
     private Attempt findAttempt(UUID id) {

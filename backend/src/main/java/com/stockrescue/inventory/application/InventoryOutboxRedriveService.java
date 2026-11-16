@@ -15,6 +15,7 @@ import com.stockrescue.inventory.persistence.InventoryOutboxRedriveRepository.At
 import com.stockrescue.inventory.persistence.InventoryOutboxRedriveRepository.ParkedEvent;
 import com.stockrescue.platform.audit.AuditWriter;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -42,10 +43,11 @@ public class InventoryOutboxRedriveService {
         this.access=access;this.redrives=redrives;this.codec=codec;this.audit=audit;
     }
 
-    @Transactional
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public ParkedPage parked(UUID actor,UUID organizationId,UUID storeId,int offset,int limit) {
         if(offset<0 || offset>10000 || limit<1 || limit>100) throw new IllegalArgumentException("Invalid parked-event page");
-        access.requireAdmin(actor,organizationId,true);
+        // Bind authorization and diagnostics to one snapshot; a concurrent revocation applies to the next read.
+        access.requireAdmin(actor,organizationId,false);
         requireStore(organizationId,storeId);
         var page=redrives.parked(organizationId,storeId,offset,limit+1);
         boolean hasMore=page.size()>limit;

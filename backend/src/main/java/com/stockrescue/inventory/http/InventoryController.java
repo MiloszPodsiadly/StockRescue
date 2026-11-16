@@ -301,11 +301,13 @@ public class InventoryController {
             @ArraySchema(arraySchema=@Schema(requiredMode=Schema.RequiredMode.REQUIRED)) List<ReceiptDocumentLineResponse> lines) {
         static ReceiptDocumentResponse from(ReceiptDocumentResult result) {
             return new ReceiptDocumentResponse(result.receiptId(),result.movementId(),result.lines().stream().map(line->
-                    new ReceiptDocumentLineResponse(line.documentLineReference(),line.positionId(),line.version(),line.buckets().onHand(),
+                    new ReceiptDocumentLineResponse(line.documentLineReference(),line.quantity(),line.positionId(),line.version(),line.buckets().onHand(),
                             line.buckets().reserved(),line.buckets().quarantined(),line.buckets().otherBlocked(),line.available(),line.allocationId())).toList());
         }
     }
+    @Schema(description="One result per original supplier line. Quantity is line-specific; stock totals and version reflect the final grouped position.")
     public record ReceiptDocumentLineResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) String documentLineReference,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED,description="Physical quantity on this original supplier line") long quantity,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID positionId,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long version,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long onHand,
@@ -313,7 +315,8 @@ public class InventoryController {
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long quarantined,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long otherBlocked,
             @Schema(requiredMode=Schema.RequiredMode.REQUIRED) long available,
-            @Schema(types={"string","null"},format="uuid",requiredMode=Schema.RequiredMode.REQUIRED) UUID allocationId) { }
+            @Schema(types={"string","null"},format="uuid",requiredMode=Schema.RequiredMode.REQUIRED,
+                    description="Quarantine allocation shared by all source lines grouped into this position, when present") UUID allocationId) { }
 
     public record StockCommandRequest(@NotNull UUID requestId,@NotNull @Min(0) @Max(Long.MAX_VALUE-1) Long expectedVersion,
             @NotNull Long quantity,@NotBlank @Size(max=500) String reason,@NotBlank @Size(max=256) String evidenceReference) {

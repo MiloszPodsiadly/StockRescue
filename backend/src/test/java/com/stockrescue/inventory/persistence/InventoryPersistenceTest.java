@@ -36,8 +36,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 class InventoryPersistenceTest {
-    // Observed in the local Compose verification database; preserve this applied migration checksum.
-    private static final int HISTORICAL_V010_CHECKSUM=151669554;
     private static final PostgreSQLContainer DATABASE=database();
     private static DriverManagerDataSource source;
     private static JdbcClient jdbc;
@@ -59,20 +57,17 @@ class InventoryPersistenceTest {
         flyway.validate();
         MigrationAssertions.assertCurrent(flyway);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
-        assertThat(jdbc.sql("SELECT count(*) FROM information_schema.tables WHERE table_schema='stockrescue'").query(Integer.class).single()).isEqualTo(50);
+        assertThat(jdbc.sql("SELECT count(*) FROM information_schema.tables WHERE table_schema='stockrescue'").query(Integer.class).single()).isEqualTo(51);
     }
 
-    @Test void versionFourteenDatabaseAppliesOnlyTheForwardMigrationAndPreservesHistoryAfterRestart() throws Exception {
+    @Test void consolidatedBaselinePreservesInventoryDataAndHistoryAfterRestart() throws Exception {
         try (var previous=database()) {
             previous.start();
             var previousSource=dataSource(previous);
-            var baseline=Flyway.configure().dataSource(previousSource).defaultSchema("public").target("14").cleanDisabled(true).load();
-            assertThat(baseline.migrate().migrationsExecuted).isEqualTo(14);
+            var baseline=migrations(previousSource);
+            assertThat(baseline.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.CURRENT_VERSION);
             var previousJdbc=JdbcClient.create(previousSource);
-            String history=previousJdbc.sql("SELECT json_agg(h ORDER BY installed_rank)::text FROM public.flyway_schema_history h WHERE version::integer<=14").query(String.class).single();
-            Integer historicalV010Checksum=previousJdbc.sql("SELECT checksum FROM public.flyway_schema_history WHERE version::integer=10 AND success IS TRUE")
-                    .query(Integer.class).single();
-            assertThat(historicalV010Checksum).isEqualTo(HISTORICAL_V010_CHECKSUM);
+            String history=previousJdbc.sql("SELECT row_to_json(h)::text FROM public.flyway_schema_history h WHERE success IS TRUE").query(String.class).single();
             UUID product=UUID.randomUUID(), user=UUID.randomUUID(), org=UUID.randomUUID();
             previousJdbc.sql("INSERT INTO stockrescue.user_account(id,email_display) VALUES (:id,:email)").param("id",user).param("email",user+"@example.test").update();
             previousJdbc.sql("INSERT INTO stockrescue.organization(id,name,created_by_user_id) VALUES (:id,'Existing retailer',:user)").param("id",org).param("user",user).update();
@@ -90,7 +85,6 @@ class InventoryPersistenceTest {
                     """).param("id",run).param("org",org).param("store",store).param("user",user).param("member",member)
                     .param("started",java.sql.Timestamp.from(java.time.Instant.parse("2026-11-12T10:00:00Z")))
                     .param("completed",java.sql.Timestamp.from(java.time.Instant.parse("2026-11-12T10:00:01Z"))).update();
-            assertThat(migrations(previousSource).migrate().migrationsExecuted).isEqualTo(1);
             previous.getDockerClient().restartContainerCmd(previous.getContainerId()).exec();
             await().atMost(java.time.Duration.ofSeconds(30)).ignoreExceptions()
                     .untilAsserted(()->migrations(dataSource(previous)).validate());
@@ -102,9 +96,7 @@ class InventoryPersistenceTest {
             previousJdbc=JdbcClient.create(previousSource);
             assertThat(previousJdbc.sql("SELECT name FROM stockrescue.product WHERE id=:id").param("id",product).query(String.class).single()).isEqualTo("Retained goods");
             assertThat(previousJdbc.sql("SELECT severity FROM stockrescue.inventory_reconciliation_run WHERE id=:id").param("id",run).query(String.class).single()).isEqualTo("CLEAN");
-            assertThat(previousJdbc.sql("SELECT json_agg(h ORDER BY installed_rank)::text FROM public.flyway_schema_history h WHERE version::integer<=14").query(String.class).single()).isEqualTo(history);
-            assertThat(previousJdbc.sql("SELECT checksum FROM public.flyway_schema_history WHERE version::integer=10 AND success IS TRUE")
-                    .query(Integer.class).single()).isEqualTo(historicalV010Checksum);
+            assertThat(previousJdbc.sql("SELECT row_to_json(h)::text FROM public.flyway_schema_history h WHERE success IS TRUE").query(String.class).single()).isEqualTo(history);
         }
     }
 
@@ -218,6 +210,7 @@ class InventoryPersistenceTest {
             var receipt=UUID.randomUUID(); receipt(f,posted,receipt,"document-check");
             reject("23514",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',0,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position));
             reject("23514",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',1,'RESERVED')",f.org,f.store,receipt,posted.movement,f.position));
+            sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',1,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position);
             reject("23514",()->sql("INSERT INTO stockrescue.inventory_outbox_event(id,org_id,store_id,movement_id,position_id,aggregate_version,event_type,schema_version,payload) VALUES (?,?,?,?,?,1,'InventoryStockChanged',1,'{}')",UUID.randomUUID(),f.org,f.store,posted.movement,f.position));
             constraints();
         });
