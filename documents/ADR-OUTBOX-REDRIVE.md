@@ -4,18 +4,18 @@
 
 ## Context
 
-An inventory event can be parked after its fenced V014 delivery reaches a
+An inventory event can be parked after its fenced Kafka delivery reaches a
 terminal state. That row and its event payload are historical evidence. A
 parked aggregate version must continue to block later versions until the same
 logical event has a confirmed Kafka acknowledgement.
 
 ## Decision
 
-Add a forward-only V015 redrive-attempt table. Each operator request creates a
-new generation with immutable event, actor, request fingerprint, source
+The consolidated Flyway baseline includes the redrive-attempt table. Each
+operator request creates a new generation with immutable event, actor, request fingerprint, source
 fingerprint, reason and evidence. Its delivery lease, claim generation, retry
 schedule, terminal block and broker-ack timestamp are guarded by monotonic
-database rules. The original event and V014 delivery row remain unchanged.
+database rules. The original event and delivery row remain unchanged.
 
 Only a current organization administrator can request recovery. Reads and writes
 are scoped by organization and store. A request is bound to the parked row's
@@ -40,11 +40,9 @@ generations so concurrent relays and stale workers cannot advance the marker.
 
 ## Migration compatibility
 
-The local Compose verification database records Flyway V010 checksum
-`151669554`. The PostgreSQL upgrade test preserves the V001–V014 history,
-including that checksum, while applying V015 and restarting. Deployments must
-compare their stored checksum before upgrade; a different value needs
-compatibility review and must not be hidden with `flyway repair`.
+The repository uses one consolidated baseline for freshly created databases.
+Local Compose volumes must be recreated after the baseline changes. Databases
+with the previous incremental migration history require a deliberate reset.
 
 ## Unrecoverable source data
 

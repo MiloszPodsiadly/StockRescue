@@ -70,7 +70,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertPublicSchemaContainsOnlyFlywayHistory(connection);
             var tables = statement.executeQuery("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'stockrescue'");
             assertThat(tables.next()).isTrue();
-            assertThat(tables.getInt(1)).isEqualTo(50);
+            assertThat(tables.getInt(1)).isEqualTo(51);
             var signedTables=statement.executeQuery("""
                     SELECT table_name FROM information_schema.tables WHERE table_schema='stockrescue'
                         AND table_name IN ('food_safety_policy_approval','food_safety_policy_approval_revocation',
@@ -121,34 +121,33 @@ class PostgresFoundationTest extends InfrastructureTestBase {
     }
 
     @Test
-    void v014DatabaseUpgradesOnlyThroughAppendOnlyRedriveMigration() throws Exception {
+    void consolidatedBaselineInstallsTheCompleteOperationalSchemaInOneMigration() throws Exception {
         try (var previous = new PostgreSQLContainer(DockerImageName.parse(POSTGRES.getDockerImageName()))
                 .withDatabaseName("stockrescue_test").withUsername("test_admin").withPassword("test-admin-password")
                 .withInitScript("db/test-role.sql")) {
             previous.start();
             var baseline=Flyway.configure().dataSource(previous.getJdbcUrl(),"stockrescue_app","test-app-password")
-                    .locations("classpath:db/migration").target("14").cleanDisabled(true).load();
-            assertThat(baseline.migrate().migrationsExecuted).isEqualTo(14);
-            String historyBefore;
-            try(var connection=DriverManager.getConnection(previous.getJdbcUrl(),"stockrescue_app","test-app-password")) {
-                historyBefore=migrationHistoryThrough(connection,14);
-                try(var statement=connection.createStatement();var result=statement.executeQuery(
-                        "SELECT to_regclass('stockrescue.inventory_outbox_redrive_attempt')")) {
-                    assertThat(result.next()).isTrue();assertThat(result.getString(1)).isNull();
-                }
-            }
-            var upgraded=Flyway.configure().dataSource(previous.getJdbcUrl(),"stockrescue_app","test-app-password")
                     .locations("classpath:db/migration").cleanDisabled(true).load();
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);
-            upgraded.validate();MigrationAssertions.assertCurrent(upgraded);
+            assertThat(baseline.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.CURRENT_VERSION);
+            baseline.validate();
+            MigrationAssertions.assertCurrent(baseline);
             try(var connection=DriverManager.getConnection(previous.getJdbcUrl(),"stockrescue_app","test-app-password")) {
-                assertThat(migrationHistoryThrough(connection,14)).isEqualTo(historyBefore);
                 try(var statement=connection.createStatement();var result=statement.executeQuery(
-                        "SELECT to_regclass('stockrescue.inventory_outbox_redrive_attempt')")) {
-                    assertThat(result.next()).isTrue();assertThat(result.getString(1)).isEqualTo("stockrescue.inventory_outbox_redrive_attempt");
+                        "SELECT to_regclass('stockrescue.inventory_outbox_redrive_attempt'), to_regclass('stockrescue.inventory_command_intent')")) {
+                    assertThat(result.next()).isTrue();
+                    assertThat(result.getString(1)).isEqualTo("stockrescue.inventory_outbox_redrive_attempt");
+                    assertThat(result.getString(2)).isEqualTo("stockrescue.inventory_command_intent");
                 }
             }
-            assertThat(upgraded.migrate().migrationsExecuted).isZero();
+            var restarted=Flyway.configure().dataSource(previous.getJdbcUrl(),"stockrescue_app","test-app-password")
+                    .locations("classpath:db/migration").cleanDisabled(true).load();
+            assertThat(restarted.migrate().migrationsExecuted).isZero();
+            try(var connection=DriverManager.getConnection(previous.getJdbcUrl(),"stockrescue_app","test-app-password")) {
+                try(var statement=connection.createStatement();var result=statement.executeQuery(
+                        "SELECT count(*) FROM public.flyway_schema_history WHERE success IS TRUE")) {
+                    assertThat(result.next()).isTrue();assertThat(result.getInt(1)).isEqualTo(1);
+                }
+            }
         }
     }
 
@@ -212,16 +211,16 @@ class PostgresFoundationTest extends InfrastructureTestBase {
     }
 
     @Test
-    void previouslyInitializedDatabaseUpgradesAndRestartsWithoutRewritingHistory() throws Exception {
+    void consolidatedBaselineInitializesAndRestartsWithoutRewritingHistory() throws Exception {
         try (var previous = new PostgreSQLContainer(DockerImageName.parse(POSTGRES.getDockerImageName()))
                 .withDatabaseName(POSTGRES.getDatabaseName())
                 .withUsername(POSTGRES.getUsername()).withPassword(POSTGRES.getPassword())
                 .withInitScript("db/test-role.sql")) {
             previous.start();
-            // Reproduce the published SR-001 setup: unchanged V001 and the driver's default search path.
+            // Verify the complete baseline and application startup under the driver's default search path.
             var legacy = Flyway.configure().dataSource(previous.getJdbcUrl(), "stockrescue_app", "test-app-password")
-                    .locations("classpath:db/migration").target("1").cleanDisabled(true).load();
-            assertThat(legacy.migrate().migrationsExecuted).isEqualTo(1);
+                    .locations("classpath:db/migration").cleanDisabled(true).load();
+            assertThat(legacy.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.CURRENT_VERSION);
             String previousHistory;
             try (var connection = DriverManager.getConnection(previous.getJdbcUrl(), "stockrescue_app", "test-app-password")) {
                 assertThat(connection.getSchema()).as("published SR-001 connection schema").isEqualTo("public");
@@ -239,7 +238,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
                                 "--spring.datasource.username=stockrescue_app",
                                 "--spring.datasource.password=test-app-password",
                                 "--spring.kafka.bootstrap-servers=" + KAFKA.getBootstrapServers(),
-                                "--stockrescue.intelligence.base-url=http://127.0.0.1:1")) {
+                            "--stockrescue.intelligence.base-url=http://127.0.0.1:1")) {
                     var flyway = upgraded.getBean(Flyway.class);
                     assertThat(flyway.getConfiguration().getDefaultSchema()).isEqualTo("public");
                     flyway.validate();
@@ -247,7 +246,7 @@ class PostgresFoundationTest extends InfrastructureTestBase {
                     assertThat(flyway.migrate().migrationsExecuted).isZero();
                     try (var connection = upgraded.getBean(DataSource.class).getConnection()) {
                         assertThat(connection.getSchema()).isEqualTo("stockrescue");
-                        assertThat(migrationHistory(connection)).isEqualTo(previousHistory);
+                    assertThat(migrationHistory(connection)).isEqualTo(previousHistory);
                         try (var statement = connection.createStatement();
                              var data = statement.executeQuery("SELECT value FROM stockrescue.migration_upgrade_probe")) {
                             assertThat(data.next()).isTrue();
@@ -395,15 +394,6 @@ class PostgresFoundationTest extends InfrastructureTestBase {
             assertThat(result.next()).isFalse();
             return snapshot;
         }
-    }
-
-    private String migrationHistoryThrough(Connection connection,int version) throws Exception {
-        var rows=new ArrayList<String>();
-        try(var statement=connection.prepareStatement("SELECT row_to_json(history)::text FROM public.flyway_schema_history history WHERE version::int<=? ORDER BY installed_rank")) {
-            statement.setInt(1,version);
-            try(var result=statement.executeQuery()) { while(result.next()) rows.add(result.getString(1)); }
-        }
-        return String.join("\n",rows);
     }
 
     private int status(String path) throws Exception {

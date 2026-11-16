@@ -325,147 +325,8 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
         }
     }
 
-    @Test
-    void existingStoreSchemaUpgradesWithoutRewritingHistoryOrLosingData() throws Exception {
-        try (var previous = isolatedDatabase()) {
-            previous.start();
-            var baseline = Flyway.configure().dataSource(previous.getJdbcUrl(), "stockrescue_app", "test-app-password")
-                    .defaultSchema("public").target("8").cleanDisabled(true).load();
-            assertThat(baseline.migrate().migrationsExecuted).isEqualTo(8);
-            String history;
-            UUID persistedOrg;
-            UUID persistedStore;
-            try (var old = open(previous.getJdbcUrl())) {
-                // Product tables do not exist at this baseline, so preserve a real store instead.
-                var user = UUID.randomUUID();
-                var org = UUID.randomUUID();
-                var store = UUID.randomUUID();
-                execute(old, "INSERT INTO stockrescue.user_account(id,email_display) VALUES (?,?)", user, user + "@example.test");
-                execute(old, "INSERT INTO stockrescue.organization(id,name,created_by_user_id) VALUES (?,'Before catalog',?)", org, user);
-                execute(old, "INSERT INTO stockrescue.store(id,org_id,code,name,zone_id) VALUES (?,?,'PERSISTED','Existing Store','Europe/Warsaw')", store, org);
-                persistedOrg = org;
-                persistedStore = store;
-                history = history(old);
-            }
-            var upgraded = migrations(previous.getJdbcUrl());
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.migrationsAfter(8));
-            upgraded.validate();
-            MigrationAssertions.assertCurrent(upgraded);
-            try (var current = open(previous.getJdbcUrl())) {
-                assertThat(history(current)).isEqualTo(history);
-                try (var query = current.prepareStatement("SELECT name FROM stockrescue.store WHERE org_id=? AND id=?")) {
-                    query.setObject(1, persistedOrg);
-                    query.setObject(2, persistedStore);
-                    try (var data = query.executeQuery()) { assertThat(data.next()).isTrue(); assertThat(data.getString(1)).isEqualTo("Existing Store"); }
-                }
-                execute(current, productSql(), UUID.randomUUID(), persistedOrg, "AFTER-UPGRADE", "036000291452");
-            }
-            assertThat(migrations(previous.getJdbcUrl()).migrate().migrationsExecuted).isZero();
-        }
-    }
-
-    @Test
-    void v010ProductsAndPolicyReviewsUpgradeWithoutLossOrAccidentalClassification() throws Exception {
-        try (var previous = isolatedDatabase()) {
-            previous.start();
-            var baseline = Flyway.configure().dataSource(previous.getJdbcUrl(), "stockrescue_app", "test-app-password")
-                    .defaultSchema("public").target("10").cleanDisabled(true).load();
-            assertThat(baseline.migrate().migrationsExecuted).isEqualTo(10);
-
-            var user = UUID.randomUUID();
-            var org = UUID.randomUUID();
-            var membership = UUID.randomUUID();
-            var product = UUID.randomUUID();
-            var lot = UUID.randomUUID();
-            var audit = UUID.randomUUID();
-            var policy = UUID.randomUUID();
-            var profile = UUID.randomUUID();
-            var request = UUID.randomUUID();
-            var gtin = "036000291452";
-            var digest = new byte[32];
-            java.util.Arrays.fill(digest, (byte) 7);
-            try (var old = open(previous.getJdbcUrl())) {
-                execute(old, "INSERT INTO stockrescue.user_account(id,email_display) VALUES (?,?)", user, user + "@example.test");
-                execute(old, "INSERT INTO stockrescue.organization(id,name,created_by_user_id) VALUES (?,'Legacy catalog',?)", org, user);
-                execute(old, "INSERT INTO stockrescue.membership(id,org_id,user_id,org_role) VALUES (?,?,?,'ORG_ADMIN')", membership, org, user);
-                execute(old, productSql(), product, org, "LEGACY-MILK", gtin);
-                execute(old, "INSERT INTO stockrescue.manufacturer_lot(id,org_id,product_id,lot_code) VALUES (?,?,?,'LEGACY-LOT')",
-                        lot, org, product);
-                execute(old, """
-                        INSERT INTO stockrescue.audit_entry(id,actor_user_id,org_id,resource_type,resource_id,action,reason,correlation_id)
-                        VALUES (?, ?, ?, 'product', ?, 'PRODUCT_CREATED', 'Legacy catalog evidence', 'migration-upgrade-probe')
-                        """, audit, user, org, product);
-                execute(old, """
-                        INSERT INTO stockrescue.food_safety_policy_version(id,org_id,profile_id,temperature_class,version,
-                            partial_date_rule,review_source,review_reference,reason,actor_user_id,recorded_by_membership_id,
-                            request_id,payload_digest)
-                        VALUES (?, ?, ?, 'CHILLED', 1, 'NO_NORMALIZATION', 'legacy review', 'legacy-policy-1',
-                            'Preserve reviewed policy history', ?, ?, ?, ?)
-                        """, policy, org, profile, user, membership, request, digest);
-            }
-
-            var upgraded = migrations(previous.getJdbcUrl());
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(MigrationAssertions.migrationsAfter(10));
-            upgraded.validate();
-            MigrationAssertions.assertCurrent(upgraded);
-            try (var current = open(previous.getJdbcUrl())) {
-                assertThat(text(current, "SELECT category FROM stockrescue.product WHERE org_id=? AND id=?", org, product))
-                        .isEqualTo("UNCLASSIFIED");
-                assertThat(text(current, "SELECT version::text FROM stockrescue.product WHERE org_id=? AND id=?", org, product))
-                        .isEqualTo("0");
-                assertThat(text(current, "SELECT product_id::text FROM stockrescue.manufacturer_lot WHERE org_id=? AND id=?", org, lot))
-                        .isEqualTo(product.toString());
-                assertThat(count(current, "SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=? AND id=? AND resource_id=?", org, audit, product))
-                        .isEqualTo(1);
-                assertThat(text(current, "SELECT product_category FROM stockrescue.food_safety_policy_version WHERE org_id=? AND id=?", org, policy))
-                        .isEqualTo("UNCLASSIFIED");
-                assertThat(text(current, "SELECT gtin FROM stockrescue.product WHERE org_id=? AND id=?", org, product)).isEqualTo(gtin);
-                assertThat(text(current, "SELECT review_reference FROM stockrescue.food_safety_policy_version WHERE org_id=? AND id=?", org, policy))
-                        .isEqualTo("legacy-policy-1");
-
-                var dairyProfile = UUID.randomUUID();
-                var bakeryProfile = UUID.randomUUID();
-                insertPolicy(current, UUID.randomUUID(), org, dairyProfile, "DAIRY", user, membership, UUID.randomUUID());
-                insertPolicy(current, UUID.randomUUID(), org, bakeryProfile, "BAKERY", user, membership, UUID.randomUUID());
-                assertThat(count(current, "SELECT count(*) FROM stockrescue.food_safety_policy_version WHERE org_id=? AND temperature_class='CHILLED' AND version=1", org))
-                        .isEqualTo(3);
-                assertThatThrownBy(() -> insertPolicy(current, UUID.randomUUID(), org, dairyProfile, "BAKERY", user, membership, UUID.randomUUID()))
-                        .isInstanceOfSatisfying(SQLException.class, failure -> assertThat(failure.getSQLState()).isEqualTo("23514"));
-                assertThatThrownBy(() -> execute(current,
-                        "UPDATE stockrescue.product SET category='UNSUPPORTED' WHERE org_id=? AND id=?", org, product))
-                        .isInstanceOfSatisfying(SQLException.class, failure -> assertThat(failure.getSQLState()).isEqualTo("23514"));
-            }
-            assertThat(migrations(previous.getJdbcUrl()).migrate().migrationsExecuted).isZero();
-        }
-    }
-
     private static Flyway migrations(String url) {
         return Flyway.configure().dataSource(url, "stockrescue_app", "test-app-password").defaultSchema("public").cleanDisabled(true).load();
-    }
-
-    private static void insertPolicy(Connection target, UUID id, UUID org, UUID profile, String category,
-            UUID actor, UUID membership, UUID request) throws Exception {
-        execute(target, """
-                INSERT INTO stockrescue.food_safety_policy_version(id,org_id,profile_id,product_category,temperature_class,
-                    version,partial_date_rule,review_source,review_reference,reason,actor_user_id,recorded_by_membership_id,
-                    request_id,payload_digest)
-                VALUES (?, ?, ?, ?, 'CHILLED', 1, 'NO_NORMALIZATION', 'review source', 'policy-reference',
-                    'Scoped review', ?, ?, ?, ?)
-                """, id, org, profile, category, actor, membership, request, new byte[32]);
-    }
-
-    private static String text(Connection target, String query, Object... parameters) throws SQLException {
-        try (var statement = target.prepareStatement(query)) {
-            for (int index = 0; index < parameters.length; index++) statement.setObject(index + 1, parameters[index]);
-            try (var row = statement.executeQuery()) {
-                if (!row.next()) throw new SQLException("Expected one row from migration verification query");
-                return row.getString(1);
-            }
-        }
-    }
-
-    private static long count(Connection target, String query, Object... parameters) throws SQLException {
-        return Long.parseLong(text(target, query, parameters));
     }
 
     private PostgreSQLContainer isolatedDatabase() {
@@ -536,11 +397,6 @@ class CatalogPersistenceTest extends InfrastructureTestBase {
                 while (rows.next()) lines.add(rows.getString(1));
                 return String.join("\n", lines);
             }
-        }
-    }
-    private static String history(Connection connection) throws SQLException {
-        try (var statement = connection.createStatement(); var row = statement.executeQuery("SELECT json_agg(h ORDER BY installed_rank)::text FROM public.flyway_schema_history h WHERE version::integer<=8")) {
-            assertThat(row.next()).isTrue(); return row.getString(1);
         }
     }
     private record Fixture(UUID userA, UUID userB, UUID orgA, UUID orgB, UUID memberA, UUID memberB, UUID storeA, UUID storeB, UUID productA, UUID productB) { }
