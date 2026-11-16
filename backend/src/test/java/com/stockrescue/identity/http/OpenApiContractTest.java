@@ -276,6 +276,13 @@ class OpenApiContractTest extends InfrastructureTestBase {
                 .isEqualTo("[\"PREPARED\",\"COMMITTED_AWAITING_ACKNOWLEDGEMENT\",\"ACKNOWLEDGED\",\"REVIEWED\",\"CONFLICT\"]");
         assertThat(intentInspectionSchema.path("properties").path("positionPreview").path("anyOf")).hasSize(2);
         assertThat(intentInspectionSchema.path("properties").path("receiptDocumentPreview").path("anyOf")).hasSize(2);
+        var intentStatus=inventoryPaths.path(inventory+"/command-intents/{intentId}/status").path("get");
+        assertThat(intentStatus.path("operationId").asString()).isEqualTo("getInventoryCommandIntentStatus");
+        var intentStatusSchema=schemas.path("IntentStatusResponse");
+        for(var field:java.util.List.of("executionStatus","committedOutcome","committedReceiptOutcome"))
+            assertThat(intentStatusSchema.path("required")).anyMatch(value->value.asString().equals(field));
+        assertThat(intentStatusSchema.path("properties").has("positionPreview")).isFalse();
+        assertThat(intentStatusSchema.path("properties").has("receiptDocumentPreview")).isFalse();
         assertThat(inventoryPaths.path(inventory+"/reconciliations").path("post").path("operationId").asString())
                 .isEqualTo("reconcileInventory");
         assertThat(inventoryPaths.path(inventory+"/reconciliations/{runId}/findings").path("get").path("operationId").asString())

@@ -200,6 +200,12 @@ releases the ordering gap. Invalid source evidence remains blocked for engineeri
 review. The consumer stores an idempotent receipt and a monotonic derived view
 without changing stock balances. Redrive lifecycle and irreparable-source handling
 are recorded in [ADR-OUTBOX-REDRIVE](ADR-OUTBOX-REDRIVE.md).
+The local Compose broker stores its logs in the named `kafka_dev_data` volume,
+which survives ordinary `down`/`up` and is removed by `down --volumes` together
+with PostgreSQL's development data. Local Kafka retention is finite at seven
+days: broker acknowledgement is not a promise of permanent storage or replay
+after retention expires. Replication and backups need a separate production
+design.
 The projection consumer acknowledges only after its inbox transaction or durable
 invalid-event record commits. Known invalid records are parked; transient
 infrastructure failures retry the same offset with capped jitter. Unknown

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { clearCsrf } from './client'
-import { getInventoryCommandOutcome, getInventoryReceiptDocumentOutcome, inspectInventoryCommandIntent, receiveInventoryGoods, receiveInventoryGoodsDocument, repairInventoryProjection } from './inventory'
+import { getInventoryCommandIntentStatus, getInventoryCommandOutcome, getInventoryReceiptDocumentOutcome, inspectInventoryCommandIntent, receiveInventoryGoods, receiveInventoryGoodsDocument, repairInventoryProjection } from './inventory'
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { clearCsrf(); vi.unstubAllGlobals() })
@@ -64,6 +64,19 @@ it('inspects a saved command through the authenticated read API without sending 
   const request = fetcher.mock.calls[0][0] as Request
   expect(request.method).toBe('GET')
   expect(new URL(request.url).pathname).toContain('/inventory/command-intents/intent')
+  expect(request.headers.has('X-CSRF-TOKEN')).toBe(false)
+})
+
+it('checks saved command status through a payload-free read request', async () => {
+  const fetcher = vi.fn().mockResolvedValueOnce(json({ id: 'intent', operation: 'RESERVE', subject: 'position:position',
+    requestId: 'request', state: 'PENDING', preparedAt: '2026-11-12T10:00:00Z', executedAt: null,
+    executionStatus: 'PREPARED', committedOutcome: null, committedReceiptOutcome: null }))
+  vi.stubGlobal('fetch', fetcher)
+  const result = await getInventoryCommandIntentStatus('org', 'store', 'intent', new AbortController().signal)
+  expect(result.executionStatus).toBe('PREPARED')
+  const request = fetcher.mock.calls[0][0] as Request
+  expect(request.method).toBe('GET')
+  expect(new URL(request.url).pathname).toContain('/inventory/command-intents/intent/status')
   expect(request.headers.has('X-CSRF-TOKEN')).toBe(false)
 })
 

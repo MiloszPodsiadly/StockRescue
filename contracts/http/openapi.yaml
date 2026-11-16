@@ -4590,6 +4590,72 @@ paths:
         command receipt
       tags:
       - inventory-command-intent-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/status:
+    get:
+      operationId: getInventoryCommandIntentStatus
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: intentId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntentStatusResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Check the current actor's saved inventory command status without returning
+        its prepared payload
+      tags:
+      - inventory-command-intent-controller
   /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/commands/{operation}/{requestId}:
     get:
       operationId: getInventoryCommandOutcome
@@ -9713,6 +9779,56 @@ components:
       - positionPreview
       - preparedAt
       - receiptDocumentPreview
+      - requestId
+      - state
+      - subject
+    IntentStatusResponse:
+      type: object
+      properties:
+        committedOutcome:
+          anyOf:
+          - $ref: "#/components/schemas/InventoryCommandResponse"
+          - type: "null"
+        committedReceiptOutcome:
+          anyOf:
+          - $ref: "#/components/schemas/ReceiptDocumentResponse"
+          - type: "null"
+        executedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        executionStatus:
+          type: string
+          enum:
+          - PREPARED
+          - COMMITTED_AWAITING_ACKNOWLEDGEMENT
+          - ACKNOWLEDGED
+          - REVIEWED
+          - CONFLICT
+        id:
+          type: string
+          format: uuid
+        operation:
+          type: string
+        preparedAt:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+          format: uuid
+        state:
+          type: string
+        subject:
+          type: string
+      required:
+      - committedOutcome
+      - committedReceiptOutcome
+      - executedAt
+      - executionStatus
+      - id
+      - operation
+      - preparedAt
       - requestId
       - state
       - subject

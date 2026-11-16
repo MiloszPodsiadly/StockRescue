@@ -715,6 +715,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Check the current actor's saved inventory command status without returning its prepared payload */
+        get: operations["getInventoryCommandIntentStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/commands/{operation}/{requestId}": {
         parameters: {
             query?: never;
@@ -1820,6 +1837,23 @@ export interface components {
             /** Format: date-time */
             preparedAt: string;
             receiptDocumentPreview: components["schemas"]["ReceiptPayload"] | null;
+            /** Format: uuid */
+            requestId: string;
+            state: string;
+            subject: string;
+        };
+        IntentStatusResponse: {
+            committedOutcome: components["schemas"]["InventoryCommandResponse"] | null;
+            committedReceiptOutcome: components["schemas"]["ReceiptDocumentResponse"] | null;
+            /** Format: date-time */
+            executedAt: string | null;
+            /** @enum {string} */
+            executionStatus: "PREPARED" | "COMMITTED_AWAITING_ACKNOWLEDGEMENT" | "ACKNOWLEDGED" | "REVIEWED" | "CONFLICT";
+            /** Format: uuid */
+            id: string;
+            operation: string;
+            /** Format: date-time */
+            preparedAt: string;
             /** Format: uuid */
             requestId: string;
             state: string;
@@ -7924,6 +7958,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IntentSummary"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or store unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    getInventoryCommandIntentStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                intentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntentStatusResponse"];
                 };
             };
             /** @description Invalid intent or request */

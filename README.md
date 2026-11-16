@@ -37,17 +37,31 @@ docker compose --env-file .env.example up --build --wait
 Open <http://localhost:8080>. This starts the web shell, Java backend,
 PostgreSQL, Kafka and private Python service. The example credentials are for
 local development only. Stop with `docker compose --env-file .env.example down`;
-the PostgreSQL development volume is preserved.
+the PostgreSQL and Kafka development volumes are preserved. Start them again
+with `docker compose --env-file .env.example up --build --wait`. Kafka keeps
+records for up to seven days; a broker acknowledgement does not guarantee
+permanent storage or replay beyond that retention period.
 
 The consolidated Flyway baseline initializes fresh databases. After an
 intentional baseline edit, recreate only this disposable local Compose project
-so its recorded checksum matches the baseline. This removes local PostgreSQL
-and Kafka data; never use these commands for shared or production environments:
+so its recorded checksum matches the baseline. The following destructive
+command removes both local PostgreSQL and Kafka data. Never use it for shared
+or production environments:
 
 ```sh
 docker compose --env-file .env.example down --volumes
 docker compose --env-file .env.example up --build --wait
 ```
+
+These focused checks use disposable Compose projects and remove only their own
+resources when complete:
+
+```sh
+python scripts/kafka-persistence-check.py
+python scripts/integration-check.py --inventory-recovery-e2e-only
+```
+
+Production replication, backups and retention require a separate design.
 
 The backend pool targets 2 idle database connections and allows up to 10 per
 instance. Configure `DATABASE_POOL_MIN_IDLE` and `DATABASE_POOL_MAX_SIZE` in the

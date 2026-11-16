@@ -8,6 +8,7 @@ export type InventoryAllocation = components['schemas']['AllocationResponse']
 export type InventoryCommand = components['schemas']['InventoryCommandResponse']
 export type InventoryCommandIntent = components['schemas']['IntentSummary']
 export type InventoryCommandIntentInspection = components['schemas']['IntentInspectionResponse']
+export type InventoryCommandIntentStatus = components['schemas']['IntentStatusResponse']
 export type InventoryCommandIntentPrepare = components['schemas']['PrepareRequest']
 export type InventoryCommandIntentExecution = components['schemas']['ExecutionResponse']
 export type InventoryCommandIntentOperation = NonNullable<InventoryCommandIntentPrepare['operation']>
@@ -113,6 +114,12 @@ export async function listPendingInventoryCommandIntents(organizationId: string,
 
 export async function inspectInventoryCommandIntent(organizationId: string, storeId: string, intentId: string, signal: AbortSignal) {
   const { data, error, response } = await api.GET(`${base}/command-intents/{intentId}`, { params: { path: { organizationId, storeId, intentId } }, signal: requestSignal(signal) })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function getInventoryCommandIntentStatus(organizationId: string, storeId: string, intentId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.GET(`${base}/command-intents/{intentId}/status`, { params: { path: { organizationId, storeId, intentId } }, signal: requestSignal(signal) })
   if (!data) throw new ApiError(response, error)
   return data
 }

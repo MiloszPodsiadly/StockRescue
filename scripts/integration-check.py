@@ -91,6 +91,11 @@ def main():
     parser.add_argument("--port", type=int, default=18080)
     parser.add_argument("--browser", action="store_true")
     parser.add_argument(
+        "--inventory-recovery-e2e-only",
+        action="store_true",
+        help="build an isolated Compose project and run only the inventory recovery browser test",
+    )
+    parser.add_argument(
         "--keep-on-failure",
         action="store_true",
         help="retain this run's isolated Compose project and generated env file for debugging",
@@ -1229,6 +1234,39 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
         print(
             "PASS: private ports, loopback proxy and Python credential boundary", flush=True
         )
+
+        if arguments.inventory_recovery_e2e_only:
+            run("up", "--build", "-d", "--wait", "--wait-timeout", "180")
+            require(
+                json.loads(wait_for("/api/health/readiness", 200))["status"] == "UP",
+                "Backend is not ready",
+            )
+            require(
+                json.loads(wait_for("/api/health/integration", 200))["status"] == "UP",
+                "Integration is not healthy",
+            )
+            subprocess.run(
+                [
+                    pnpm_executable,
+                    "--dir",
+                    "frontend",
+                    "exec",
+                    "playwright",
+                    "test",
+                    "e2e/inventory-command-recovery.spec.ts",
+                ],
+                check=True,
+                env={
+                    **os.environ,
+                    "BASE_URL": base_url,
+                    "STOCKRESCUE_TEST_PROJECT": project,
+                    "STOCKRESCUE_TEST_ENV_FILE": str(environment_file),
+                },
+                timeout=300,
+            )
+            print("PASS: isolated read-only inventory command recovery browser test", flush=True)
+            completed = True
+            return
 
         verify_optional_dependency_cold_start(
             "cold-kafka", "intelligence", server_port=18081, browser=arguments.browser

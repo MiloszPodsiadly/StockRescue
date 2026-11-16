@@ -69,6 +69,15 @@ public class InventoryCommandIntentController {
                 .body(IntentInspectionResponse.from(intents.inspect(actor(actor),organizationId,storeId,intentId)));
     }
 
+    @GetMapping("/{intentId}/status")
+    @io.swagger.v3.oas.annotations.Operation(operationId="getInventoryCommandIntentStatus",summary="Check the current actor's saved inventory command status without returning its prepared payload")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=IntentStatusResponse.class)))
+    public ResponseEntity<IntentStatusResponse> status(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID storeId,
+            @PathVariable UUID intentId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(IntentStatusResponse.from(intents.status(actor(actor),organizationId,storeId,intentId)));
+    }
+
     @PostMapping(consumes=MediaType.APPLICATION_JSON_VALUE)
     @io.swagger.v3.oas.annotations.Operation(operationId="prepareInventoryCommandIntent",summary="Durably prepare one validated stock command before execution")
     @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=IntentSummary.class)))
@@ -134,6 +143,25 @@ public class InventoryCommandIntentController {
             return new IntentInspectionResponse(inspection.id(),inspection.operation(),inspection.subject(),inspection.requestId(),
                     inspection.state(),inspection.preparedAt(),inspection.executedAt(),inspection.executionStatus(),inspection.positionPreview(),
                     inspection.receiptDocumentPreview(),outcome,receiptOutcome);
+        }
+    }
+    public record IntentStatusResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String operation,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String subject,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String state,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant preparedAt,
+            @Schema(types={"string","null"},format="date-time",requiredMode=Schema.RequiredMode.REQUIRED) Instant executedAt,
+            @Schema(allowableValues={"PREPARED","COMMITTED_AWAITING_ACKNOWLEDGEMENT","ACKNOWLEDGED","REVIEWED","CONFLICT"},
+                    requiredMode=Schema.RequiredMode.REQUIRED) InventoryCommandIntentService.InspectionStatus executionStatus,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) InventoryController.InventoryCommandResponse committedOutcome,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) InventoryController.ReceiptDocumentResponse committedReceiptOutcome) {
+        static IntentStatusResponse from(InventoryCommandIntentService.RecoveryStatus status) {
+            var outcome=status.committedOutcome()==null?null:InventoryController.InventoryCommandResponse.from(status.committedOutcome());
+            var receiptOutcome=status.committedReceiptOutcome()==null?null:
+                    InventoryController.ReceiptDocumentResponse.from(status.committedReceiptOutcome());
+            return new IntentStatusResponse(status.id(),status.operation(),status.subject(),status.requestId(),status.state(),
+                    status.preparedAt(),status.executedAt(),status.executionStatus(),outcome,receiptOutcome);
         }
     }
     public record ExecutionResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,

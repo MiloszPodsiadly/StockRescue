@@ -32,6 +32,7 @@ import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -48,6 +49,9 @@ public class InventoryCommandIntentService {
     public record Inspection(UUID id,String operation,String subject,UUID requestId,String state,java.time.Instant preparedAt,
             java.time.Instant executedAt,InspectionStatus executionStatus,PositionPayload positionPreview,ReceiptPayload receiptDocumentPreview,
             Result committedOutcome,ReceiptDocumentResult committedReceiptOutcome) { }
+    public record RecoveryStatus(UUID id,String operation,String subject,UUID requestId,String state,java.time.Instant preparedAt,
+            java.time.Instant executedAt,InspectionStatus executionStatus,Result committedOutcome,
+            ReceiptDocumentResult committedReceiptOutcome) { }
     public record Page(List<Summary> items,boolean hasMore) { public Page { items=List.copyOf(items); } }
     public record PositionPayload(@NotNull UUID requestId,@NotNull UUID positionId,UUID allocationId,
             @NotNull @Min(0) @Max(Long.MAX_VALUE-1) Long expectedVersion,@NotNull Long quantity,
@@ -68,6 +72,7 @@ public class InventoryCommandIntentService {
             @NotNull @Min(0) @Max(Long.MAX_VALUE-1) Long expectedVersion) { }
     private record Validated(Operation operation,String subject,UUID requestId,String payloadJson,byte[] fingerprint,
             PositionPayload position,ReceiveGoodsDocument receipt) { }
+    private record DurableState(InspectionStatus status,Result outcome,ReceiptDocumentResult receiptOutcome) { }
 
     private static final int MAX_PAYLOAD_BYTES=65_536;
     private final AccessPolicy access;
@@ -126,37 +131,26 @@ public class InventoryCommandIntentService {
         Operation operation=Operation.valueOf(observed.operation());
         access.requireStore(actor,organizationId,storeId,requiredAction(operation),true);
         Intent intent=repository.byId(organizationId,storeId,actor,intentId,true).orElseThrow(OrganizationUnavailableException::new);
-
-        boolean committed=repository.hasCommittedCommand(intent);
-        boolean markedExecuted=intent.executedAt()!=null;
-        InspectionStatus status;
-        if(committed!=markedExecuted) status=InspectionStatus.CONFLICT;
-        else if(committed) status=switch(intent.state()) {
-            case "PENDING" -> InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT;
-            case "ACKNOWLEDGED" -> InspectionStatus.ACKNOWLEDGED;
-            default -> InspectionStatus.CONFLICT;
-        };
-        else status=switch(intent.state()) {
-            case "PENDING" -> InspectionStatus.PREPARED;
-            case "REVIEWED" -> InspectionStatus.REVIEWED;
-            default -> InspectionStatus.CONFLICT;
-        };
+        DurableState durable=durableState(actor,organizationId,storeId,intent);
 
         PositionPayload positionPreview=null;
         ReceiptPayload receiptPreview=null;
-        Result outcome=null;
-        ReceiptDocumentResult receiptOutcome=null;
         if(operation==Operation.RECEIPT_DOCUMENT) {
             receiptPreview=json.readValue(intent.payload(),ReceiptPayload.class);
-            if(status==InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT || status==InspectionStatus.ACKNOWLEDGED)
-                receiptOutcome=inventory.receiptDocumentOutcome(actor,organizationId,storeId,intent.requestId());
         } else {
             positionPreview=json.readValue(intent.payload(),PositionPayload.class);
-            if(status==InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT || status==InspectionStatus.ACKNOWLEDGED)
-                outcome=inventory.commandOutcome(actor,organizationId,storeId,InventoryOperation.valueOf(intent.operation()),intent.requestId());
         }
         return new Inspection(intent.id(),intent.operation(),intent.subject(),intent.requestId(),intent.state(),intent.preparedAt(),
-                intent.executedAt(),status,positionPreview,receiptPreview,outcome,receiptOutcome);
+                intent.executedAt(),durable.status(),positionPreview,receiptPreview,durable.outcome(),durable.receiptOutcome());
+    }
+
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
+    public RecoveryStatus status(UUID actor,UUID organizationId,UUID storeId,UUID intentId) {
+        access.requireStore(actor,organizationId,storeId,StoreAction.READ_INVENTORY,false);
+        Intent intent=repository.byId(organizationId,storeId,actor,intentId,false).orElseThrow(OrganizationUnavailableException::new);
+        DurableState durable=durableState(actor,organizationId,storeId,intent);
+        return new RecoveryStatus(intent.id(),intent.operation(),intent.subject(),intent.requestId(),intent.state(),intent.preparedAt(),
+                intent.executedAt(),durable.status(),durable.outcome(),durable.receiptOutcome());
     }
 
     @Transactional
@@ -176,7 +170,8 @@ public class InventoryCommandIntentService {
     public Summary acknowledge(UUID actor,UUID organizationId,UUID storeId,UUID intentId) {
         access.requireStore(actor,organizationId,storeId,StoreAction.READ_INVENTORY,false);
         Intent intent=repository.byId(organizationId,storeId,actor,intentId,true).orElseThrow(OrganizationUnavailableException::new);
-        if(intent.state().equals("ACKNOWLEDGED") || intent.state().equals("REVIEWED")) return summary(intent);
+        if(intent.state().equals("ACKNOWLEDGED")) return summary(intent);
+        if(intent.state().equals("REVIEWED")) throw new InventoryFailure(Kind.CONFLICT);
         if(intent.executedAt()==null || !repository.hasCommittedCommand(intent)) throw new InventoryFailure(Kind.CONFLICT);
         if(!repository.resolve(organizationId,storeId,actor,intentId,"ACKNOWLEDGED")) throw new InventoryFailure(Kind.CONFLICT);
         return repository.byId(organizationId,storeId,actor,intentId,false).map(InventoryCommandIntentService::summary)
@@ -220,6 +215,32 @@ public class InventoryCommandIntentService {
             case SALE -> inventory.recordSale(intent.actorId(),intent.organizationId(),intent.storeId(),stock);
             case RECEIPT_DOCUMENT -> throw new IllegalStateException("Receipt operation is handled separately");
         };
+    }
+
+    private DurableState durableState(UUID actor,UUID organizationId,UUID storeId,Intent intent) {
+        boolean committed=repository.hasCommittedCommand(intent);
+        boolean markedExecuted=intent.executedAt()!=null;
+        InspectionStatus status;
+        if(committed!=markedExecuted) status=InspectionStatus.CONFLICT;
+        else if(committed) status=switch(intent.state()) {
+            case "PENDING" -> InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT;
+            case "ACKNOWLEDGED" -> InspectionStatus.ACKNOWLEDGED;
+            default -> InspectionStatus.CONFLICT;
+        };
+        else status=switch(intent.state()) {
+            case "PENDING" -> InspectionStatus.PREPARED;
+            case "REVIEWED" -> InspectionStatus.REVIEWED;
+            default -> InspectionStatus.CONFLICT;
+        };
+
+        Result outcome=null;
+        ReceiptDocumentResult receiptOutcome=null;
+        if(status==InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT || status==InspectionStatus.ACKNOWLEDGED) {
+            if(intent.operation().equals(Operation.RECEIPT_DOCUMENT.name()))
+                receiptOutcome=inventory.receiptDocumentOutcome(actor,organizationId,storeId,intent.requestId());
+            else outcome=inventory.commandOutcome(actor,organizationId,storeId,InventoryOperation.valueOf(intent.operation()),intent.requestId());
+        }
+        return new DurableState(status,outcome,receiptOutcome);
     }
 
     private Validated validate(Operation operation,JsonNode payload,UUID organizationId,UUID storeId) {
