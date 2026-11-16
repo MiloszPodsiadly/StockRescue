@@ -39,6 +39,16 @@ PostgreSQL, Kafka and private Python service. The example credentials are for
 local development only. Stop with `docker compose --env-file .env.example down`;
 the PostgreSQL development volume is preserved.
 
+The consolidated Flyway baseline initializes fresh databases. After an
+intentional baseline edit, recreate only this disposable local Compose project
+so its recorded checksum matches the baseline. This removes local PostgreSQL
+and Kafka data; never use these commands for shared or production environments:
+
+```sh
+docker compose --env-file .env.example down --volumes
+docker compose --env-file .env.example up --build --wait
+```
+
 The backend pool targets 2 idle database connections and allows up to 10 per
 instance. Configure `DATABASE_POOL_MIN_IDLE` and `DATABASE_POOL_MAX_SIZE` in the
 environment to tune this pool within the database's total connection budget.

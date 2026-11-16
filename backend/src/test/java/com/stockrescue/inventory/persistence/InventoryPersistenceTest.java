@@ -206,13 +206,88 @@ class InventoryPersistenceTest {
                 var command=command(f,InventoryOperation.RECEIVE); repository.recordCommand(command);
                 repository.recordMovement(UUID.randomUUID(),command," ","proof");
             });
-            var posted=post(f,InventoryOperation.RECEIVE,new Delta(1,0,0,0));
+            var posted=postWithoutReceipt(f,InventoryOperation.RECEIVE,new Delta(1,0,0,0));
             var receipt=UUID.randomUUID(); receipt(f,posted,receipt,"document-check");
             reject("23514",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',0,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position));
             reject("23514",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',1,'RESERVED')",f.org,f.store,receipt,posted.movement,f.position));
             sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',1,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position);
             reject("23514",()->sql("INSERT INTO stockrescue.inventory_outbox_event(id,org_id,store_id,movement_id,position_id,aggregate_version,event_type,schema_version,payload) VALUES (?,?,?,?,?,1,'InventoryStockChanged',1,'{}')",UUID.randomUUID(),f.org,f.store,posted.movement,f.position));
             constraints();
+        });
+    }
+
+    @Test void receiveMovementRequiresNonemptyHeaderAndExactSupplierLineEvidenceAtCommit() {
+        within(f->{
+            reject("23514","requires exactly one goods receipt header",()->{
+                postWithoutReceipt(f,InventoryOperation.RECEIVE,new Delta(5,0,0,0));
+                constraints();
+            });
+            assertThat(count("inventory_command_receipt",f.org)).isZero();
+            assertThat(count("stock_movement",f.org)).isZero();
+            assertThat(count("stock_movement_line",f.org)).isZero();
+
+            reject("23514","requires nonempty movement and supplier source lines",()->{
+                var posted=postWithoutReceipt(f,InventoryOperation.RECEIVE,new Delta(5,0,0,0));
+                receipt(f,posted,UUID.randomUUID(),"empty-source-lines");
+                constraints();
+            });
+
+            reject("23514","do not reconcile",()->{
+                var posted=postWithoutReceipt(f,InventoryOperation.RECEIVE,new Delta(5,0,0,0));
+                var header=UUID.randomUUID(); receipt(f,posted,header,"wrong-source-quantity");
+                receiptLine(f,posted,header,f.position,"only-four",4,"AVAILABLE");
+                constraints();
+            });
+
+            reject("23514","do not reconcile",()->{
+                var posted=postWithoutReceipt(f,InventoryOperation.RECEIVE,new Delta(5,0,2,0));
+                openAllocation(f,posted,"QUARANTINED",2);
+                var header=UUID.randomUUID(); receipt(f,posted,header,"wrong-source-disposition");
+                receiptLine(f,posted,header,f.position,"all-available",5,"AVAILABLE");
+                constraints();
+            });
+
+            reject("23514","do not reconcile",()->{
+                var secondLocation=UUID.randomUUID(); var secondPosition=UUID.randomUUID();
+                execute("INSERT INTO stockrescue.storage_location(id,org_id,store_id,zone_id,code,name) VALUES (?,?,?,?,'A-2','Aisle two')",
+                        secondLocation,f.org,f.store,f.zone);
+                repository.createPosition(secondPosition,f.org,f.store,secondLocation,f.product,f.lot);
+                var command=command(f,InventoryOperation.RECEIVE); repository.recordCommand(command);
+                var movement=UUID.randomUUID(); repository.recordMovement(movement,command,"Operator stock evidence","multi-position-delivery");
+                repository.postLine(f.org,f.store,movement,f.position,0,new Delta(2,0,0,0),Trust.UNVERIFIED);
+                repository.postLine(f.org,f.store,movement,secondPosition,0,new Delta(3,0,0,0),Trust.UNVERIFIED);
+                var posted=new Posting(movement,null,command);
+                var header=UUID.randomUUID(); receipt(f,posted,header,"missing-position-source-line");
+                receiptLine(f,posted,header,f.position,"first-position",2,"AVAILABLE");
+                constraints();
+            });
+
+            var single=postWithoutReceipt(f,InventoryOperation.RECEIVE,new Delta(4,0,0,0));
+            var singleHeader=UUID.randomUUID(); receipt(f,single,singleHeader,"valid-single-line");
+            receiptLine(f,single,singleHeader,f.position,"single-source",4,"AVAILABLE");
+            constraints();
+
+            var beforeMultiVersion=repository.position(f.org,f.store,f.position,false).orElseThrow().version();
+            var multi=postWithoutReceipt(f,InventoryOperation.RECEIVE,new Delta(5,0,0,0));
+            var multiHeader=UUID.randomUUID(); receipt(f,multi,multiHeader,"valid-multi-line");
+            receiptLine(f,multi,multiHeader,f.position,"supplier-line-1",2,"AVAILABLE");
+            receiptLine(f,multi,multiHeader,f.position,"supplier-line-2",3,"AVAILABLE");
+            constraints();
+            assertThat(repository.position(f.org,f.store,f.position,false).orElseThrow().version()).isEqualTo(beforeMultiVersion+1);
+            assertThat(number("SELECT count(*) FROM stockrescue.goods_receipt_line WHERE receipt_id=?",multiHeader)).isEqualTo(2);
+
+            var quarantine=postWithoutReceipt(f,InventoryOperation.RECEIVE,new Delta(5,0,2,0));
+            openAllocation(f,quarantine,"QUARANTINED",2);
+            var quarantineHeader=UUID.randomUUID(); receipt(f,quarantine,quarantineHeader,"valid-quarantine-lines");
+            receiptLine(f,quarantine,quarantineHeader,f.position,"available-source",3,"AVAILABLE");
+            receiptLine(f,quarantine,quarantineHeader,f.position,"quarantine-source",2,"QUARANTINED");
+            constraints();
+            assertThat(repository.position(f.org,f.store,f.position,false).orElseThrow().buckets())
+                    .isEqualTo(new StockBuckets(14,0,2,0));
+
+            var ordinary=post(f,InventoryOperation.VERIFY_ZERO,new Delta(0,0,0,0));
+            constraints();
+            assertThat(number("SELECT count(*) FROM stockrescue.goods_receipt WHERE movement_id=?",ordinary.movement)).isZero();
         });
     }
 
@@ -252,16 +327,16 @@ class InventoryPersistenceTest {
 
     @Test void commandAndPhysicalDocumentDeduplicationHaveIndependentScopedIdentities() {
         within(f->{
-            var posted=post(f,InventoryOperation.RECEIVE,new Delta(2,0,0,0));
+            var posted=postWithoutReceipt(f,InventoryOperation.RECEIVE,new Delta(2,0,0,0));
             assertThat(repository.recordCommand(posted.command)).isFalse();
             var recorded=repository.command(f.org,f.user,InventoryOperation.RECEIVE,posted.command.requestId()).orElseThrow();
             assertThat(recorded.id()).isEqualTo(posted.command.id());
             assertThat(recorded.payloadDigest()).isEqualTo(posted.command.payloadDigest());
             var receipt=UUID.randomUUID(); receipt(f,posted,receipt,"delivery-24");
-            sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',2,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position);
+            receiptLine(f,posted,receipt,f.position,"1",2,"AVAILABLE");
             var newRequest=post(f,InventoryOperation.RECEIVE,new Delta(1,0,0,0));
             reject("23505",()->receipt(f,newRequest,UUID.randomUUID(),"delivery-24"));
-            reject("23505",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',1,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position));
+            reject("23505",()->receiptLine(f,posted,receipt,f.position,"1",1,"AVAILABLE"));
             reject("23503",()->sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'2',1,'AVAILABLE')",f.otherOrg,f.otherStore,receipt,posted.movement,f.position));
             reject("23514",()->sql("INSERT INTO stockrescue.inventory_command_receipt(id,org_id,store_id,actor_user_id,membership_id,operation,request_id,payload_digest,outcome) VALUES (?,?,?,?,?,'RECEIVE',?,decode('00','hex'),'{}')",UUID.randomUUID(),f.org,f.store,f.user,f.member,UUID.randomUUID()));
             constraints();
@@ -271,8 +346,7 @@ class InventoryPersistenceTest {
     @Test void historyAndDerivedEvidenceRejectUpdateDeleteAndTruncate() {
         within(f->{
             var posted=post(f,InventoryOperation.RECEIVE,new Delta(3,0,0,0));
-            var receipt=UUID.randomUUID(); receipt(f,posted,receipt,"immutable-delivery");
-            sql("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,'1',3,'AVAILABLE')",f.org,f.store,receipt,posted.movement,f.position);
+            var receipt=UUID.fromString(text("SELECT id FROM stockrescue.goods_receipt WHERE movement_id=?",posted.movement));
             var reservation=post(f,InventoryOperation.RESERVE,new Delta(0,1,0,0)); openAllocation(f,reservation,"RESERVED",1);
             var run=UUID.randomUUID();
             sql("INSERT INTO stockrescue.inventory_reconciliation_run(id,org_id,store_id,actor_user_id,membership_id,severity,checked_positions,started_at,completed_at) VALUES (?,?,?,?,?,'CLEAN',1,clock_timestamp(),clock_timestamp())",run,f.org,f.store,f.user,f.member);
@@ -394,6 +468,14 @@ class InventoryPersistenceTest {
         return new CommandReceipt(UUID.randomUUID(),f.org,f.store,f.user,f.member,operation,UUID.randomUUID(),new byte[32],"{\"accepted\":true}");
     }
     private static Posting post(Fixture f,InventoryOperation operation,Delta delta) {
+        var posting=postWithoutReceipt(f,operation,delta);
+        if(operation==InventoryOperation.RECEIVE) {
+            var header=UUID.randomUUID(); receipt(f,posting,header,"fixture-"+UUID.randomUUID());
+            receiptLine(f,posting,header,f.position,"fixture-line",delta.onHand(),"AVAILABLE");
+        }
+        return posting;
+    }
+    private static Posting postWithoutReceipt(Fixture f,InventoryOperation operation,Delta delta) {
         var command=command(f,operation); repository.recordCommand(command); var movement=UUID.randomUUID();
         repository.recordMovement(movement,command,"Operator stock evidence","manual-document");
         var position=repository.position(f.org,f.store,f.position,true).orElseThrow();
@@ -411,6 +493,10 @@ class InventoryPersistenceTest {
     }
     private static void receipt(Fixture f,Posting posting,UUID id,String document) {
         execute("INSERT INTO stockrescue.goods_receipt(id,org_id,store_id,movement_id,supplier_key,document_type,document_reference,physical_receipt_at) VALUES (?,?,?,?,'supplier-1','DELIVERY',?,clock_timestamp())",id,f.org,f.store,posting.movement,document);
+    }
+    private static void receiptLine(Fixture f,Posting posting,UUID receipt,UUID position,String reference,long quantity,String disposition) {
+        execute("INSERT INTO stockrescue.goods_receipt_line(org_id,store_id,receipt_id,movement_id,position_id,document_line_reference,quantity,disposition) VALUES (?,?,?,?,?,?,?,?)",
+                f.org,f.store,receipt,posting.movement,position,reference,quantity,disposition);
     }
     private static void insertPosition(UUID id,UUID org,UUID store,UUID location,UUID product,UUID lot) {
         execute("INSERT INTO stockrescue.stock_position(id,org_id,store_id,location_id,product_id,lot_id) VALUES (?,?,?,?,?,?)",id,org,store,location,product,lot);
@@ -431,14 +517,21 @@ class InventoryPersistenceTest {
         }
     }
     private static long number(String query,Object...args) throws SQLException { return Long.parseLong(text(query,args)); }
+    private static long count(String table,UUID org) {
+        return jdbc.sql("SELECT count(*) FROM stockrescue."+table+" WHERE org_id=:org").param("org",org).query(Long.class).single();
+    }
     private static Connection connection() { return DataSourceUtils.getConnection(source); }
     private static void constraints() throws SQLException { sql("SET CONSTRAINTS ALL IMMEDIATE"); sql("SET CONSTRAINTS ALL DEFERRED"); }
-    private static void reject(String state,SqlWork work) throws Exception {
+    private static void reject(String state,SqlWork work) throws Exception { reject(state,null,work); }
+    private static void reject(String state,String message,SqlWork work) throws Exception {
         var savepoint=connection().setSavepoint();
         try {
             assertThatThrownBy(work::run).satisfies(error->{
                 Throwable root=error; while(root.getCause()!=null) root=root.getCause();
-                assertThat(root).isInstanceOfSatisfying(SQLException.class,sqlError->assertThat(sqlError.getSQLState()).isEqualTo(state));
+                assertThat(root).isInstanceOfSatisfying(SQLException.class,sqlError->{
+                    assertThat(sqlError.getSQLState()).isEqualTo(state);
+                    if(message!=null) assertThat(sqlError.getMessage()).contains(message);
+                });
             });
         } finally { connection().rollback(savepoint); connection().releaseSavepoint(savepoint); }
     }

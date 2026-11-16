@@ -355,8 +355,10 @@ amount represents an explicitly entered assumption.
 
 Application records belong to the `stockrescue` schema. Flyway records the
 consolidated schema baseline in `public.flyway_schema_history`; local databases
-must be recreated when that baseline changes. Pooled JDBC connections select
-the application schema explicitly.
+may be restarted while their recorded baseline checksum matches. When the
+baseline changes, recreate only the disposable local Compose database as
+described in the README. Pooled JDBC connections select the application schema
+explicitly.
 
 UUIDs identify business records. PostgreSQL checks, unique constraints and
 organization-aware foreign keys enforce relationship and value invariants.

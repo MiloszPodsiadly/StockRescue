@@ -2239,12 +2239,25 @@ BEGIN
         SELECT 1 FROM stockrescue.goods_receipt r
         WHERE r.org_id=p_org AND r.store_id=p_store AND r.movement_id=p_movement
     ) THEN
-        RETURN;
+        RAISE EXCEPTION 'A RECEIVE movement requires exactly one goods receipt header' USING ERRCODE='23514';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM stockrescue.stock_movement_line m
+        WHERE m.org_id=p_org AND m.store_id=p_store AND m.movement_id=p_movement
+    ) OR NOT EXISTS (
+        SELECT 1 FROM stockrescue.goods_receipt_line r
+        WHERE r.org_id=p_org AND r.store_id=p_store AND r.movement_id=p_movement
+    ) THEN
+        RAISE EXCEPTION 'A RECEIVE movement requires nonempty movement and supplier source lines' USING ERRCODE='23514';
     END IF;
     IF EXISTS (
-        SELECT 1
-        FROM stockrescue.stock_movement_line m
-        LEFT JOIN (
+        WITH movement_by_position AS (
+            SELECT m.position_id,m.delta_on_hand::numeric AS delta_on_hand,
+                m.delta_reserved::numeric AS delta_reserved,m.delta_quarantined::numeric AS delta_quarantined,
+                m.delta_other_blocked::numeric AS delta_other_blocked
+            FROM stockrescue.stock_movement_line m
+            WHERE m.org_id=p_org AND m.store_id=p_store AND m.movement_id=p_movement
+        ), receipt_by_position AS (
             SELECT l.position_id,sum(l.quantity) AS total_quantity,
                 sum(l.quantity) FILTER (WHERE l.disposition='AVAILABLE') AS available_quantity,
                 sum(l.quantity) FILTER (WHERE l.disposition='QUARANTINED') AS quarantined_quantity,
@@ -2252,12 +2265,14 @@ BEGIN
             FROM stockrescue.goods_receipt_line l
             WHERE l.org_id=p_org AND l.store_id=p_store AND l.movement_id=p_movement
             GROUP BY l.position_id
-        ) r ON r.position_id=m.position_id
-        WHERE m.org_id=p_org AND m.store_id=p_store AND m.movement_id=p_movement
-          AND (r.position_id IS NULL OR r.total_quantity<>m.delta_on_hand OR m.delta_reserved<>0
-            OR COALESCE(r.available_quantity,0)<>m.delta_on_hand-m.delta_quarantined-m.delta_other_blocked
-            OR COALESCE(r.quarantined_quantity,0)<>m.delta_quarantined
-            OR COALESCE(r.other_blocked_quantity,0)<>m.delta_other_blocked)
+        )
+        SELECT 1 FROM movement_by_position m
+        FULL OUTER JOIN receipt_by_position r USING (position_id)
+        WHERE m.position_id IS NULL OR r.position_id IS NULL
+          OR r.total_quantity<>m.delta_on_hand OR m.delta_reserved<>0
+          OR COALESCE(r.available_quantity,0)<>m.delta_on_hand-m.delta_quarantined-m.delta_other_blocked
+          OR COALESCE(r.quarantined_quantity,0)<>m.delta_quarantined
+          OR COALESCE(r.other_blocked_quantity,0)<>m.delta_other_blocked
     ) THEN
         RAISE EXCEPTION 'Supplier lines and inventory movement quantities or dispositions do not reconcile' USING ERRCODE='23514';
     END IF;
