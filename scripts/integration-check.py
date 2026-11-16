@@ -90,10 +90,26 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=18080)
     parser.add_argument("--browser", action="store_true")
-    parser.add_argument(
+    isolated_e2e = parser.add_mutually_exclusive_group()
+    isolated_e2e.add_argument(
         "--inventory-recovery-e2e-only",
         action="store_true",
         help="build an isolated Compose project and run only the inventory recovery browser test",
+    )
+    isolated_e2e.add_argument(
+        "--operational-configuration-e2e-only",
+        action="store_true",
+        help="build an isolated Compose project and run only the scheduled lane configuration browser test",
+    )
+    isolated_e2e.add_argument(
+        "--browser-suite-only",
+        action="store_true",
+        help="build an isolated Compose project and run the full non-cold-start browser suite",
+    )
+    isolated_e2e.add_argument(
+        "--inventory-ledger-e2e-only",
+        action="store_true",
+        help="build an isolated Compose project and run the inventory ledger browser scenario",
     )
     parser.add_argument(
         "--keep-on-failure",
@@ -1235,7 +1251,8 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
             "PASS: private ports, loopback proxy and Python credential boundary", flush=True
         )
 
-        if arguments.inventory_recovery_e2e_only:
+        if (arguments.inventory_recovery_e2e_only or arguments.operational_configuration_e2e_only
+                or arguments.browser_suite_only or arguments.inventory_ledger_e2e_only):
             run("up", "--build", "-d", "--wait", "--wait-timeout", "180")
             require(
                 json.loads(wait_for("/api/health/readiness", 200))["status"] == "UP",
@@ -1253,7 +1270,15 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
                     "exec",
                     "playwright",
                     "test",
-                    "e2e/inventory-command-recovery.spec.ts",
+                    *(
+                        ["e2e/inventory.spec.ts"]
+                        if arguments.inventory_ledger_e2e_only
+                        else ["--grep-invert", "cold-start"]
+                        if arguments.browser_suite_only
+                        else ["e2e/operational-configuration.spec.ts"]
+                        if arguments.operational_configuration_e2e_only
+                        else ["e2e/inventory-command-recovery.spec.ts"]
+                    ),
                 ],
                 check=True,
                 env={
@@ -1262,9 +1287,18 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
                     "STOCKRESCUE_TEST_PROJECT": project,
                     "STOCKRESCUE_TEST_ENV_FILE": str(environment_file),
                 },
-                timeout=300,
+                timeout=240 if arguments.browser_suite_only else 360,
             )
-            print("PASS: isolated read-only inventory command recovery browser test", flush=True)
+            print(
+                "PASS: isolated inventory ledger browser test"
+                if arguments.inventory_ledger_e2e_only
+                else "PASS: full isolated browser suite"
+                if arguments.browser_suite_only
+                else "PASS: isolated scheduled lane configuration browser test"
+                if arguments.operational_configuration_e2e_only
+                else "PASS: isolated read-only inventory command recovery browser test",
+                flush=True,
+            )
             completed = True
             return
 

@@ -198,7 +198,7 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     expect(failedDocumentStatus).toBe(409)
     const afterRollback = await read<{ items: InventoryPosition[] }>(owner.context, positionPath)
     expect(afterRollback.items.filter(item => item.locationId === rollbackLocationOne.id || item.locationId === rollbackLocationTwo.id)).toHaveLength(0)
-    await rejectedReceipt.getByRole('button', { name: 'Check saved result' }).click()
+    await rejectedReceipt.getByRole('button', { name: 'Check saved status' }).click()
     await expect(rejectedReceipt).toContainText('Saved request is ready for review.')
     await rejectedReceipt.getByRole('button', { name: 'Review rejected request' }).click()
     await expect(rejectedReceipt).toHaveCount(0)
@@ -211,6 +211,7 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await expect(operations.getByText(/version 1/)).toBeVisible()
     await submitOperation(page, 'reserve', '6', 'Reserve six picked units for an order')
     await expect(positionRow).toContainText('6 EA')
+    await expect(operations).toContainText('version 2')
 
     await submitOperation(page, 'reserve', '5', 'Request more than the remaining available quantity', true)
     await expect(page.getByRole('region', { name: 'Selected inventory position' })).toBeVisible()
@@ -476,10 +477,53 @@ async function submitOperation(page: import('@playwright/test').Page, operation:
   await page.keyboard.press('Space')
   const label = operation === 'reserve' ? 'Reserve stock' : 'Save inventory operation'
   const submit = form.getByRole('button', { name: label })
+  try {
+    await expect(reviewed).toBeChecked()
+    await expect(form.getByLabel('Quantity (EA)')).toHaveValue(quantity)
+    await expect(form.getByLabel('Reason', { exact: true })).toHaveValue(reason)
+    await expect(form.getByLabel('Evidence link or source reference')).toHaveValue(/inventory:test:/)
+    await expect(submit).toBeEnabled()
+  } catch (error) {
+    const controls = await form.locator('input, textarea, select').evaluateAll(items => items.map(item => {
+      const control = item as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+      return { tag: control.tagName, type: control instanceof HTMLInputElement ? control.type : undefined,
+        value: control.value, checked: control instanceof HTMLInputElement && control.type === 'checkbox' ? control.checked : undefined,
+        disabled: control.disabled }
+    }))
+    console.log(`Inventory form controls: ${JSON.stringify(controls)}`)
+    console.log(`Selected position state: ${await page.getByRole('region', { name: 'Selected inventory position' }).innerText()}`)
+    throw error
+  }
   await submit.focus()
+  const commandEvents: string[] = []
+  const observeCommandRequest = (request: import('@playwright/test').Request) => {
+    const path = new URL(request.url()).pathname
+    if (path.includes('/inventory/command-intents')) commandEvents.push(`${Date.now()} -> ${request.method()} ${path}`)
+  }
+  const observeCommandResponse = (response: import('@playwright/test').Response) => {
+    const path = new URL(response.url()).pathname
+    if (path.includes('/inventory/command-intents')) commandEvents.push(`${Date.now()} <- ${response.status()} ${path}`)
+  }
+  const observeCommandFailure = (request: import('@playwright/test').Request) => {
+    const path = new URL(request.url()).pathname
+    if (path.includes('/inventory/command-intents')) commandEvents.push(`${Date.now()} x ${request.method()} ${path}: ${request.failure()?.errorText ?? 'unknown'}`)
+  }
+  page.on('request', observeCommandRequest)
+  page.on('response', observeCommandResponse)
+  page.on('requestfailed', observeCommandFailure)
   await page.keyboard.press('Enter')
   const recovery = page.getByRole('region', { name: 'Recover pending operation' })
-  await expect(recovery).toBeVisible()
+  try {
+    await expect(recovery).toBeVisible({ timeout: 10000 })
+  } catch (error) {
+    console.log(`Inventory command network events:\n${commandEvents.join('\n')}`)
+    console.log(`Inventory operation form: ${await form.innerText()}`)
+    throw error
+  } finally {
+    page.off('request', observeCommandRequest)
+    page.off('response', observeCommandResponse)
+    page.off('requestfailed', observeCommandFailure)
+  }
   await recovery.getByRole('button', { name: 'Inspect saved request' }).click()
   if (expectRejected) {
     await recovery.getByLabel('I reviewed this exact saved request and confirm it may be executed.').check()

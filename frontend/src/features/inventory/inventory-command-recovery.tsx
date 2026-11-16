@@ -58,6 +58,8 @@ export function InventoryCommandRecovery({ actorId, organizationId, storeId, int
   }
 
   async function checkStatus(intent: InventoryCommandIntent, afterPrivateDenial = false) {
+    const hasConfirmedRejection = failures[intent.id]?.kind === 'DEFINITIVELY_REJECTED'
+      || failures[intent.id]?.kind === 'STALE_OR_CONFLICTING'
     setWorkingId(intent.id)
     setMessages(current => ({ ...current, [intent.id]: '' }))
     clearSavedView(intent.id)
@@ -66,7 +68,7 @@ export function InventoryCommandRecovery({ actorId, organizationId, storeId, int
       setStatuses(current => ({ ...current, [intent.id]: result }))
       setPrivateDenied(current => ({ ...current, [intent.id]: afterPrivateDenial }))
       setFailures(current => without(current, intent.id))
-      setRejected(current => ({ ...current, [intent.id]: false }))
+      setRejected(current => ({ ...current, [intent.id]: result.executionStatus === 'PREPARED' && hasConfirmedRejection }))
       await onUpdated()
     } catch (error) {
       setStatuses(current => without(current, intent.id))
