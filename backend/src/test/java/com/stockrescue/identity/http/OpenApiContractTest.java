@@ -265,6 +265,17 @@ class OpenApiContractTest extends InfrastructureTestBase {
         assertThat(outcome.path("operationId").asString()).isEqualTo("getInventoryCommandOutcome");
         assertThat(outcome.path("responses").path("200").path("content").path("application/json").path("schema").path("$ref").asString())
                 .isEqualTo("#/components/schemas/InventoryCommandResponse");
+        var intentInspection=inventoryPaths.path(inventory+"/command-intents/{intentId}").path("get");
+        assertThat(intentInspection.path("operationId").asString()).isEqualTo("inspectInventoryCommandIntent");
+        assertThat(intentInspection.path("responses").path("200").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/IntentInspectionResponse");
+        var intentInspectionSchema=schemas.path("IntentInspectionResponse");
+        for(var field:java.util.List.of("executionStatus","positionPreview","receiptDocumentPreview","committedOutcome","committedReceiptOutcome"))
+            assertThat(intentInspectionSchema.path("required")).anyMatch(value->value.asString().equals(field));
+        assertThat(intentInspectionSchema.path("properties").path("executionStatus").path("enum").toString())
+                .isEqualTo("[\"PREPARED\",\"COMMITTED_AWAITING_ACKNOWLEDGEMENT\",\"ACKNOWLEDGED\",\"REVIEWED\",\"CONFLICT\"]");
+        assertThat(intentInspectionSchema.path("properties").path("positionPreview").path("anyOf")).hasSize(2);
+        assertThat(intentInspectionSchema.path("properties").path("receiptDocumentPreview").path("anyOf")).hasSize(2);
         assertThat(inventoryPaths.path(inventory+"/reconciliations").path("post").path("operationId").asString())
                 .isEqualTo("reconcileInventory");
         assertThat(inventoryPaths.path(inventory+"/reconciliations/{runId}/findings").path("get").path("operationId").asString())

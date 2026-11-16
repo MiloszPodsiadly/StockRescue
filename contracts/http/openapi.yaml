@@ -4309,6 +4309,72 @@ paths:
       summary: Durably prepare one validated stock command before execution
       tags:
       - inventory-command-intent-controller
+  /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}:
+    get:
+      operationId: inspectInventoryCommandIntent
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: intentId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntentInspectionResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current store action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or store unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Inspect the exact private command payload and any committed outcome
+        before recovery
+      tags:
+      - inventory-command-intent-controller
   /api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/acknowledge:
     post:
       operationId: acknowledgeInventoryCommandIntent
@@ -9590,6 +9656,66 @@ components:
       - matchSetRevision
       - matches
       - offset
+    IntentInspectionResponse:
+      type: object
+      properties:
+        committedOutcome:
+          anyOf:
+          - $ref: "#/components/schemas/InventoryCommandResponse"
+          - type: "null"
+        committedReceiptOutcome:
+          anyOf:
+          - $ref: "#/components/schemas/ReceiptDocumentResponse"
+          - type: "null"
+        executedAt:
+          type:
+          - string
+          - "null"
+          format: date-time
+        executionStatus:
+          type: string
+          enum:
+          - PREPARED
+          - COMMITTED_AWAITING_ACKNOWLEDGEMENT
+          - ACKNOWLEDGED
+          - REVIEWED
+          - CONFLICT
+        id:
+          type: string
+          format: uuid
+        operation:
+          type: string
+        positionPreview:
+          anyOf:
+          - $ref: "#/components/schemas/PositionPayload"
+          - type: "null"
+        preparedAt:
+          type: string
+          format: date-time
+        receiptDocumentPreview:
+          anyOf:
+          - $ref: "#/components/schemas/ReceiptPayload"
+          - type: "null"
+        requestId:
+          type: string
+          format: uuid
+        state:
+          type: string
+        subject:
+          type: string
+      required:
+      - committedOutcome
+      - committedReceiptOutcome
+      - executedAt
+      - executionStatus
+      - id
+      - operation
+      - positionPreview
+      - preparedAt
+      - receiptDocumentPreview
+      - requestId
+      - state
+      - subject
     IntentSummary:
       type: object
       properties:
@@ -10516,6 +10642,41 @@ components:
       required:
       - role
       - storeId
+    PositionPayload:
+      type: object
+      properties:
+        allocationId:
+          type: string
+          format: uuid
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        positionId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          format: int64
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - evidenceReference
+      - expectedVersion
+      - positionId
+      - quantity
+      - reason
+      - requestId
     PrepareRequest:
       type: object
       properties:
@@ -10796,6 +10957,82 @@ components:
       - lines
       - movementId
       - receiptId
+    ReceiptLinePayload:
+      type: object
+      properties:
+        documentLineReference:
+          type: string
+          maxLength: 64
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        locationId:
+          type: string
+          format: uuid
+        lotId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          format: int64
+          exclusiveMinimum: 0
+      required:
+      - documentLineReference
+      - expectedVersion
+      - locationId
+      - lotId
+      - productId
+      - quantity
+    ReceiptPayload:
+      type: object
+      properties:
+        documentReference:
+          type: string
+          maxLength: 200
+          minLength: 0
+        documentType:
+          type: string
+          maxLength: 32
+          minLength: 0
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReceiptLinePayload"
+          maxItems: 50
+          minItems: 1
+        physicallyReceivedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        supplierKey:
+          type: string
+          maxLength: 200
+          minLength: 0
+      required:
+      - documentReference
+      - documentType
+      - evidenceReference
+      - lines
+      - physicallyReceivedAt
+      - reason
+      - requestId
+      - supplierKey
     ReceiptRequest:
       type: object
       properties:

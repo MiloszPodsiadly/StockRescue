@@ -125,7 +125,20 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     expect(JSON.stringify(receiptIntentList)).not.toContain(`DELIVERY-${suffix}`)
     const beforeReceiptRecovery = await read<{ items: InventoryPosition[] }>(owner.context, positionPath)
     expect(beforeReceiptRecovery.items).toHaveLength(0)
-    await receiptRecovery.getByRole('button', { name: 'Recover exact request' }).click()
+    let receiptExecutePosts = 0
+    await page.route(`**${inventoryPath}/command-intents/*/execute`, async route => {
+      receiptExecutePosts++
+      await route.continue()
+    })
+    await receiptRecovery.getByRole('button', { name: 'Inspect saved request' }).click()
+    await expect(receiptRecovery.getByText(`DELIVERY-${suffix}`)).toBeVisible()
+    await expect(receiptRecovery.getByText('Physically checked sealed units at both receiving positions')).toBeVisible()
+    await expect(receiptRecovery.getByText('Line 1: 7 EA', { exact: false })).toBeVisible()
+    const executeReceipt = receiptRecovery.getByRole('button', { name: 'Execute reviewed command' })
+    await expect(executeReceipt).toBeDisabled()
+    expect(receiptExecutePosts).toBe(0)
+    await receiptRecovery.getByLabel('I reviewed this exact saved request and confirm it may be executed.').check()
+    await executeReceipt.click()
     await expect(receiptRecovery.getByRole('status')).toContainText('Line 1')
     await expect(receiptRecovery.getByRole('status')).toContainText('Line 2')
     await expect(receiptRecovery.getByRole('status')).toContainText('Line 3')
@@ -135,6 +148,8 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await receiptRecovery.getByRole('button', { name: 'Acknowledge saved result' }).click()
     await expect(receiptRecovery).toHaveCount(0)
     await expect(receipt.getByLabel('Line 1 received quantity (EA)')).toHaveValue('')
+    expect(receiptExecutePosts).toBe(1)
+    await page.unroute(`**${inventoryPath}/command-intents/*/execute`)
     await page.unroute(`**${inventoryPath}/command-intents`)
     const positionRow = page.getByRole('row').filter({ hasText: lot.lotCode }).filter({ hasText: location.code })
     await expect(positionRow).toContainText('10 EA')
@@ -175,11 +190,16 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     await receipt.getByRole('button', { name: 'Confirm physical receipt document' }).click()
     const rejectedReceipt = page.getByRole('region', { name: 'Recover pending operation' })
     await expect(rejectedReceipt).toBeVisible()
-    await rejectedReceipt.getByRole('button', { name: 'Recover exact request' }).click()
-    await expect(rejectedReceipt.getByRole('alert')).toBeVisible()
+    await rejectedReceipt.getByRole('button', { name: 'Inspect saved request' }).click()
+    await expect(rejectedReceipt).toContainText(`ATOMIC-${suffix}`)
+    await rejectedReceipt.getByLabel('I reviewed this exact saved request and confirm it may be executed.').check()
+    await rejectedReceipt.getByRole('button', { name: 'Execute reviewed command' }).click()
+    await expect(rejectedReceipt.getByRole('status').filter({ hasText: 'The command conflicted with current inventory state' })).toBeVisible()
     expect(failedDocumentStatus).toBe(409)
     const afterRollback = await read<{ items: InventoryPosition[] }>(owner.context, positionPath)
     expect(afterRollback.items.filter(item => item.locationId === rollbackLocationOne.id || item.locationId === rollbackLocationTwo.id)).toHaveLength(0)
+    await rejectedReceipt.getByRole('button', { name: 'Check saved result' }).click()
+    await expect(rejectedReceipt).toContainText('Saved request is ready for review.')
     await rejectedReceipt.getByRole('button', { name: 'Review rejected request' }).click()
     await expect(rejectedReceipt).toHaveCount(0)
     await page.unroute(`**${inventoryPath}/command-intents`)
@@ -293,6 +313,7 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
 
     let preparedAdjustment: components['schemas']['PrepareRequest'] | undefined
     let executionAcknowledgementDropped = false
+    let intentExecuteRequests = 0
     owner.context.on('request', request => {
       if (request.method() === 'POST' && new URL(request.url()).pathname === `${inventoryPath}/command-intents`) {
         const body = request.postDataJSON() as components['schemas']['PrepareRequest']
@@ -300,6 +321,7 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
       }
     })
     await owner.context.route(`**${inventoryPath}/command-intents/*/execute`, async route => {
+      intentExecuteRequests++
       const response = await route.fetch()
       if (!executionAcknowledgementDropped && response.status() === 200) {
         executionAcknowledgementDropped = true
@@ -331,6 +353,12 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     expect(Object.keys(ownerPendingIntents.items[0])).not.toContain('payload')
     expect(JSON.stringify(ownerPendingIntents)).not.toContain('Recorded a final count correction after recovery')
     expect(JSON.stringify(ownerPendingIntents)).not.toContain(`count-sheet:${suffix}`)
+    const privateInspectionResponse = await owner.context.request.get(`${inventoryPath}/command-intents/${preparedAdjustment!.prepareId}`)
+    expect(privateInspectionResponse.status()).toBe(200)
+    expect(privateInspectionResponse.headers()['cache-control']).toContain('no-store')
+    const privateInspection = await privateInspectionResponse.json() as components['schemas']['IntentInspectionResponse']
+    expect(privateInspection.positionPreview?.reason).toBe('Recorded a final count correction after recovery')
+    expect(privateInspection.executionStatus).toBe('COMMITTED_AWAITING_ACKNOWLEDGEMENT')
     const browserDurableData = await page.evaluate(() => [localStorage, sessionStorage].flatMap(storage => Array.from({ length: storage.length }, (_, index) => {
       const key = storage.key(index)!
       return `${key}=${storage.getItem(key)}`
@@ -353,6 +381,9 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     const hiddenIntent = await write<components['schemas']['ApiProblem']>(owner.context,
       `${inventoryPath}/command-intents/${preparedAdjustment!.prepareId}/execute`, undefined, 404)
     expect(hiddenIntent.code).toBe('RESOURCE_NOT_FOUND')
+    const hiddenInspection = await admitted(() => owner.context.request.get(
+      `${inventoryPath}/command-intents/${preparedAdjustment!.prepareId}`), 404)
+    expect(hiddenInspection.code).toBe('RESOURCE_NOT_FOUND')
     const unchangedWhileSwitched = await snapshot(owner.context, positionPath, position.id)
     expect(unchangedWhileSwitched.version).toBe(beforeActorSwitch.version)
     expect(unchangedWhileSwitched.onHand).toBe(beforeActorSwitch.onHand)
@@ -393,11 +424,14 @@ test('store operator books, reserves, reviews and reconciles authoritative inven
     const secondTabRecovery = secondTab.getByRole('region', { name: 'Recover pending operation' })
     await expect(secondTabRecovery).toContainText(requestId!)
     await Promise.all([
-      recoveredAfterReload.getByRole('button', { name: 'Recover exact request' }).click(),
-      secondTabRecovery.getByRole('button', { name: 'Recover exact request' }).click(),
+      recoveredAfterReload.getByRole('button', { name: 'Inspect saved request' }).click(),
+      secondTabRecovery.getByRole('button', { name: 'Inspect saved request' }).click(),
     ])
     await expect(recoveredAfterReload.getByRole('status')).toContainText('committed successfully')
     await expect(secondTabRecovery.getByRole('status')).toContainText('committed successfully')
+    await expect(recoveredAfterReload.getByRole('button', { name: 'Execute reviewed command' })).toHaveCount(0)
+    await expect(secondTabRecovery.getByRole('button', { name: 'Execute reviewed command' })).toHaveCount(0)
+    expect(intentExecuteRequests).toBe(1)
     const recoveredMovement = await recoveredAfterReload.getByRole('status').innerText()
     const recoveredMovementId = recoveredMovement.match(/Movement ([0-9a-f-]+)/)?.[1]
     expect(recoveredMovementId).toBeTruthy()
@@ -446,14 +480,16 @@ async function submitOperation(page: import('@playwright/test').Page, operation:
   await page.keyboard.press('Enter')
   const recovery = page.getByRole('region', { name: 'Recover pending operation' })
   await expect(recovery).toBeVisible()
-  await recovery.getByRole('button', { name: 'Recover exact request' }).click()
+  await recovery.getByRole('button', { name: 'Inspect saved request' }).click()
   if (expectRejected) {
-    await expect(recovery.getByRole('alert')).toBeVisible()
+    await recovery.getByLabel('I reviewed this exact saved request and confirm it may be executed.').check()
+    await recovery.getByRole('button', { name: 'Execute reviewed command' }).click()
+    await expect(recovery.getByRole('status').filter({ hasText: 'The command conflicted with current inventory state' })).toBeVisible()
     await recovery.getByRole('button', { name: 'Review rejected request' }).click()
   } else {
     await expect(recovery.getByRole('status')).toContainText('committed successfully')
-    await recovery.getByRole('button', { name: 'Acknowledge saved result' }).click()
   }
+  if (!expectRejected) await recovery.getByRole('button', { name: 'Acknowledge saved result' }).click()
   await expect(recovery).toHaveCount(0)
 }
 

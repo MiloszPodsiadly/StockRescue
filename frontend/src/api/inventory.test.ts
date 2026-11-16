@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { clearCsrf } from './client'
-import { getInventoryCommandOutcome, getInventoryReceiptDocumentOutcome, receiveInventoryGoods, receiveInventoryGoodsDocument, repairInventoryProjection } from './inventory'
+import { getInventoryCommandOutcome, getInventoryReceiptDocumentOutcome, inspectInventoryCommandIntent, receiveInventoryGoods, receiveInventoryGoodsDocument, repairInventoryProjection } from './inventory'
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { clearCsrf(); vi.unstubAllGlobals() })
@@ -50,6 +50,21 @@ it('recovers the complete multi-line receipt result by its original command key'
   await getInventoryReceiptDocumentOutcome('org', 'store', 'receipt-request', new AbortController().signal)
   expect(new URL((fetcher.mock.calls[0][0] as Request).url).pathname)
     .toContain('/inventory/receipt-documents/commands/receipt-request')
+})
+
+it('inspects a saved command through the authenticated read API without sending a write request', async () => {
+  const fetcher = vi.fn().mockResolvedValueOnce(json({ id: 'intent', operation: 'SALE', subject: 'position:position',
+    requestId: 'request', state: 'PENDING', preparedAt: '2026-11-12T10:00:00Z', executedAt: null,
+    executionStatus: 'PREPARED', positionPreview: { requestId: 'request', positionId: 'position', allocationId: null,
+      expectedVersion: 4, quantity: 2, reason: 'Reviewed sale', evidenceReference: 'register:42' },
+    receiptDocumentPreview: null, committedOutcome: null, committedReceiptOutcome: null }))
+  vi.stubGlobal('fetch', fetcher)
+  const result = await inspectInventoryCommandIntent('org', 'store', 'intent', new AbortController().signal)
+  expect(result.executionStatus).toBe('PREPARED')
+  const request = fetcher.mock.calls[0][0] as Request
+  expect(request.method).toBe('GET')
+  expect(new URL(request.url).pathname).toContain('/inventory/command-intents/intent')
+  expect(request.headers.has('X-CSRF-TOKEN')).toBe(false)
 })
 
 it('submits an authorized projection repair with the captured version, evidence and request key', async () => {

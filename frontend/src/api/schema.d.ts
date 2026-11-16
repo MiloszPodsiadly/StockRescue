@@ -647,6 +647,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inspect the exact private command payload and any committed outcome before recovery */
+        get: operations["inspectInventoryCommandIntent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/stores/{storeId}/inventory/command-intents/{intentId}/acknowledge": {
         parameters: {
             query?: never;
@@ -1789,6 +1806,25 @@ export interface components {
             /** Format: int32 */
             offset: number;
         };
+        IntentInspectionResponse: {
+            committedOutcome: components["schemas"]["InventoryCommandResponse"] | null;
+            committedReceiptOutcome: components["schemas"]["ReceiptDocumentResponse"] | null;
+            /** Format: date-time */
+            executedAt: string | null;
+            /** @enum {string} */
+            executionStatus: "PREPARED" | "COMMITTED_AWAITING_ACKNOWLEDGEMENT" | "ACKNOWLEDGED" | "REVIEWED" | "CONFLICT";
+            /** Format: uuid */
+            id: string;
+            operation: string;
+            positionPreview: components["schemas"]["PositionPayload"] | null;
+            /** Format: date-time */
+            preparedAt: string;
+            receiptDocumentPreview: components["schemas"]["ReceiptPayload"] | null;
+            /** Format: uuid */
+            requestId: string;
+            state: string;
+            subject: string;
+        };
         IntentSummary: {
             /** Format: uuid */
             id: string;
@@ -2138,6 +2174,20 @@ export interface components {
             /** Format: uuid */
             storeId: string;
         };
+        PositionPayload: {
+            /** Format: uuid */
+            allocationId?: string;
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** Format: uuid */
+            positionId: string;
+            /** Format: int64 */
+            quantity: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
         PrepareRequest: {
             /** @enum {string} */
             operation: "RECEIPT_DOCUMENT" | "RESERVE" | "RELEASE" | "ADJUST" | "WRITE_OFF" | "QUARANTINE" | "HOLD" | "RELEASE_HOLD" | "SALE";
@@ -2242,6 +2292,31 @@ export interface components {
             movementId: string;
             /** Format: uuid */
             receiptId: string;
+        };
+        ReceiptLinePayload: {
+            documentLineReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** Format: uuid */
+            locationId: string;
+            /** Format: uuid */
+            lotId: string;
+            /** Format: uuid */
+            productId: string;
+            /** Format: int64 */
+            quantity: number;
+        };
+        ReceiptPayload: {
+            documentReference: string;
+            documentType: string;
+            evidenceReference: string;
+            lines: components["schemas"]["ReceiptLinePayload"][];
+            /** Format: date-time */
+            physicallyReceivedAt: string;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+            supplierKey: string;
         };
         ReceiptRequest: {
             documentLineReference: string;
@@ -7564,6 +7639,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IntentSummary"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or store unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    inspectInventoryCommandIntent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                storeId: string;
+                intentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntentInspectionResponse"];
                 };
             };
             /** @description Invalid intent or request */

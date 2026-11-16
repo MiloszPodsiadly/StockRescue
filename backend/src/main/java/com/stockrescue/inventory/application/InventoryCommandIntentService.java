@@ -13,8 +13,10 @@ import com.stockrescue.access.application.EffectivePermissions.StoreAction;
 import com.stockrescue.access.application.OrganizationUnavailableException;
 import com.stockrescue.inventory.application.InventoryCommands.AllocationChange;
 import com.stockrescue.inventory.application.InventoryCommands.PositionReference;
+import com.stockrescue.inventory.application.InventoryCommands.ReceiptDocumentResult;
 import com.stockrescue.inventory.application.InventoryCommands.ReceiveGoodsDocument;
 import com.stockrescue.inventory.application.InventoryCommands.ReceiveGoodsDocumentLine;
+import com.stockrescue.inventory.application.InventoryCommands.Result;
 import com.stockrescue.inventory.application.InventoryCommands.StockChange;
 import com.stockrescue.inventory.domain.InventoryFailure;
 import com.stockrescue.inventory.domain.InventoryFailure.Kind;
@@ -39,9 +41,13 @@ public class InventoryCommandIntentService {
     public enum Operation {
         RECEIPT_DOCUMENT,RESERVE,RELEASE,ADJUST,WRITE_OFF,QUARANTINE,HOLD,RELEASE_HOLD,SALE
     }
+    public enum InspectionStatus { PREPARED,COMMITTED_AWAITING_ACKNOWLEDGEMENT,ACKNOWLEDGED,REVIEWED,CONFLICT }
     public record PrepareRequest(UUID prepareId,String operation,JsonNode payload) { }
     public record Summary(UUID id,String operation,String subject,UUID requestId,String state,java.time.Instant preparedAt) { }
     public record Execution(UUID id,String operation,UUID requestId,Object outcome) { }
+    public record Inspection(UUID id,String operation,String subject,UUID requestId,String state,java.time.Instant preparedAt,
+            java.time.Instant executedAt,InspectionStatus executionStatus,PositionPayload positionPreview,ReceiptPayload receiptDocumentPreview,
+            Result committedOutcome,ReceiptDocumentResult committedReceiptOutcome) { }
     public record Page(List<Summary> items,boolean hasMore) { public Page { items=List.copyOf(items); } }
     public record PositionPayload(@NotNull UUID requestId,@NotNull UUID positionId,UUID allocationId,
             @NotNull @Min(0) @Max(Long.MAX_VALUE-1) Long expectedVersion,@NotNull Long quantity,
@@ -112,6 +118,45 @@ public class InventoryCommandIntentService {
         access.requireStore(actor,organizationId,storeId,StoreAction.READ_INVENTORY,false);
         var rows=repository.pending(organizationId,storeId,actor,subject,offset,limit+1);
         return new Page(rows.stream().limit(limit).map(InventoryCommandIntentService::summary).toList(),rows.size()>limit);
+    }
+
+    @Transactional
+    public Inspection inspect(UUID actor,UUID organizationId,UUID storeId,UUID intentId) {
+        Intent observed=repository.byId(organizationId,storeId,actor,intentId,false).orElseThrow(OrganizationUnavailableException::new);
+        Operation operation=Operation.valueOf(observed.operation());
+        access.requireStore(actor,organizationId,storeId,requiredAction(operation),true);
+        Intent intent=repository.byId(organizationId,storeId,actor,intentId,true).orElseThrow(OrganizationUnavailableException::new);
+
+        boolean committed=repository.hasCommittedCommand(intent);
+        boolean markedExecuted=intent.executedAt()!=null;
+        InspectionStatus status;
+        if(committed!=markedExecuted) status=InspectionStatus.CONFLICT;
+        else if(committed) status=switch(intent.state()) {
+            case "PENDING" -> InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT;
+            case "ACKNOWLEDGED" -> InspectionStatus.ACKNOWLEDGED;
+            default -> InspectionStatus.CONFLICT;
+        };
+        else status=switch(intent.state()) {
+            case "PENDING" -> InspectionStatus.PREPARED;
+            case "REVIEWED" -> InspectionStatus.REVIEWED;
+            default -> InspectionStatus.CONFLICT;
+        };
+
+        PositionPayload positionPreview=null;
+        ReceiptPayload receiptPreview=null;
+        Result outcome=null;
+        ReceiptDocumentResult receiptOutcome=null;
+        if(operation==Operation.RECEIPT_DOCUMENT) {
+            receiptPreview=json.readValue(intent.payload(),ReceiptPayload.class);
+            if(status==InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT || status==InspectionStatus.ACKNOWLEDGED)
+                receiptOutcome=inventory.receiptDocumentOutcome(actor,organizationId,storeId,intent.requestId());
+        } else {
+            positionPreview=json.readValue(intent.payload(),PositionPayload.class);
+            if(status==InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT || status==InspectionStatus.ACKNOWLEDGED)
+                outcome=inventory.commandOutcome(actor,organizationId,storeId,InventoryOperation.valueOf(intent.operation()),intent.requestId());
+        }
+        return new Inspection(intent.id(),intent.operation(),intent.subject(),intent.requestId(),intent.state(),intent.preparedAt(),
+                intent.executedAt(),status,positionPreview,receiptPreview,outcome,receiptOutcome);
     }
 
     @Transactional

@@ -18,7 +18,9 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -56,6 +58,15 @@ public class InventoryCommandIntentController {
             @RequestParam(required=false) String subject) {
         var page=intents.pending(actor(actor),organizationId,storeId,offset,limit,subject);
         return new PendingIntentsResponse(page.items().stream().map(IntentSummary::from).toList(),page.hasMore());
+    }
+
+    @GetMapping("/{intentId}")
+    @io.swagger.v3.oas.annotations.Operation(operationId="inspectInventoryCommandIntent",summary="Inspect the exact private command payload and any committed outcome before recovery")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=IntentInspectionResponse.class)))
+    public ResponseEntity<IntentInspectionResponse> inspect(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID storeId,
+            @PathVariable UUID intentId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(IntentInspectionResponse.from(intents.inspect(actor(actor),organizationId,storeId,intentId)));
     }
 
     @PostMapping(consumes=MediaType.APPLICATION_JSON_VALUE)
@@ -101,6 +112,28 @@ public class InventoryCommandIntentController {
             @NotBlank String state,@NotNull Instant preparedAt) {
         static IntentSummary from(InventoryCommandIntentService.Summary summary) {
             return new IntentSummary(summary.id(),summary.operation(),summary.subject(),summary.requestId(),summary.state(),summary.preparedAt());
+        }
+    }
+    public record IntentInspectionResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String operation,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String subject,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID requestId,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) String state,
+            @Schema(requiredMode=Schema.RequiredMode.REQUIRED) Instant preparedAt,
+            @Schema(types={"string","null"},format="date-time",requiredMode=Schema.RequiredMode.REQUIRED) Instant executedAt,
+            @Schema(allowableValues={"PREPARED","COMMITTED_AWAITING_ACKNOWLEDGEMENT","ACKNOWLEDGED","REVIEWED","CONFLICT"},
+                    requiredMode=Schema.RequiredMode.REQUIRED) InventoryCommandIntentService.InspectionStatus executionStatus,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) InventoryCommandIntentService.PositionPayload positionPreview,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) InventoryCommandIntentService.ReceiptPayload receiptDocumentPreview,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) InventoryController.InventoryCommandResponse committedOutcome,
+            @Schema(types={"object","null"},requiredMode=Schema.RequiredMode.REQUIRED) InventoryController.ReceiptDocumentResponse committedReceiptOutcome) {
+        static IntentInspectionResponse from(InventoryCommandIntentService.Inspection inspection) {
+            var outcome=inspection.committedOutcome()==null?null:InventoryController.InventoryCommandResponse.from(inspection.committedOutcome());
+            var receiptOutcome=inspection.committedReceiptOutcome()==null?null:
+                    InventoryController.ReceiptDocumentResponse.from(inspection.committedReceiptOutcome());
+            return new IntentInspectionResponse(inspection.id(),inspection.operation(),inspection.subject(),inspection.requestId(),
+                    inspection.state(),inspection.preparedAt(),inspection.executedAt(),inspection.executionStatus(),inspection.positionPreview(),
+                    inspection.receiptDocumentPreview(),outcome,receiptOutcome);
         }
     }
     public record ExecutionResponse(@Schema(requiredMode=Schema.RequiredMode.REQUIRED) UUID id,

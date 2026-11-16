@@ -178,6 +178,16 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         assertThat(commandIntents.pending(f.owner,f.org,f.store).items()).containsExactly(prepared);
         assertThat(commandIntents.pending(f.peer,f.org,f.store).items()).isEmpty();
 
+        long movementsBeforeInspection=count("stock_movement");
+        var preview=commandIntents.inspect(f.owner,f.org,f.store,prepared.id());
+        assertThat(preview.executionStatus()).isEqualTo(InventoryCommandIntentService.InspectionStatus.PREPARED);
+        assertThat(preview.positionPreview()).isEqualTo(payload);
+        assertThat(preview.receiptDocumentPreview()).isNull();
+        assertThat(preview.committedOutcome()).isNull();
+        assertThat(count("stock_movement")).isEqualTo(movementsBeforeInspection);
+        assertThatThrownBy(()->commandIntents.inspect(f.peer,f.org,f.store,prepared.id()))
+                .isInstanceOf(OrganizationUnavailableException.class);
+
         long movementsBefore=count("stock_movement"),linesBefore=count("stock_movement_line"),eventsBefore=count("inventory_outbox_event");
         var first=commandIntents.execute(f.owner,f.org,f.store,prepared.id());
         assertThat(first.outcome()).isInstanceOf(Result.class);
@@ -186,11 +196,19 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         assertThat(firstResult.buckets()).isEqualTo(new StockBuckets(3,0,0,0));
         var replay=commandIntents.execute(f.owner,f.org,f.store,prepared.id());
         assertThat(replay.outcome()).isEqualTo(firstResult);
+        var recovered=commandIntents.inspect(f.owner,f.org,f.store,prepared.id());
+        assertThat(recovered.executionStatus()).isEqualTo(InventoryCommandIntentService.InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT);
+        assertThat(recovered.executedAt()).isNotNull();
+        assertThat(recovered.positionPreview()).isEqualTo(payload);
+        assertThat(recovered.committedOutcome()).isEqualTo(firstResult);
+        assertThat(recovered.committedReceiptOutcome()).isNull();
         assertThat(count("stock_movement")-movementsBefore).isEqualTo(1);
         assertThat(count("stock_movement_line")-linesBefore).isEqualTo(1);
         assertThat(count("inventory_outbox_event")-eventsBefore).isEqualTo(1);
         assertThat(commandIntents.pending(f.owner,f.org,f.store).items()).containsExactly(prepared);
         assertThat(commandIntents.acknowledge(f.owner,f.org,f.store,prepared.id()).state()).isEqualTo("ACKNOWLEDGED");
+        assertThat(commandIntents.inspect(f.owner,f.org,f.store,prepared.id()).executionStatus())
+                .isEqualTo(InventoryCommandIntentService.InspectionStatus.ACKNOWLEDGED);
         assertThat(commandIntents.pending(f.owner,f.org,f.store).items()).isEmpty();
     }
 
@@ -301,6 +319,23 @@ class InventoryCommandsTest extends InfrastructureTestBase {
                 .param("id",prepared.id()).query(String.class).single()).isEqualTo("PENDING");
     }
 
+    @Test void preparedIntentPayloadCannotBeInspectedAfterWritePermissionIsDowngraded() {
+        var received=receive(4);
+        var current=service.snapshot(f.operator,f.org,f.store,received.positionId());
+        var payload=new InventoryCommandIntentService.PositionPayload(UUID.randomUUID(),received.positionId(),null,current.version(),1L,
+                "Inspect only while current inventory permission remains active","case:permission-downgrade");
+        var prepared=commandIntents.prepare(f.operator,f.org,f.store,new InventoryCommandIntentService.PrepareRequest(
+                UUID.randomUUID(),"RESERVE",json.valueToTree(payload)));
+        staff.grant(f.owner,f.org,f.operatorMember,f.store,
+                com.stockrescue.access.application.EffectivePermissions.StoreRole.READ_ONLY_ANALYST,0,0L,
+                "Inventory write access was removed");
+
+        assertThatThrownBy(()->commandIntents.inspect(f.operator,f.org,f.store,prepared.id()))
+                .isInstanceOf(AccessDeniedException.class);
+        assertThat(commandIntents.pending(f.operator,f.org,f.store).items()).containsExactly(prepared);
+        assertThat(snapshot(received).buckets()).isEqualTo(new StockBuckets(4,0,0,0));
+    }
+
     @Test void preparedReceiptDocumentCanBeRecoveredWithoutSelectingAnInventoryPosition() {
         UUID requestId=UUID.randomUUID();
         var payload=new InventoryCommandIntentService.ReceiptPayload(requestId,"supplier:intent","DELIVERY_NOTE","intent-receipt",
@@ -309,6 +344,11 @@ class InventoryCommandsTest extends InfrastructureTestBase {
                         new InventoryCommandIntentService.ReceiptLinePayload("line-2",f.secondLocation,f.product,f.lot,3L,0L)));
         var prepared=commandIntents.prepare(f.owner,f.org,f.store,new InventoryCommandIntentService.PrepareRequest(
                 UUID.randomUUID(),"RECEIPT_DOCUMENT",json.valueToTree(payload)));
+        var preview=commandIntents.inspect(f.owner,f.org,f.store,prepared.id());
+        assertThat(preview.executionStatus()).isEqualTo(InventoryCommandIntentService.InspectionStatus.PREPARED);
+        assertThat(preview.positionPreview()).isNull();
+        assertThat(preview.receiptDocumentPreview()).isEqualTo(payload);
+        assertThat(preview.committedReceiptOutcome()).isNull();
         long movementsBefore=count("stock_movement"),linesBefore=count("stock_movement_line"),receiptsBefore=count("goods_receipt"),
                 receiptLinesBefore=count("goods_receipt_line"),eventsBefore=count("inventory_outbox_event");
         var execution=commandIntents.execute(f.owner,f.org,f.store,prepared.id());
@@ -324,6 +364,10 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         assertThat(count("stock_movement")-movementsBefore).isEqualTo(1);
         assertThat(count("stock_movement_line")-linesBefore).isEqualTo(2);
         assertThat(count("inventory_outbox_event")-eventsBefore).isEqualTo(2);
+        var recovered=commandIntents.inspect(f.owner,f.org,f.store,prepared.id());
+        assertThat(recovered.executionStatus()).isEqualTo(InventoryCommandIntentService.InspectionStatus.COMMITTED_AWAITING_ACKNOWLEDGEMENT);
+        assertThat(recovered.committedReceiptOutcome()).isEqualTo(result);
+        assertThat(recovered.committedOutcome()).isNull();
         assertThat(commandIntents.acknowledge(f.owner,f.org,f.store,prepared.id()).state()).isEqualTo("ACKNOWLEDGED");
     }
 
