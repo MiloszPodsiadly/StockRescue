@@ -82,16 +82,23 @@ public class AccessPolicy {
     }
 
     public OrganizationAccess requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
-        return requireStore(actor, organization, store, action, write, false);
+        return requireStore(actor, organization, store, action, write, false, false);
     }
 
     public OrganizationAccess requireStoreIncludingArchived(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
-        return requireStore(actor, organization, store, action, write, true);
+        return requireStore(actor, organization, store, action, write, true, false);
     }
 
-    private OrganizationAccess requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write, boolean includeArchived) {
+    public OrganizationAccess requireTransferStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
+        return requireStore(actor, organization, store, action, write, false, true);
+    }
+
+    private OrganizationAccess requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write,
+            boolean includeArchived, boolean sharedStoreLock) {
         var membership = write ? lock(actor, organization, false) : organization(actor, organization);
-        if (!access.store(organization, store, write, includeArchived && membership.role() == OrganizationRole.ORG_ADMIN)) throw new OrganizationUnavailableException();
+        boolean available = write && sharedStoreLock ? access.transferStore(organization, store)
+                : access.store(organization, store, write, includeArchived && membership.role() == OrganizationRole.ORG_ADMIN);
+        if (!available) throw new OrganizationUnavailableException();
         if (membership.role() == OrganizationRole.ORG_ADMIN) return membership;
         var role = access.storeRole(organization, membership.membershipId(), store, write)
                 .orElseThrow(OrganizationUnavailableException::new);
@@ -132,10 +139,16 @@ public class AccessPolicy {
         return switch(role) {
             case STORE_MANAGER -> List.of(StoreAction.READ_STORE,StoreAction.EDIT_STORE,StoreAction.MANAGE_STORAGE_ZONES,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.MANAGE_STORAGE_LOCATIONS,StoreAction.REGISTER_STORE_LOT,
                     StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.ADJUST_STOCK,
-                    StoreAction.WRITE_OFF_STOCK,StoreAction.QUARANTINE_STOCK,StoreAction.RECORD_SALE,StoreAction.MANAGE_INVENTORY_ALLOCATIONS,StoreAction.RECONCILE_INVENTORY);
+                    StoreAction.WRITE_OFF_STOCK,StoreAction.QUARANTINE_STOCK,StoreAction.RECORD_SALE,StoreAction.READ_TRANSFERS,
+                    StoreAction.REQUEST_TRANSFER,StoreAction.APPROVE_TRANSFER,StoreAction.PICK_TRANSFER,
+                    StoreAction.DISPATCH_TRANSFER,StoreAction.CANCEL_TRANSFER,StoreAction.REQUEST_TRANSFER_RETURN,
+                    StoreAction.MANAGE_TRANSFER_DISCREPANCIES,
+                    StoreAction.MANAGE_INVENTORY_ALLOCATIONS,StoreAction.RECONCILE_INVENTORY);
             case INVENTORY_OPERATOR -> List.of(StoreAction.READ_STORE,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,
-                    StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.RECORD_SALE,StoreAction.QUARANTINE_STOCK);
-            case READ_ONLY_ANALYST -> List.of(StoreAction.READ_STORE,StoreAction.READ_INVENTORY);
+                    StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.RECORD_SALE,
+                    StoreAction.READ_TRANSFERS,StoreAction.REQUEST_TRANSFER,StoreAction.PICK_TRANSFER,
+                    StoreAction.DISPATCH_TRANSFER,StoreAction.REQUEST_TRANSFER_RETURN,StoreAction.QUARANTINE_STOCK);
+            case READ_ONLY_ANALYST -> List.of(StoreAction.READ_STORE,StoreAction.READ_INVENTORY,StoreAction.READ_TRANSFERS);
         };
     }
 }

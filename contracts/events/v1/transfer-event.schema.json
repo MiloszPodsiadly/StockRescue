@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stockrescue.example/contracts/events/v1/transfer-event.schema.json",
+  "title": "Stock transfer aggregate event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eventId", "eventType", "schemaVersion", "occurredAt", "orgId", "transferId", "aggregateVersion", "correlationId", "causationId", "commandId", "dataClassification", "data"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid" },
+    "eventType": { "enum": ["TransferCommandRecorded", "TransferDispatched", "TransferReceived", "TransferReturned", "TransferDiscrepancyResolved"] },
+    "schemaVersion": { "const": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "orgId": { "$ref": "#/$defs/uuid" },
+    "transferId": { "$ref": "#/$defs/uuid" },
+    "aggregateVersion": { "type": "integer", "minimum": 0 },
+    "correlationId": { "type": ["string", "null"], "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "causationId": { "$ref": "#/$defs/uuid" },
+    "commandId": { "$ref": "#/$defs/uuid" },
+    "dataClassification": { "const": "INTERNAL" },
+    "data": { "$ref": "#/$defs/data" }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "status": { "enum": ["REQUESTED", "REJECTED", "CANCELLED", "APPROVED", "PICKING", "PICKED", "IN_TRANSIT", "PARTIALLY_RECEIVED", "RECONCILIATION_REQUIRED", "RECEIVED", "CLOSED_WITH_DISCREPANCY"] },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "statusBefore", "statusAfter", "sourceStoreId", "destinationStoreId", "stockMovements", "custodyMovements"],
+      "properties": {
+        "operation": { "enum": ["CREATE", "APPROVE", "REJECT", "CANCEL", "START_PICK", "PICK", "DISPATCH", "RECEIVE", "OPEN_DISCREPANCY", "CONFIRM_LOSS", "REQUEST_RETURN", "CONFIRM_RETURN", "RESUME", "CLOSE", "RECONCILE"] },
+        "statusBefore": { "oneOf": [{ "$ref": "#/$defs/status" }, { "type": "null" }] },
+        "statusAfter": { "$ref": "#/$defs/status" },
+        "sourceStoreId": { "$ref": "#/$defs/uuid" },
+        "destinationStoreId": { "$ref": "#/$defs/uuid" },
+        "stockMovements": { "type": "array", "maxItems": 50, "items": { "type": "object", "additionalProperties": false, "required": ["storeId", "movementId"], "properties": { "storeId": { "$ref": "#/$defs/uuid" }, "movementId": { "$ref": "#/$defs/uuid" } } } },
+        "custodyMovements": { "type": "array", "maxItems": 50, "items": { "type": "object", "additionalProperties": false, "required": ["id", "lineId", "movementType", "quantity", "stockStoreId", "stockMovementId", "stockPositionId"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "lineId": { "$ref": "#/$defs/uuid" }, "movementType": { "enum": ["DISPATCH", "RECEIPT", "LOSS", "RETURN"] }, "quantity": { "type": "integer", "minimum": 1 }, "stockStoreId": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] }, "stockMovementId": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] }, "stockPositionId": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] } } } }
+      }
+    }
+  }
+}

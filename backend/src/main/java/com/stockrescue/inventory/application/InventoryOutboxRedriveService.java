@@ -17,18 +17,22 @@ import com.stockrescue.platform.audit.AuditWriter;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 @Service
 public class InventoryOutboxRedriveService {
+    @Schema(name="InventoryParkedPage")
     public record ParkedPage(List<ParkedDiagnostic> items,boolean hasMore) {
         public ParkedPage { items=List.copyOf(items); }
     }
+    @Schema(name="InventoryParkedDiagnostic")
     public record ParkedDiagnostic(UUID eventId,UUID movementId,UUID positionId,long aggregateVersion,
             String eventType,int schemaVersion,java.time.Instant occurredAt,java.time.Instant parkedAt,
             long originalClaimVersion,int originalAttemptCount,String sourceFingerprint,long latestGeneration,
             String state,int redriveAttemptCount,java.time.Instant latestAttemptAt,String lastErrorCode) { }
     public record RedriveRequest(UUID requestId,long expectedOriginalClaimVersion,int expectedOriginalAttemptCount,
             String sourceFingerprint,String reason,String evidenceReference) { }
+    @Schema(name="InventoryOutboxRedriveResult")
     public record RedriveResult(UUID requestId,UUID eventId,long generation,String state,int sendAttemptCount,
             java.time.Instant nextAttemptAt,java.time.Instant publishedAt,java.time.Instant blockedAt,
             String lastErrorCode,String sourceFingerprint) { }

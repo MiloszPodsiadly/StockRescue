@@ -89,6 +89,11 @@ public class AccessRepository {
                 .param("org", organization).param("store", store).query(UUID.class).optional().isPresent();
     }
 
+    public boolean transferStore(UUID organization, UUID store) {
+        return jdbc.sql("SELECT id FROM stockrescue.store WHERE org_id=:org AND id=:store AND active FOR SHARE")
+                .param("org", organization).param("store", store).query(UUID.class).optional().isPresent();
+    }
+
     public boolean activeAccount(UUID actor) {
         return jdbc.sql("SELECT id FROM stockrescue.user_account WHERE id=:id AND status='ACTIVE' FOR SHARE")
                 .param("id", actor).query(UUID.class).optional().isPresent();

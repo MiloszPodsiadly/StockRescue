@@ -51,6 +51,7 @@ import tools.jackson.databind.node.ObjectNode;
 public class InventoryService {
     /** Kept in sync with the public receipt-document schema's maxItems bound. */
     public static final int MAX_RECEIPT_DOCUMENT_LINES=50;
+    public static final int MAX_TRANSFER_LINES=50;
     public record Page<T>(List<T> items,boolean hasMore) { public Page { items=List.copyOf(items); } }
     private record NormalizedReceiptLine(String documentLineReference,PositionReference position,long quantity,long expectedVersion) { }
     private record NormalizedReceiptDocument(UUID requestId,String supplierKey,String documentType,String documentReference,
@@ -58,6 +59,19 @@ public class InventoryService {
     private record PreparedReceiptPosition(List<NormalizedReceiptLine> sourceLines,StockPosition before,long quantity,
             Delta delta,StockBuckets buckets,long version,UUID allocationId) {
         private PreparedReceiptPosition { sourceLines=List.copyOf(sourceLines); }
+    }
+    private record PreparedTransferStockLine(UUID lineId,StockPosition before,long quantity,Delta delta,
+            StockBuckets buckets,long version,UUID allocationId,Allocation allocation) { }
+    public record TransferReservationLine(UUID lineId,UUID positionId,long expectedVersion,long quantity) { }
+    public record TransferReleaseLine(UUID lineId,UUID positionId,UUID allocationId,long expectedQuantity) { }
+    public record TransferDispatchLine(UUID lineId,UUID positionId,UUID allocationId,long expectedVersion,long quantity) { }
+    public record TransferReceiptLine(UUID lineId,UUID locationId,UUID productId,UUID lotId,
+            long expectedVersion,long quantity) { }
+    public record TransferReturnLine(UUID lineId,UUID positionId,long expectedVersion,long quantity) { }
+    public record TransferStockLineResult(UUID lineId,UUID positionId,UUID allocationId,long quantity,
+            long positionVersion,StockBuckets buckets) { }
+    public record TransferStockResult(UUID commandId,UUID movementId,List<TransferStockLineResult> lines) {
+        public TransferStockResult { lines=List.copyOf(lines); }
     }
     private final AccessPolicy access;
     private final InventoryRepository inventory;
@@ -255,7 +269,254 @@ public class InventoryService {
     }
     @Transactional public Result recordSale(UUID actor,UUID org,UUID store,StockChange request) { return change(actor,org,store,InventoryOperation.SALE,request,null); }
 
+    @Transactional
+    public TransferStockResult reserveForTransfer(UUID actor,UUID org,UUID store,UUID requestId,UUID transferId,
+            String reason,String evidenceReference,List<TransferReservationLine> requestedLines) {
+        if(requestId==null || transferId==null) throw failure(Kind.INVALID_REQUEST);
+        var member=access.requireTransferStore(actor,org,store,StoreAction.RESERVE_STOCK,true);
+        var lines=normalizeTransferReservations(requestedLines);
+        reason=text(reason,500);evidenceReference=text(evidenceReference,256);
+        byte[] digest=transferStockFingerprint(store,transferId,lines,reason,evidenceReference);
+        inventory.lockRequest(org,actor,InventoryOperation.TRANSFER_RESERVE,requestId);
+        var replay=transferStockReplay(actor,org,store,InventoryOperation.TRANSFER_RESERVE,requestId,digest);
+        if(replay!=null) return replay;
+
+        inventory.lockStoreForWrite(org,store);
+        var observed=lines.stream().map(line->inventory.position(org,store,line.positionId(),false)
+                .orElseThrow(OrganizationUnavailableException::new)).toList();
+        inventory.lockActiveContexts(org,store,observed.stream().map(position ->
+                new PositionIdentity(position.locationId(),position.productId(),position.lotId())).toList());
+        var locked=inventory.lockPositions(org,store,lines.stream().map(TransferReservationLine::positionId).toList());
+        var byId=locked.stream().collect(java.util.stream.Collectors.toMap(StockPosition::id,position->position));
+        var prepared=new ArrayList<PreparedTransferStockLine>(lines.size());
+        for(var line:lines) {
+            var before=byId.get(line.positionId());
+            if(before==null) throw new OrganizationUnavailableException();
+            if(before.version()!=line.expectedVersion()) throw failure(Kind.CONFLICT);
+            if(before.trust()==Trust.FROZEN) throw failure(Kind.POSITION_FROZEN);
+            if(before.initialization()!=StockPosition.Initialization.INITIALIZED) throw failure(Kind.NOT_INITIALIZED);
+            if(line.quantity()>before.buckets().available()) throw failure(Kind.INSUFFICIENT_STOCK);
+            if(!eligible(actor,org,store,before,FoodSafetyEvaluation.Operation.TRANSFER))
+                throw failure(Kind.LOT_NOT_ELIGIBLE);
+            StockBuckets buckets;long version;
+            try {
+                buckets=before.buckets().apply(new Delta(0,line.quantity(),0,0));
+                version=Math.incrementExact(before.version());
+            } catch(ArithmeticException | IllegalArgumentException invalid) {
+                throw failure(Kind.CONFLICT);
+            }
+            prepared.add(new PreparedTransferStockLine(line.lineId(),before,line.quantity(),
+                    new Delta(0,line.quantity(),0,0),buckets,version,UUID.randomUUID(),null));
+        }
+        return postTransferStock(actor,org,store,member.membershipId(),requestId,digest,reason,evidenceReference,
+                InventoryOperation.TRANSFER_RESERVE,prepared);
+    }
+
+    @Transactional
+    public TransferStockResult releaseForTransfer(UUID actor,UUID org,UUID store,UUID requestId,UUID transferId,
+            String reason,String evidenceReference,List<TransferReleaseLine> requestedLines) {
+        if(requestId==null || transferId==null) throw failure(Kind.INVALID_REQUEST);
+        var member=access.requireTransferStore(actor,org,store,StoreAction.RELEASE_RESERVATION,true);
+        var lines=normalizeTransferReleases(requestedLines);
+        reason=text(reason,500);evidenceReference=text(evidenceReference,256);
+        byte[] digest=transferReleaseFingerprint(store,transferId,lines,reason,evidenceReference);
+        inventory.lockRequest(org,actor,InventoryOperation.TRANSFER_RELEASE,requestId);
+        var replay=transferStockReplay(actor,org,store,InventoryOperation.TRANSFER_RELEASE,requestId,digest);
+        if(replay!=null) return replay;
+
+        inventory.lockStoreForWrite(org,store);
+        var locked=inventory.lockPositions(org,store,lines.stream().map(TransferReleaseLine::positionId).toList());
+        var byId=locked.stream().collect(java.util.stream.Collectors.toMap(StockPosition::id,position->position));
+        var prepared=new ArrayList<PreparedTransferStockLine>(lines.size());
+        for(var line:lines) {
+            var before=byId.get(line.positionId());
+            if(before==null) throw new OrganizationUnavailableException();
+            if(before.trust()==Trust.FROZEN) throw failure(Kind.POSITION_FROZEN);
+            if(before.initialization()!=StockPosition.Initialization.INITIALIZED) throw failure(Kind.NOT_INITIALIZED);
+            if(!inventory.transferAllocationMatches(org,store,transferId,line.lineId(),line.positionId(),line.allocationId()))
+                throw failure(Kind.ALLOCATION_UNAVAILABLE);
+            var allocation=inventory.allocation(org,store,line.positionId(),line.allocationId())
+                    .orElseThrow(OrganizationUnavailableException::new);
+            if(!allocation.bucket().equals("RESERVED") || !allocation.state().equals("ACTIVE")
+                    || allocation.remaining()!=line.expectedQuantity()) throw failure(Kind.ALLOCATION_UNAVAILABLE);
+            StockBuckets buckets;long version;
+            try {
+                buckets=before.buckets().apply(new Delta(0,-line.expectedQuantity(),0,0));
+                version=Math.incrementExact(before.version());
+            } catch(ArithmeticException | IllegalArgumentException invalid) {
+                throw failure(Kind.CONFLICT);
+            }
+            prepared.add(new PreparedTransferStockLine(line.lineId(),before,line.expectedQuantity(),
+                    new Delta(0,-line.expectedQuantity(),0,0),buckets,version,line.allocationId(),allocation));
+        }
+        return postTransferStock(actor,org,store,member.membershipId(),requestId,digest,reason,evidenceReference,
+                InventoryOperation.TRANSFER_RELEASE,prepared);
+    }
+
+    @Transactional
+    public long validateTransferPick(UUID actor,UUID org,UUID store,UUID transferId,UUID lineId,
+            UUID positionId,UUID allocationId,long expectedVersion,long quantity) {
+        access.requireTransferStore(actor,org,store,StoreAction.PICK_TRANSFER,true);
+        if(transferId==null || lineId==null || positionId==null || allocationId==null
+                || expectedVersion<0 || quantity<=0) throw failure(Kind.INVALID_REQUEST);
+        inventory.lockStoreForWrite(org,store);
+        var observed=inventory.position(org,store,positionId,false).orElseThrow(OrganizationUnavailableException::new);
+        inventory.lockActiveContext(org,store,observed.locationId(),observed.productId(),observed.lotId());
+        var before=inventory.position(org,store,positionId,true).orElseThrow(OrganizationUnavailableException::new);
+        validateTransferReservation(actor,org,store,transferId,lineId,allocationId,expectedVersion,quantity,before);
+        return before.version();
+    }
+
+    @Transactional
+    public TransferStockResult dispatchForTransfer(UUID actor,UUID org,UUID store,UUID requestId,UUID transferId,
+            String reason,String evidenceReference,List<TransferDispatchLine> requestedLines) {
+        if(requestId==null || transferId==null) throw failure(Kind.INVALID_REQUEST);
+        var member=access.requireTransferStore(actor,org,store,StoreAction.DISPATCH_TRANSFER,true);
+        var lines=normalizeTransferDispatches(requestedLines);
+        reason=text(reason,500);evidenceReference=text(evidenceReference,256);
+        byte[] digest=transferDispatchFingerprint(store,transferId,lines,reason,evidenceReference);
+        inventory.lockRequest(org,actor,InventoryOperation.TRANSFER_OUT,requestId);
+        var replay=transferStockReplay(actor,org,store,InventoryOperation.TRANSFER_OUT,requestId,digest);
+        if(replay!=null) return replay;
+
+        inventory.lockStoreForWrite(org,store);
+        var observed=lines.stream().map(line->inventory.position(org,store,line.positionId(),false)
+                .orElseThrow(OrganizationUnavailableException::new)).toList();
+        inventory.lockActiveContexts(org,store,observed.stream().map(position ->
+                new PositionIdentity(position.locationId(),position.productId(),position.lotId())).toList());
+        var locked=inventory.lockPositions(org,store,lines.stream().map(TransferDispatchLine::positionId).toList());
+        var byId=locked.stream().collect(java.util.stream.Collectors.toMap(StockPosition::id,position->position));
+        var prepared=new ArrayList<PreparedTransferStockLine>(lines.size());
+        for(var line:lines) {
+            var before=byId.get(line.positionId());
+            if(before==null) throw new OrganizationUnavailableException();
+            validateTransferReservation(actor,org,store,transferId,line.lineId(),line.allocationId(),
+                    line.expectedVersion(),line.quantity(),before);
+            StockBuckets buckets;long version;
+            try {
+                buckets=before.buckets().apply(new Delta(-line.quantity(),-line.quantity(),0,0));
+                version=Math.incrementExact(before.version());
+            } catch(ArithmeticException | IllegalArgumentException invalid) {
+                throw failure(Kind.CONFLICT);
+            }
+            var allocation=inventory.allocation(org,store,line.positionId(),line.allocationId())
+                    .orElseThrow(OrganizationUnavailableException::new);
+            prepared.add(new PreparedTransferStockLine(line.lineId(),before,line.quantity(),
+                    new Delta(-line.quantity(),-line.quantity(),0,0),buckets,version,line.allocationId(),allocation));
+        }
+        return postTransferStock(actor,org,store,member.membershipId(),requestId,digest,reason,evidenceReference,
+                InventoryOperation.TRANSFER_OUT,prepared);
+    }
+
+    @Transactional
+    public TransferStockResult receiveForTransfer(UUID actor,UUID org,UUID store,UUID requestId,UUID transferId,
+            Instant physicallyReceivedAt,String reason,String evidenceReference,List<TransferReceiptLine> requestedLines) {
+        if(requestId==null || transferId==null || physicallyReceivedAt==null
+                || physicallyReceivedAt.isAfter(clock.instant())
+                || physicallyReceivedAt.isBefore(Instant.parse("0001-01-01T00:00:00Z"))) throw failure(Kind.INVALID_REQUEST);
+        var member=access.requireTransferStore(actor,org,store,StoreAction.RECEIVE_STOCK,true);
+        var lines=normalizeTransferReceipts(requestedLines);
+        var received=physicallyReceivedAt.truncatedTo(ChronoUnit.MICROS);
+        reason=text(reason,500);evidenceReference=text(evidenceReference,256);
+        byte[] digest=transferSettlementFingerprint(store,InventoryOperation.TRANSFER_IN,transferId,lines,reason,
+                evidenceReference,received);
+        inventory.lockRequest(org,actor,InventoryOperation.TRANSFER_IN,requestId);
+        var replay=transferStockReplay(actor,org,store,InventoryOperation.TRANSFER_IN,requestId,digest);
+        if(replay!=null) return replay;
+
+        inventory.lockStoreForWrite(org,store);
+        var identities=lines.stream().map(line -> new PositionIdentity(line.locationId(),line.productId(),line.lotId())).toList();
+        inventory.lockActiveContexts(org,store,identities);
+        var candidates=lines.stream().map(line -> inventory.positionByIdentity(org,store,line.locationId(),line.lotId())
+                .orElseGet(() -> inventory.createPosition(UUID.randomUUID(),org,store,line.locationId(),line.productId(),line.lotId()))).toList();
+        var locked=inventory.lockPositions(org,store,candidates.stream().map(StockPosition::id).toList());
+        var byId=locked.stream().collect(java.util.stream.Collectors.toMap(StockPosition::id,position -> position));
+        var prepared=new ArrayList<PreparedTransferStockLine>(lines.size());
+        for(var line:lines) {
+            var candidate=candidates.stream().filter(position -> position.locationId().equals(line.locationId())
+                    && position.productId().equals(line.productId()) && position.lotId().equals(line.lotId()))
+                    .findFirst().orElseThrow(OrganizationUnavailableException::new);
+            var before=byId.get(candidate.id());
+            if(before==null) throw new OrganizationUnavailableException();
+            if(before.version()!=line.expectedVersion()) throw failure(Kind.CONFLICT);
+            if(before.trust()==Trust.FROZEN) throw failure(Kind.POSITION_FROZEN);
+            boolean quarantine=!eligible(actor,org,store,before,FoodSafetyEvaluation.Operation.TRANSFER);
+            var delta=new Delta(line.quantity(),0,quarantine?line.quantity():0,0);
+            StockBuckets buckets;long version;
+            try {
+                buckets=before.buckets().apply(delta);
+                version=Math.incrementExact(before.version());
+            } catch(ArithmeticException | IllegalArgumentException invalid) {
+                throw failure(Kind.INVALID_REQUEST);
+            }
+            prepared.add(new PreparedTransferStockLine(line.lineId(),before,line.quantity(),delta,buckets,version,
+                    quarantine?UUID.randomUUID():null,null));
+        }
+        return postTransferStock(actor,org,store,member.membershipId(),requestId,digest,reason,evidenceReference,
+                InventoryOperation.TRANSFER_IN,prepared);
+    }
+
+    @Transactional
+    public TransferStockResult returnForTransfer(UUID actor,UUID org,UUID store,UUID requestId,UUID transferId,
+            String reason,String evidenceReference,List<TransferReturnLine> requestedLines) {
+        if(requestId==null || transferId==null) throw failure(Kind.INVALID_REQUEST);
+        var member=access.requireTransferStore(actor,org,store,StoreAction.RECEIVE_STOCK,true);
+        var lines=normalizeTransferReturns(requestedLines);
+        reason=text(reason,500);evidenceReference=text(evidenceReference,256);
+        byte[] digest=transferSettlementFingerprint(store,InventoryOperation.TRANSFER_RETURN,transferId,lines,reason,evidenceReference);
+        inventory.lockRequest(org,actor,InventoryOperation.TRANSFER_RETURN,requestId);
+        var replay=transferStockReplay(actor,org,store,InventoryOperation.TRANSFER_RETURN,requestId,digest);
+        if(replay!=null) return replay;
+
+        inventory.lockStoreForWrite(org,store);
+        var observed=lines.stream().map(line -> inventory.position(org,store,line.positionId(),false)
+                .orElseThrow(OrganizationUnavailableException::new)).toList();
+        inventory.lockActiveContexts(org,store,observed.stream().map(position ->
+                new PositionIdentity(position.locationId(),position.productId(),position.lotId())).toList());
+        var locked=inventory.lockPositions(org,store,lines.stream().map(TransferReturnLine::positionId).toList());
+        var byId=locked.stream().collect(java.util.stream.Collectors.toMap(StockPosition::id,position -> position));
+        var prepared=new ArrayList<PreparedTransferStockLine>(lines.size());
+        for(var line:lines) {
+            var before=byId.get(line.positionId());
+            if(before==null) throw new OrganizationUnavailableException();
+            if(before.version()!=line.expectedVersion()) throw failure(Kind.CONFLICT);
+            if(before.trust()==Trust.FROZEN) throw failure(Kind.POSITION_FROZEN);
+            if(before.initialization()!=StockPosition.Initialization.INITIALIZED) throw failure(Kind.NOT_INITIALIZED);
+            boolean quarantine=!eligible(actor,org,store,before,FoodSafetyEvaluation.Operation.TRANSFER);
+            var delta=new Delta(line.quantity(),0,quarantine?line.quantity():0,0);
+            StockBuckets buckets;long version;
+            try {
+                buckets=before.buckets().apply(delta);
+                version=Math.incrementExact(before.version());
+            } catch(ArithmeticException | IllegalArgumentException invalid) {
+                throw failure(Kind.INVALID_REQUEST);
+            }
+            prepared.add(new PreparedTransferStockLine(line.lineId(),before,line.quantity(),delta,buckets,version,
+                    quarantine?UUID.randomUUID():null,null));
+        }
+        return postTransferStock(actor,org,store,member.membershipId(),requestId,digest,reason,evidenceReference,
+                InventoryOperation.TRANSFER_RETURN,prepared);
+    }
+
+    private void validateTransferReservation(UUID actor,UUID org,UUID store,UUID transferId,UUID lineId,
+            UUID allocationId,long expectedVersion,long quantity,StockPosition before) {
+        if(before.version()!=expectedVersion) throw failure(Kind.CONFLICT);
+        if(before.trust()==Trust.FROZEN) throw failure(Kind.POSITION_FROZEN);
+        if(before.initialization()!=StockPosition.Initialization.INITIALIZED) throw failure(Kind.NOT_INITIALIZED);
+        if(!inventory.transferAllocationMatches(org,store,transferId,lineId,before.id(),allocationId))
+            throw failure(Kind.ALLOCATION_UNAVAILABLE);
+        var allocation=inventory.allocation(org,store,before.id(),allocationId)
+                .orElseThrow(OrganizationUnavailableException::new);
+        if(!allocation.bucket().equals("RESERVED") || !allocation.state().equals("ACTIVE")
+                || allocation.remaining()!=quantity) throw failure(Kind.ALLOCATION_UNAVAILABLE);
+        if(!eligible(actor,org,store,before,FoodSafetyEvaluation.Operation.TRANSFER))
+            throw failure(Kind.LOT_NOT_ELIGIBLE);
+    }
+
     private Result change(UUID actor,UUID org,UUID store,InventoryOperation operation,StockChange request,UUID allocationId) {
+        if(operation==InventoryOperation.TRANSFER_RESERVE || operation==InventoryOperation.TRANSFER_RELEASE
+                || operation==InventoryOperation.TRANSFER_OUT)
+            throw new IllegalStateException("Transfer stock operations require the transfer-owned posting port");
         var member=access.requireStore(actor,org,store,action(operation),true);
         var command=normalize(request,operation);
         if((operation==InventoryOperation.RELEASE || operation==InventoryOperation.RELEASE_HOLD) && allocationId==null) throw failure(Kind.INVALID_REQUEST);
@@ -264,6 +525,8 @@ public class InventoryService {
         if(replay!=null) {
             if(operation==InventoryOperation.RELEASE || operation==InventoryOperation.RELEASE_HOLD) {
                 var owned=inventory.allocation(org,store,command.positionId(),allocationId).orElseThrow(OrganizationUnavailableException::new);
+                if(inventory.isTransferLinkedAllocation(org,store,command.positionId(),allocationId))
+                    throw failure(Kind.ALLOCATION_UNAVAILABLE);
                 requireOwner(actor,org,store,owned);
             }
             return replay;
@@ -276,6 +539,8 @@ public class InventoryService {
         Allocation allocation=allocationId==null?null:inventory.allocation(org,store,before.id(),allocationId).orElseThrow(OrganizationUnavailableException::new);
         long quantity=command.quantity();
         if(allocation!=null) {
+            if(inventory.isTransferLinkedAllocation(org,store,before.id(),allocation.id()))
+                throw failure(Kind.ALLOCATION_UNAVAILABLE);
             if(!allocation.state().equals("ACTIVE") || quantity>allocation.remaining()) throw failure(Kind.ALLOCATION_UNAVAILABLE);
             if(operation==InventoryOperation.RELEASE && !allocation.bucket().equals("RESERVED")
                     || operation==InventoryOperation.RELEASE_HOLD && allocation.bucket().equals("RESERVED")) throw failure(Kind.ALLOCATION_UNAVAILABLE);
@@ -337,8 +602,170 @@ public class InventoryService {
         return result;
     }
 
+    private TransferStockResult postTransferStock(UUID actor,UUID org,UUID store,UUID membership,UUID requestId,
+            byte[] digest,String reason,String evidence,InventoryOperation operation,
+            List<PreparedTransferStockLine> prepared) {
+        UUID commandId=UUID.randomUUID(),movementId=UUID.randomUUID();
+        var result=new TransferStockResult(commandId,movementId,prepared.stream()
+                .map(line->new TransferStockLineResult(line.lineId(),line.before().id(),line.allocationId(),
+                        line.quantity(),line.version(),line.buckets()))
+                .sorted(Comparator.comparing(TransferStockLineResult::lineId)).toList());
+        var command=new CommandReceipt(commandId,org,store,actor,membership,operation,requestId,digest,json.writeValueAsString(result));
+        if(!inventory.recordCommand(command)) throw failure(Kind.IDEMPOTENCY_CONFLICT);
+        inventory.recordMovement(movementId,command,reason,evidence);
+        for(var line:prepared) {
+            var after=inventory.postLine(org,store,movementId,line.before().id(),line.before().version(),line.delta(),Trust.UNVERIFIED);
+            if(operation==InventoryOperation.TRANSFER_RESERVE) {
+                inventory.openAllocation(org,store,after.id(),line.allocationId(),"RESERVED",actor,membership,
+                        line.quantity(),movementId);
+            } else if(operation==InventoryOperation.TRANSFER_OUT) {
+                inventory.reduceAllocation(org,store,line.allocation(),line.quantity(),
+                        "CONSUME",movementId);
+            } else if(operation==InventoryOperation.TRANSFER_IN || operation==InventoryOperation.TRANSFER_RETURN) {
+                if(line.allocationId()!=null) inventory.openAllocation(org,store,after.id(),line.allocationId(),
+                        "QUARANTINED",actor,membership,line.quantity(),movementId);
+            } else {
+                inventory.reduceAllocation(org,store,line.allocation(),line.quantity(),"RELEASE",movementId);
+            }
+            var lineResult=new Result(movementId,after.id(),after.version(),after.buckets(),line.allocationId(),null);
+            audit.securityChange(actor,org,"stock-position",after.id(),"STOCK_"+operation.name(),
+                    Map.of("outcome","SUCCEEDED","before",line.before(),"after",lineResult,
+                            "transferLineId",line.lineId()),reason);
+        }
+        return result;
+    }
+
+    private TransferStockResult transferStockReplay(UUID actor,UUID org,UUID store,InventoryOperation operation,
+            UUID requestId,byte[] digest) {
+        var previous=inventory.command(org,actor,operation,requestId);
+        if(previous.isEmpty()) return null;
+        var recorded=previous.orElseThrow();
+        if(!recorded.storeId().equals(store) || !MessageDigest.isEqual(recorded.payloadDigest(),digest))
+            throw failure(Kind.IDEMPOTENCY_CONFLICT);
+        return json.readValue(recorded.outcome(),TransferStockResult.class);
+    }
+
+    private static List<TransferReservationLine> normalizeTransferReservations(List<TransferReservationLine> lines) {
+        if(lines==null || lines.isEmpty() || lines.size()>MAX_TRANSFER_LINES) throw failure(Kind.INVALID_REQUEST);
+        var lineIds=new HashSet<UUID>();var positions=new HashSet<UUID>();
+        var normalized=new ArrayList<TransferReservationLine>(lines.size());
+        for(var line:lines) {
+            if(line==null || line.lineId()==null || line.positionId()==null || line.expectedVersion()<0
+                    || line.expectedVersion()==Long.MAX_VALUE || line.quantity()<=0
+                    || !lineIds.add(line.lineId()) || !positions.add(line.positionId()))
+                throw failure(Kind.INVALID_REQUEST);
+            normalized.add(line);
+        }
+        normalized.sort(Comparator.comparing(TransferReservationLine::lineId));
+        return List.copyOf(normalized);
+    }
+
+    private static List<TransferReleaseLine> normalizeTransferReleases(List<TransferReleaseLine> lines) {
+        if(lines==null || lines.isEmpty() || lines.size()>MAX_TRANSFER_LINES) throw failure(Kind.INVALID_REQUEST);
+        var lineIds=new HashSet<UUID>();var positions=new HashSet<UUID>();var allocations=new HashSet<UUID>();
+        var normalized=new ArrayList<TransferReleaseLine>(lines.size());
+        for(var line:lines) {
+            if(line==null || line.lineId()==null || line.positionId()==null || line.allocationId()==null
+                    || line.expectedQuantity()<=0 || !lineIds.add(line.lineId()) || !positions.add(line.positionId())
+                    || !allocations.add(line.allocationId())) throw failure(Kind.INVALID_REQUEST);
+            normalized.add(line);
+        }
+        normalized.sort(Comparator.comparing(TransferReleaseLine::lineId));
+        return List.copyOf(normalized);
+    }
+
+    private static List<TransferDispatchLine> normalizeTransferDispatches(List<TransferDispatchLine> lines) {
+        if(lines==null || lines.isEmpty() || lines.size()>MAX_TRANSFER_LINES) throw failure(Kind.INVALID_REQUEST);
+        var lineIds=new HashSet<UUID>();var positions=new HashSet<UUID>();var allocations=new HashSet<UUID>();
+        var normalized=new ArrayList<TransferDispatchLine>(lines.size());
+        for(var line:lines) {
+            if(line==null || line.lineId()==null || line.positionId()==null || line.allocationId()==null
+                    || line.expectedVersion()<0 || line.expectedVersion()==Long.MAX_VALUE || line.quantity()<=0
+                    || !lineIds.add(line.lineId()) || !positions.add(line.positionId()) || !allocations.add(line.allocationId()))
+                throw failure(Kind.INVALID_REQUEST);
+            normalized.add(line);
+        }
+        normalized.sort(Comparator.comparing(TransferDispatchLine::lineId));
+        return List.copyOf(normalized);
+    }
+
+    private static List<TransferReceiptLine> normalizeTransferReceipts(List<TransferReceiptLine> lines) {
+        if(lines==null || lines.isEmpty() || lines.size()>MAX_TRANSFER_LINES) throw failure(Kind.INVALID_REQUEST);
+        var lineIds=new HashSet<UUID>();var positions=new HashSet<String>();
+        var normalized=new ArrayList<TransferReceiptLine>(lines.size());
+        for(var line:lines) {
+            if(line==null || line.lineId()==null || line.locationId()==null || line.productId()==null || line.lotId()==null
+                    || line.expectedVersion()<0 || line.expectedVersion()==Long.MAX_VALUE || line.quantity()<=0
+                    || !lineIds.add(line.lineId()) || !positions.add(line.locationId()+":"+line.lotId()))
+                throw failure(Kind.INVALID_REQUEST);
+            normalized.add(line);
+        }
+        normalized.sort(Comparator.comparing(TransferReceiptLine::lineId));
+        return List.copyOf(normalized);
+    }
+
+    private static List<TransferReturnLine> normalizeTransferReturns(List<TransferReturnLine> lines) {
+        if(lines==null || lines.isEmpty() || lines.size()>MAX_TRANSFER_LINES) throw failure(Kind.INVALID_REQUEST);
+        var lineIds=new HashSet<UUID>();var positions=new HashSet<UUID>();
+        var normalized=new ArrayList<TransferReturnLine>(lines.size());
+        for(var line:lines) {
+            if(line==null || line.lineId()==null || line.positionId()==null || line.expectedVersion()<0
+                    || line.expectedVersion()==Long.MAX_VALUE || line.quantity()<=0 || !lineIds.add(line.lineId())
+                    || !positions.add(line.positionId())) throw failure(Kind.INVALID_REQUEST);
+            normalized.add(line);
+        }
+        normalized.sort(Comparator.comparing(TransferReturnLine::lineId));
+        return List.copyOf(normalized);
+    }
+
+    private static byte[] transferSettlementFingerprint(UUID store,InventoryOperation operation,UUID transfer,
+            List<?> lines,String reason,String evidence,Object... additional) {
+        var values=new ArrayList<Object>();
+        values.add(store);values.add(operation);values.add(transfer);values.add(reason);values.add(evidence);
+        values.addAll(List.of(additional));
+        for(Object line:lines) values.add(line);
+        return InventoryFingerprint.of(values.toArray());
+    }
+
+    private static byte[] transferStockFingerprint(UUID store,UUID transfer,List<TransferReservationLine> lines,
+            String reason,String evidence) {
+        var values=new ArrayList<Object>();
+        values.add(store);values.add(InventoryOperation.TRANSFER_RESERVE);values.add(transfer);
+        values.add(reason);values.add(evidence);
+        for(var line:lines) {
+            values.add(line.lineId());values.add(line.positionId());values.add(line.expectedVersion());values.add(line.quantity());
+        }
+        return InventoryFingerprint.of(values.toArray());
+    }
+
+    private static byte[] transferReleaseFingerprint(UUID store,UUID transfer,List<TransferReleaseLine> lines,
+            String reason,String evidence) {
+        var values=new ArrayList<Object>();
+        values.add(store);values.add(InventoryOperation.TRANSFER_RELEASE);values.add(transfer);
+        values.add(reason);values.add(evidence);
+        for(var line:lines) {
+            values.add(line.lineId());values.add(line.positionId());values.add(line.allocationId());values.add(line.expectedQuantity());
+        }
+        return InventoryFingerprint.of(values.toArray());
+    }
+
+    private static byte[] transferDispatchFingerprint(UUID store,UUID transfer,List<TransferDispatchLine> lines,
+            String reason,String evidence) {
+        var values=new ArrayList<Object>();
+        values.add(store);values.add(InventoryOperation.TRANSFER_OUT);values.add(transfer);
+        values.add(reason);values.add(evidence);
+        for(var line:lines) {
+            values.add(line.lineId());values.add(line.positionId());values.add(line.allocationId());
+            values.add(line.expectedVersion());values.add(line.quantity());
+        }
+        return InventoryFingerprint.of(values.toArray());
+    }
+
     private boolean eligible(UUID actor,UUID org,UUID store,StockPosition position) {
-        return safety.evaluate(actor,org,position.lotId(),store,null,position.locationId(),FoodSafetyEvaluation.Operation.SALE)
+        return eligible(actor,org,store,position,FoodSafetyEvaluation.Operation.SALE);
+    }
+    private boolean eligible(UUID actor,UUID org,UUID store,StockPosition position,FoodSafetyEvaluation.Operation operation) {
+        return safety.evaluate(actor,org,position.lotId(),store,null,position.locationId(),operation)
                 .decision()==FoodSafetyEvaluation.Decision.ALLOWED;
     }
     private void requireOwner(UUID actor,UUID org,UUID store,Allocation allocation) {

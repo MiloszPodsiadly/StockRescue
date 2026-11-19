@@ -7,6 +7,8 @@ import java.util.UUID;
 
 import com.stockrescue.inventory.application.InventoryChangeProcessor;
 import com.stockrescue.inventory.persistence.InventoryParkedEventRepository;
+import com.stockrescue.transfers.messaging.TransferEventContractException;
+import com.stockrescue.transfers.messaging.TransferInboxProcessor;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -18,13 +20,15 @@ public class InventoryChangeListener {
     private final InventoryChangeProcessor processor;
     private final InventoryParkedEventRepository parked;
     private final InventoryEventCodec codec;
+    private final TransferInboxProcessor transferProcessor;
     private final InventoryMessagingMetrics metrics;
     private final String consumer;
 
     public InventoryChangeListener(InventoryChangeProcessor processor,InventoryParkedEventRepository parked,
-            InventoryEventCodec codec,InventoryMessagingMetrics metrics,
+            InventoryEventCodec codec,TransferInboxProcessor transferProcessor,InventoryMessagingMetrics metrics,
             @Value("${stockrescue.inventory.messaging.consumer-name}") String consumer) {
-        this.processor=processor;this.parked=parked;this.codec=codec;this.metrics=metrics;this.consumer=consumer;
+        this.processor=processor;this.parked=parked;this.codec=codec;this.transferProcessor=transferProcessor;
+        this.metrics=metrics;this.consumer=consumer;
     }
 
     @KafkaListener(id="inventory-change-projection",topics="${stockrescue.inventory.messaging.topic}",
@@ -33,14 +37,28 @@ public class InventoryChangeListener {
     public void consume(ConsumerRecord<String,String> record,Acknowledgment acknowledgment) {
         try {
             try {
-                var outcome=processor.process(record.key(),record.value());
-                switch(outcome) {
-                    case APPLIED -> metrics.applied();
-                    case STALE -> metrics.stale();
-                    case DUPLICATE -> metrics.duplicate();
+                String eventType=transferProcessor.eventTypeOrNull(record.value());
+                if(eventType!=null) {
+                    var outcome=transferProcessor.process(record.value());
+                    switch(outcome) {
+                        case APPLIED -> metrics.transferApplied();
+                        case DEFERRED -> metrics.transferDeferred();
+                        case DUPLICATE -> metrics.transferDuplicate();
+                    }
+                } else {
+                    var outcome=processor.process(record.key(),record.value());
+                    switch(outcome) {
+                        case APPLIED -> metrics.applied();
+                        case STALE -> metrics.stale();
+                        case DUPLICATE -> metrics.duplicate();
+                    }
                 }
             } catch(InventoryEventContractException invalid) {
                 if(!invalid.isPermanentContractFailure()) throw invalid;
+                parked.record(consumer,record.topic(),record.partition(),record.offset(),codec.eventIdOrNull(record.value()),
+                        digest(record.value()),invalid.code());
+                metrics.consumerParked();
+            } catch(TransferEventContractException invalid) {
                 parked.record(consumer,record.topic(),record.partition(),record.offset(),codec.eventIdOrNull(record.value()),
                         digest(record.value()),invalid.code());
                 metrics.consumerParked();

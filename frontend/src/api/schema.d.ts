@@ -1228,6 +1228,347 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/transfers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List transfers for one currently authorized store with optional lifecycle filtering */
+        get: operations["listTransfers"];
+        put?: never;
+        /** Create an auditable stock transfer request without changing stock */
+        post: operations["createTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/commands/{operation}/{requestId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the original outcome of a command without repeating a stock movement */
+        get: operations["recoverTransferCommand"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/discrepancies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List documented discrepancies and pending return requests for a currently authorized store */
+        get: operations["listTransferDiscrepancies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/in-transit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List line-wise in-transit quantities and age for a currently authorized store */
+        get: operations["listTransfersInTransit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/outbox/parked-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read payload-free diagnostics for parked transfer events */
+        get: operations["listParkedTransferOutboxEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/outbox/parked-events/{eventId}/redrives": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request an audited replay of the same immutable parked transfer event */
+        post: operations["requestTransferOutboxRedrive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a transfer visible through a current grant to either participating store */
+        get: operations["getTransfer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve a transfer and reserve its current eligible source stock exactly once */
+        post: operations["approveTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel a pre-dispatch transfer and release only its exact active reservation */
+        post: operations["cancelTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/close-discrepancy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close a fully documented discrepancy after every line has zero outstanding custody */
+        post: operations["closeTransferDiscrepancy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/confirm-return": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm physical return at the source and post stock with current safety disposition */
+        post: operations["confirmTransferReturn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/custody": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the immutable custody movements for a transfer */
+        get: operations["getTransferCustodyTimeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/damage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm evidenced in-transit loss without recording a physical destination receipt */
+        post: operations["recordTransferDamage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/dispatch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Atomically dispatch every picked line from source stock into transfer custody */
+        post: operations["dispatchTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/open-discrepancy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record an evidenced discrepancy without changing stock or custody quantities */
+        post: operations["openTransferDiscrepancy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/pick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record one complete picked transfer line with scanned SKU and lot */
+        post: operations["recordTransferPick"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/receive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Receive one or more whole or partial transfer lines into eligible stock or quarantine */
+        post: operations["receiveTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject an unapproved transfer request with immutable reason and evidence */
+        post: operations["rejectTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/request-return": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request return of each selected line's remaining quantity without settling transit */
+        post: operations["requestTransferReturn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/start-pick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Begin source picking after rechecking current stock and route eligibility */
+        post: operations["startTransferPick"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/transport-lanes": {
         parameters: {
             query?: never;
@@ -1494,6 +1835,18 @@ export interface components {
             reference: string | null;
             source: string;
         };
+        CommandResponse: {
+            /** Format: uuid */
+            commandId: string;
+            /** @enum {string} */
+            status: "REQUESTED" | "REJECTED" | "CANCELLED" | "APPROVED" | "PICKING" | "PICKED" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECONCILIATION_REQUIRED" | "RECEIVED" | "CLOSED_WITH_DISCREPANCY";
+            /** Format: uuid */
+            stockMovementId: string | null;
+            /** Format: uuid */
+            transferId: string;
+            /** Format: int64 */
+            version: number;
+        };
         ConfirmOperatorClassificationRequest: {
             /**
              * @description Descriptive category confirmed from the cited source; UNCLASSIFIED stays under review
@@ -1603,6 +1956,27 @@ export interface components {
             /** Format: uuid */
             requestId: string;
             zoneId: string;
+        };
+        CreateTransferLineRequest: {
+            /** Format: uuid */
+            destinationLocationId: string;
+            /** Format: int64 */
+            expectedSourceVersion: number;
+            /** Format: int64 */
+            quantity: number;
+            /** Format: uuid */
+            sourcePositionId: string;
+        };
+        CreateTransferRequest: {
+            /** Format: uuid */
+            destinationStoreId: string;
+            evidenceReference: string;
+            lines: components["schemas"]["CreateTransferLineRequest"][];
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+            /** Format: uuid */
+            sourceStoreId: string;
         };
         CreateZoneRequest: {
             name: string;
@@ -1892,6 +2266,70 @@ export interface components {
             /** Format: int64 */
             reserved: number;
         };
+        InventoryOutboxRedriveRequest: {
+            evidenceReference: string;
+            /** Format: int32 */
+            expectedOriginalAttemptCount: number;
+            /** Format: int64 */
+            expectedOriginalClaimVersion: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+            sourceFingerprint: string;
+        };
+        InventoryOutboxRedriveResult: {
+            /** Format: date-time */
+            blockedAt?: string;
+            /** Format: uuid */
+            eventId?: string;
+            /** Format: int64 */
+            generation?: number;
+            lastErrorCode?: string;
+            /** Format: date-time */
+            nextAttemptAt?: string;
+            /** Format: date-time */
+            publishedAt?: string;
+            /** Format: uuid */
+            requestId?: string;
+            /** Format: int32 */
+            sendAttemptCount?: number;
+            sourceFingerprint?: string;
+            state?: string;
+        };
+        InventoryParkedDiagnostic: {
+            /** Format: int64 */
+            aggregateVersion?: number;
+            /** Format: uuid */
+            eventId?: string;
+            eventType?: string;
+            lastErrorCode?: string;
+            /** Format: date-time */
+            latestAttemptAt?: string;
+            /** Format: int64 */
+            latestGeneration?: number;
+            /** Format: uuid */
+            movementId?: string;
+            /** Format: date-time */
+            occurredAt?: string;
+            /** Format: int32 */
+            originalAttemptCount?: number;
+            /** Format: int64 */
+            originalClaimVersion?: number;
+            /** Format: date-time */
+            parkedAt?: string;
+            /** Format: uuid */
+            positionId?: string;
+            /** Format: int32 */
+            redriveAttemptCount?: number;
+            /** Format: int32 */
+            schemaVersion?: number;
+            sourceFingerprint?: string;
+            state?: string;
+        };
+        InventoryParkedPage: {
+            hasMore?: boolean;
+            items?: components["schemas"]["InventoryParkedDiagnostic"][];
+        };
         InvitationClaimResponse: {
             /** Format: uuid */
             membershipId: string;
@@ -2079,7 +2517,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            operation: "RECEIVE" | "RESERVE" | "RELEASE" | "ADJUST" | "WRITE_OFF" | "QUARANTINE" | "HOLD" | "RELEASE_HOLD" | "SALE" | "VERIFY_ZERO" | "RECONCILE" | "REMEDIATE";
+            operation: "RECEIVE" | "RESERVE" | "RELEASE" | "ADJUST" | "WRITE_OFF" | "QUARANTINE" | "HOLD" | "RELEASE_HOLD" | "SALE" | "VERIFY_ZERO" | "RECONCILE" | "REMEDIATE" | "TRANSFER_RESERVE" | "TRANSFER_RELEASE" | "TRANSFER_OUT" | "TRANSFER_IN" | "TRANSFER_RETURN";
             /** Format: int64 */
             positionVersion: number;
             reason: string;
@@ -2152,46 +2590,12 @@ export interface components {
             /** @enum {string} */
             role: "ORG_ADMIN" | "MEMBER";
         };
-        ParkedDiagnostic: {
-            /** Format: int64 */
-            aggregateVersion?: number;
-            /** Format: uuid */
-            eventId?: string;
-            eventType?: string;
-            lastErrorCode?: string;
-            /** Format: date-time */
-            latestAttemptAt?: string;
-            /** Format: int64 */
-            latestGeneration?: number;
-            /** Format: uuid */
-            movementId?: string;
-            /** Format: date-time */
-            occurredAt?: string;
-            /** Format: int32 */
-            originalAttemptCount?: number;
-            /** Format: int64 */
-            originalClaimVersion?: number;
-            /** Format: date-time */
-            parkedAt?: string;
-            /** Format: uuid */
-            positionId?: string;
-            /** Format: int32 */
-            redriveAttemptCount?: number;
-            /** Format: int32 */
-            schemaVersion?: number;
-            sourceFingerprint?: string;
-            state?: string;
-        };
-        ParkedPage: {
-            hasMore?: boolean;
-            items?: components["schemas"]["ParkedDiagnostic"][];
-        };
         PendingIntentsResponse: {
             hasMore?: boolean;
             items: components["schemas"]["IntentSummary"][];
         };
         PermissionsResponse: {
-            allStoreActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
+            allStoreActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "READ_TRANSFERS" | "REQUEST_TRANSFER" | "APPROVE_TRANSFER" | "PICK_TRANSFER" | "DISPATCH_TRANSFER" | "CANCEL_TRANSFER" | "REQUEST_TRANSFER_RETURN" | "MANAGE_TRANSFER_DISCREPANCIES" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
             organization: components["schemas"]["OrganizationResponse"];
             organizationActions: ("READ_ORGANIZATION" | "MANAGE_ACCESS" | "CREATE_STORE" | "MANAGE_TRANSPORT_LANES" | "READ_CATALOG" | "MANAGE_CATALOG" | "MANAGE_FOOD_SAFETY_POLICY" | "RECORD_LOT_SAFETY_EVIDENCE")[];
             storeGrants: components["schemas"]["StorePermissionResponse"][];
@@ -2419,35 +2823,11 @@ export interface components {
             /** Format: uuid */
             requestId: string;
         };
-        RedriveRequestBody: {
-            evidenceReference: string;
-            /** Format: int32 */
-            expectedOriginalAttemptCount: number;
-            /** Format: int64 */
-            expectedOriginalClaimVersion: number;
-            reason: string;
+        RecoveryResponse: {
+            operation: string;
+            outcome: components["schemas"]["CommandResponse"];
             /** Format: uuid */
             requestId: string;
-            sourceFingerprint: string;
-        };
-        RedriveResult: {
-            /** Format: date-time */
-            blockedAt?: string;
-            /** Format: uuid */
-            eventId?: string;
-            /** Format: int64 */
-            generation?: number;
-            lastErrorCode?: string;
-            /** Format: date-time */
-            nextAttemptAt?: string;
-            /** Format: date-time */
-            publishedAt?: string;
-            /** Format: uuid */
-            requestId?: string;
-            /** Format: int32 */
-            sendAttemptCount?: number;
-            sourceFingerprint?: string;
-            state?: string;
         };
         RegisterLotRequest: {
             dateMarking: components["schemas"]["DateMarkingRequest"];
@@ -2696,7 +3076,7 @@ export interface components {
             items: components["schemas"]["StoreResponse"][];
         };
         StorePermissionResponse: {
-            actions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
+            actions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "READ_TRANSFERS" | "REQUEST_TRANSFER" | "APPROVE_TRANSFER" | "PICK_TRANSFER" | "DISPATCH_TRANSFER" | "CANCEL_TRANSFER" | "REQUEST_TRANSFER_RETURN" | "MANAGE_TRANSFER_DISCREPANCIES" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
             /** @enum {string} */
             role: "STORE_MANAGER" | "INVENTORY_OPERATOR" | "READ_ONLY_ANALYST";
             /** Format: uuid */
@@ -2705,7 +3085,7 @@ export interface components {
         StoreResponse: {
             active: boolean;
             addressLine1: string | null;
-            allowedActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
+            allowedActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "READ_TRANSFERS" | "REQUEST_TRANSFER" | "APPROVE_TRANSFER" | "PICK_TRANSFER" | "DISPATCH_TRANSFER" | "CANCEL_TRANSFER" | "REQUEST_TRANSFER_RETURN" | "MANAGE_TRANSFER_DISCREPANCIES" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
             city: string | null;
             code: string;
             countryCode: string | null;
@@ -2720,6 +3100,353 @@ export interface components {
             /** Format: int64 */
             version: number;
             zoneId: string;
+        };
+        TransferConfirmReturnLineRequest: {
+            documentLineReference: string;
+            /** Format: int64 */
+            expectedSourceVersion: number;
+            /** Format: uuid */
+            lineId: string;
+            observedLotCode: string;
+            observedSku: string;
+        };
+        TransferConfirmReturnRequest: {
+            documentReference: string;
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            lines: components["schemas"]["TransferConfirmReturnLineRequest"][];
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        TransferDamageLineRequest: {
+            documentLineReference: string;
+            /** Format: uuid */
+            lineId: string;
+            /** Format: int64 */
+            quantity: number;
+        };
+        TransferDamageRequest: {
+            documentReference: string;
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            lines: components["schemas"]["TransferDamageLineRequest"][];
+            reason: string;
+            reasonCode: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        TransferDecisionRequest: {
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        TransferDiscrepancyRequest: {
+            evidenceReference: string;
+            expectedState: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** Format: uuid */
+            lineId?: string;
+            observedState: string;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        TransferDispatchLineRequest: {
+            /** Format: uuid */
+            lineId: string;
+            observedLotCode: string;
+            observedSku: string;
+            /** Format: int64 */
+            quantity: number;
+        };
+        TransferDispatchRequest: {
+            documentReference: string;
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            lines: components["schemas"]["TransferDispatchLineRequest"][];
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        TransferLineResponse: {
+            /** Format: uuid */
+            destinationLocationId: string;
+            /** Format: int64 */
+            expectedSourceVersion: number;
+            /** Format: uuid */
+            id: string;
+            /** Format: int32 */
+            lineNumber: number;
+            lotCode: string;
+            picked: boolean;
+            /** Format: uuid */
+            lotId: string;
+            /** Format: uuid */
+            productId: string;
+            quantities: components["schemas"]["TransferQuantities"];
+            /** Format: int64 */
+            requestedQuantity: number;
+            /** Format: uuid */
+            reservationAllocationId: string | null;
+            sku: string;
+            /** Format: uuid */
+            sourcePositionId: string;
+            unit: string;
+        };
+        TransferOutboxRedriveRequest: {
+            evidenceReference: string;
+            /** Format: int32 */
+            expectedOriginalAttemptCount: number;
+            /** Format: int64 */
+            expectedOriginalClaimVersion: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+            sourceFingerprint: string;
+        };
+        TransferOutboxRedriveResult: {
+            /** Format: date-time */
+            blockedAt?: string;
+            /** Format: uuid */
+            eventId?: string;
+            /** Format: int64 */
+            generation?: number;
+            lastErrorCode?: string;
+            /** Format: date-time */
+            nextAttemptAt?: string;
+            /** Format: date-time */
+            publishedAt?: string;
+            /** Format: uuid */
+            requestId?: string;
+            /** Format: int32 */
+            sendAttemptCount?: number;
+            sourceFingerprint?: string;
+            state?: string;
+        };
+        TransferParkedDiagnostic: {
+            /** Format: int64 */
+            aggregateVersion?: number;
+            /** Format: uuid */
+            eventId?: string;
+            eventType?: string;
+            lastErrorCode?: string;
+            /** Format: date-time */
+            latestAttemptAt?: string;
+            /** Format: int64 */
+            latestGeneration?: number;
+            /** Format: date-time */
+            occurredAt?: string;
+            /** Format: int32 */
+            originalAttemptCount?: number;
+            /** Format: int64 */
+            originalClaimVersion?: number;
+            /** Format: date-time */
+            parkedAt?: string;
+            /** Format: int32 */
+            redriveAttemptCount?: number;
+            /** Format: int32 */
+            schemaVersion?: number;
+            sourceFingerprint?: string;
+            state?: string;
+            /** Format: uuid */
+            transferId?: string;
+        };
+        TransferParkedPage: {
+            hasMore?: boolean;
+            items?: components["schemas"]["TransferParkedDiagnostic"][];
+        };
+        TransferPickRequest: {
+            documentReference: string;
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** Format: uuid */
+            lineId: string;
+            observedLotCode: string;
+            observedSku: string;
+            /** Format: int64 */
+            quantity: number;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        TransferQuantities: {
+            /** Format: int64 */
+            confirmedLoss?: number;
+            /** Format: int64 */
+            dispatched?: number;
+            /** Format: int64 */
+            outstanding?: number;
+            /** Format: int64 */
+            physicallyReceived?: number;
+            /** Format: int64 */
+            physicallyReturned?: number;
+        };
+        TransferReceiveLineRequest: {
+            documentLineReference: string;
+            /** Format: int64 */
+            expectedDestinationVersion: number;
+            /** Format: uuid */
+            lineId: string;
+            observedLotCode: string;
+            observedSku: string;
+            /** Format: int64 */
+            quantity: number;
+        };
+        TransferReceiveRequest: {
+            documentReference: string;
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            lines: components["schemas"]["TransferReceiveLineRequest"][];
+            /** Format: date-time */
+            physicallyReceivedAt: string;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        TransferResponse: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            destinationStoreId: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            lineCount: number;
+            lines: components["schemas"]["TransferLineResponse"][];
+            outstandingQuantity: number;
+            /** Format: uuid */
+            sourceStoreId: string;
+            /** @enum {string} */
+            status: "REQUESTED" | "REJECTED" | "CANCELLED" | "APPROVED" | "PICKING" | "PICKED" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECONCILIATION_REQUIRED" | "RECEIVED" | "CLOSED_WITH_DISCREPANCY";
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int64 */
+            version: number;
+        };
+        TransferQueueItem: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            sourceStoreId: string;
+            /** Format: uuid */
+            destinationStoreId: string;
+            /** @enum {string} */
+            status: "REQUESTED" | "REJECTED" | "CANCELLED" | "APPROVED" | "PICKING" | "PICKED" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECONCILIATION_REQUIRED" | "RECEIVED" | "CLOSED_WITH_DISCREPANCY";
+            /** Format: int64 */
+            version: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int64 */
+            lineCount: number;
+            /** Format: int64 */
+            outstandingQuantity: number;
+        };
+        TransferQueuePage: {
+            items: components["schemas"]["TransferQueueItem"][];
+            hasMore: boolean;
+        };
+        TransferCustodyMovement: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            lineId: string;
+            /** Format: int64 */
+            version: number;
+            /** @enum {string} */
+            type: "DISPATCH" | "RECEIPT" | "LOSS" | "RETURN";
+            /** Format: uuid */
+            commandId: string;
+            /** Format: uuid */
+            actorId: string;
+            /** Format: int64 */
+            quantity: number;
+            /** Format: int64 */
+            outstandingBefore: number;
+            /** Format: int64 */
+            outstandingAfter: number;
+            /** Format: uuid */
+            stockStoreId: string | null;
+            /** Format: uuid */
+            stockMovementId: string | null;
+            /** Format: uuid */
+            stockPositionId: string | null;
+            reason: string;
+            evidenceReference: string;
+            /** Format: date-time */
+            recordedAt: string;
+        };
+        TransferCustodyPage: {
+            items: components["schemas"]["TransferCustodyMovement"][];
+            hasMore: boolean;
+        };
+        TransferInTransitLine: {
+            /** Format: uuid */
+            transferId: string;
+            /** Format: uuid */
+            lineId: string;
+            /** Format: uuid */
+            sourceStoreId: string;
+            /** Format: uuid */
+            destinationStoreId: string;
+            /** Format: uuid */
+            sourcePositionId: string;
+            /** Format: uuid */
+            destinationLocationId: string;
+            /** Format: int64 */
+            outstanding: number;
+            /** Format: date-time */
+            dispatchedAt: string;
+            /** Format: int64 */
+            ageSeconds: number;
+        };
+        TransferInTransitPage: {
+            items: components["schemas"]["TransferInTransitLine"][];
+            hasMore: boolean;
+        };
+        TransferDiscrepancyRecord: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            transferId: string;
+            /** Format: uuid */
+            lineId: string | null;
+            type: string;
+            reason: string;
+            evidenceReference: string;
+            expectedState: string;
+            observedState: string;
+            /** Format: date-time */
+            recordedAt: string;
+        };
+        TransferDiscrepancyPage: {
+            items: components["schemas"]["TransferDiscrepancyRecord"][];
+            hasMore: boolean;
+        };
+        TransferReturnRequest: {
+            documentReference: string;
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            lines: components["schemas"]["TransferReturnRequestLine"][];
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        TransferReturnRequestLine: {
+            /** Format: uuid */
+            lineId: string;
         };
         UpdateLaneRequest: {
             active: boolean;
@@ -8083,7 +8810,7 @@ export interface operations {
             path: {
                 organizationId: string;
                 storeId: string;
-                operation: "RECEIVE" | "RESERVE" | "RELEASE" | "ADJUST" | "WRITE_OFF" | "QUARANTINE" | "HOLD" | "RELEASE_HOLD" | "SALE" | "VERIFY_ZERO" | "RECONCILE" | "REMEDIATE";
+                operation: "RECEIVE" | "RESERVE" | "RELEASE" | "ADJUST" | "WRITE_OFF" | "QUARANTINE" | "HOLD" | "RELEASE_HOLD" | "SALE" | "VERIFY_ZERO" | "RECONCILE" | "REMEDIATE" | "TRANSFER_RESERVE" | "TRANSFER_RELEASE" | "TRANSFER_OUT" | "TRANSFER_IN" | "TRANSFER_RETURN";
                 requestId: string;
             };
             cookie?: never;
@@ -8194,7 +8921,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ParkedPage"];
+                    "application/json": components["schemas"]["InventoryParkedPage"];
                 };
             };
         };
@@ -8215,7 +8942,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RedriveRequestBody"];
+                "application/json": components["schemas"]["InventoryOutboxRedriveRequest"];
             };
         };
         responses: {
@@ -8225,7 +8952,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RedriveResult"];
+                    "application/json": components["schemas"]["InventoryOutboxRedriveResult"];
                 };
             };
         };
@@ -11076,6 +11803,1610 @@ export interface operations {
             };
             /** @description Service unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listTransfers: {
+        parameters: {
+            query: {
+                storeId: string;
+                status?: "REQUESTED" | "REJECTED" | "CANCELLED" | "APPROVED" | "PICKING" | "PICKED" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECONCILIATION_REQUIRED" | "RECEIVED" | "CLOSED_WITH_DISCREPANCY";
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current transfer queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferQueuePage"];
+                };
+            };
+            /** @description Invalid transfer query */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer access denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    createTransfer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTransferRequest"];
+            };
+        };
+        responses: {
+            /** @description Transfer request recorded or exact retry recovered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    recoverTransferCommand: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                operation: string;
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listTransferDiscrepancies: {
+        parameters: {
+            query: {
+                storeId: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Store transfer discrepancies */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferDiscrepancyPage"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listTransfersInTransit: {
+        parameters: {
+            query: {
+                storeId: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current outstanding transfer custody */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferInTransitPage"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listParkedTransferOutboxEvents: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferParkedPage"];
+                };
+            };
+        };
+    };
+    requestTransferOutboxRedrive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                eventId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferOutboxRedriveRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferOutboxRedriveResult"];
+                };
+            };
+        };
+    };
+    getTransfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    approveTransfer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    cancelTransfer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    closeTransferDiscrepancy: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    confirmTransferReturn: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferConfirmReturnRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    getTransferCustodyTimeline: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable custody movement history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferCustodyPage"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    recordTransferDamage: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferDamageRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    dispatchTransfer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferDispatchRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    openTransferDiscrepancy: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferDiscrepancyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    recordTransferPick: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferPickRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    receiveTransfer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferReceiveRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    rejectTransfer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    requestTransferReturn: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferReturnRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    startTransferPick: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
