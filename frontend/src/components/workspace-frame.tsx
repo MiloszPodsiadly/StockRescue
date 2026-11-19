@@ -10,6 +10,7 @@ export function WorkspaceFrame({ children, organizationId, administrator = false
   const links = organizationId ? [
     { href: `${base}/catalog`, text: 'Catalog', icon: Package },
     { href: `${base}/stores`, text: 'Stores', icon: Store },
+    { href: `${base}/transfers`, text: 'Stock transfers', icon: Truck },
     ...(administrator ? [{ href: `${base}/transport-lanes`, text: 'Transport lanes', icon: Truck }, { href: `${base}/members`, text: 'Members and access', icon: Users }] : []),
     { href: `${base}/settings`, text: 'Settings', icon: Settings },
   ] : [{ href: '/account', text: 'Account and organizations', icon: Building2 }]

@@ -47,6 +47,7 @@ JDBC repositories together:
 | `stores` | Store metadata, storage zones, directed transport lanes and cost revisions. |
 | `catalog` | Organization products, manufacturer lot registration and scoped source evidence. |
 | `inventory` | Physical receipts, stock quantities, reservations, holds and immutable movement evidence. |
+| `transfers` | Store-to-store requests, reservation ownership, physical custody, reconciliation and transfer events. |
 | `platform` | HTTP/security adapters, sessions, transactions, correlation and audit persistence. |
 
 Controllers validate and translate requests. Application services own command
@@ -199,7 +200,9 @@ each new generation has its own fenced lease and only a persisted broker ACK
 releases the ordering gap. Invalid source evidence remains blocked for engineering
 review. The consumer stores an idempotent receipt and a monotonic derived view
 without changing stock balances. Redrive lifecycle and irreparable-source handling
-are recorded in [ADR-OUTBOX-REDRIVE](ADR-OUTBOX-REDRIVE.md).
+are recorded as immutable, scoped attempts. A redrive republishes the same event
+only after source validation and a durable broker acknowledgement; delivery state
+does not mutate the event or stock ledger.
 The local Compose broker stores its logs in the named `kafka_dev_data` volume,
 which survives ordinary `down`/`up` and is removed by `down --volumes` together
 with PostgreSQL's development data. Local Kafka retention is finite at seven
@@ -249,6 +252,69 @@ the run and its findings remain durable across restarts. An organization adminis
 may rebuild a frozen projection only when its ledger and allocation history validate.
 That repair is recorded as immutable evidence and a zero-quantity movement; it never
 rewrites prior history. Corrupt source history remains frozen for investigation.
+
+## Store transfers
+
+Transfers move stock between two distinct stores in one organization. The
+`transfers` application package coordinates current store permissions, the
+approved lane revision, inventory postings, immutable custody evidence and
+command recovery. PostgreSQL remains authoritative; Kafka carries derived
+change events only.
+
+Approval reserves source stock. Picking records a physical scan but does not
+debit inventory. Partial picks are rejected, and dispatch is all-or-nothing for
+every line in the transfer; a partial dispatch is rejected without stock or
+custody changes. Dispatch consumes the reservation and records transit in one
+transaction. Receipt may settle some or all outstanding units and posts physical
+destination stock in that same transaction. Current safety rules may place a
+physical receipt in quarantine. A return request is evidence of intent only;
+transit decreases only when the source confirms the physical return. Confirmed
+loss and physical return settle transit separately from destination receipts.
+A request applies to the outstanding quantity it records; subsequent custody
+changes leave that evidence intact but allow a new request for the remainder.
+
+Each line preserves integer quantities under
+`dispatched = physically received + confirmed loss + physically returned +
+outstanding in transit`. The immutable custody journal is authoritative for
+settlement; a versioned account is its query projection. `RECEIVED` requires all
+dispatched units to be physically received with no loss, return or outstanding
+transit. Discrepancy closure requires documented settlement and zero outstanding
+transit. Cancellation is available only before dispatch.
+
+| State | Allowed command and result |
+| --- | --- |
+| `REQUESTED` | Approve and reserve, reject, or cancel. |
+| `APPROVED` | Start picking or cancel and release the reservation. |
+| `PICKING` | Record one complete line pick at a time; remain `PICKING` until all lines are picked, then become `PICKED`. Cancel releases the reservation. |
+| `PICKED` | Dispatch every line atomically and become `IN_TRANSIT`; cancel remains possible before dispatch. |
+| `IN_TRANSIT` / `PARTIALLY_RECEIVED` | Receive outstanding quantities, record a discrepancy, loss or return request; status reflects partial receipt or reconciliation. |
+| `RECONCILIATION_REQUIRED` | Receive or settle custody, resume transit, or close after documented settlement and zero outstanding. |
+| `RECEIVED` / `CLOSED_WITH_DISCREPANCY` / `REJECTED` / `CANCELLED` | Terminal; corrections require linked evidence rather than reopening the order. |
+
+| Command | Store inventory effect | Custody effect |
+| --- | --- | --- |
+| Create, pick, reject, or request return | No quantity change. | No change; a return request records intent only. |
+| Approve | Source available decreases and reserved increases. | No change. |
+| Dispatch | Source on-hand and reserved decrease by the full picked amount. | Outstanding transit increases by that amount. |
+| Physical receipt | Destination on-hand increases (available or quarantined). | Outstanding transit decreases by the same amount. |
+| Confirmed loss | No store quantity change. | Outstanding transit decreases with evidence. |
+| Source-confirmed physical return | Source on-hand increases (available or quarantined). | Outstanding transit decreases by the same amount. |
+| Pre-dispatch cancel | Any remaining transfer reservation is released. | No change. |
+
+The browser workflow is at `/organizations/{organizationId}/transfers`; the
+detail route adds `/{transferId}`. The API/domain and database tests are in
+`TransferWorkflowTest` and `TransferPersistenceTest`; event contract and relay
+coverage are in `TransferEventContractTest` and `TransferOutboxRelayTest`.
+`frontend/e2e/transfers.spec.ts` exercises the operator journey against Compose.
+
+Cross-store commands acquire both store locks in stable identifier order before
+their transactional inventory and transfer updates. Stock ledger movements,
+custody movements, physical evidence, command result, audit and outbox event
+commit together. Retries use actor-, organization- and operation-scoped request
+identities with a normalized payload digest; recovery returns the committed
+result, while changed payloads conflict. Transfer events use the transfer ID as
+their aggregate key; they do not replace position-keyed inventory events or
+imply a global order between the two streams.
 
 ## Accounts and sessions
 

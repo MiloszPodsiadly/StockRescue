@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -110,6 +111,11 @@ def main():
         "--inventory-ledger-e2e-only",
         action="store_true",
         help="build an isolated Compose project and run the inventory ledger browser scenario",
+    )
+    isolated_e2e.add_argument(
+        "--transfer-e2e-only",
+        action="store_true",
+        help="build an isolated Compose project and run only the stock transfer browser journey",
     )
     parser.add_argument(
         "--keep-on-failure",
@@ -274,7 +280,19 @@ def main():
         return save_diagnostic("\n".join(sections) + "\n", append=True)
 
     scenario_projects = []
-    pnpm_executable = "pnpm.cmd" if os.name == "nt" else "pnpm"
+    pnpm_command = "pnpm.cmd" if os.name == "nt" else "pnpm"
+    pnpm_executable = shutil.which(pnpm_command)
+    if pnpm_executable is None:
+        package_manager = json.loads(
+            (root / "frontend/package.json").read_text(encoding="utf-8")
+        ).get("packageManager", "")
+        pnpm_version = (
+            package_manager.removeprefix("pnpm@").split("+", 1)[0]
+            if package_manager.startswith("pnpm@")
+            else ""
+        )
+        local_pnpm = root / ".tools" / f"pnpm-{pnpm_version}" / pnpm_command
+        pnpm_executable = str(local_pnpm) if pnpm_version and local_pnpm.is_file() else pnpm_command
 
     def new_scenario(label, server_port=None):
         scenario_project = f"{project}-{label}"
@@ -1252,7 +1270,7 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
         )
 
         if (arguments.inventory_recovery_e2e_only or arguments.operational_configuration_e2e_only
-                or arguments.browser_suite_only or arguments.inventory_ledger_e2e_only):
+                or arguments.browser_suite_only or arguments.inventory_ledger_e2e_only or arguments.transfer_e2e_only):
             run("up", "--build", "-d", "--wait", "--wait-timeout", "180")
             require(
                 json.loads(wait_for("/api/health/readiness", 200))["status"] == "UP",
@@ -1262,24 +1280,18 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
                 json.loads(wait_for("/api/health/integration", 200))["status"] == "UP",
                 "Integration is not healthy",
             )
+            if arguments.transfer_e2e_only:
+                browser_tests = ["e2e/transfers.spec.ts"]
+            elif arguments.inventory_ledger_e2e_only:
+                browser_tests = ["e2e/inventory.spec.ts"]
+            elif arguments.browser_suite_only:
+                browser_tests = ["--grep-invert", "cold-start"]
+            elif arguments.operational_configuration_e2e_only:
+                browser_tests = ["e2e/operational-configuration.spec.ts"]
+            else:
+                browser_tests = ["e2e/inventory-command-recovery.spec.ts"]
             subprocess.run(
-                [
-                    pnpm_executable,
-                    "--dir",
-                    "frontend",
-                    "exec",
-                    "playwright",
-                    "test",
-                    *(
-                        ["e2e/inventory.spec.ts"]
-                        if arguments.inventory_ledger_e2e_only
-                        else ["--grep-invert", "cold-start"]
-                        if arguments.browser_suite_only
-                        else ["e2e/operational-configuration.spec.ts"]
-                        if arguments.operational_configuration_e2e_only
-                        else ["e2e/inventory-command-recovery.spec.ts"]
-                    ),
-                ],
+                [pnpm_executable, "--dir", "frontend", "exec", "playwright", "test", *browser_tests],
                 check=True,
                 env={
                     **os.environ,
@@ -1290,7 +1302,9 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
                 timeout=240 if arguments.browser_suite_only else 360,
             )
             print(
-                "PASS: isolated inventory ledger browser test"
+                "PASS: isolated stock transfer browser journey"
+                if arguments.transfer_e2e_only
+                else "PASS: isolated inventory ledger browser test"
                 if arguments.inventory_ledger_e2e_only
                 else "PASS: full isolated browser suite"
                 if arguments.browser_suite_only
