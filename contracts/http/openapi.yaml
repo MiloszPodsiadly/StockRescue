@@ -4690,6 +4690,11 @@ paths:
           - VERIFY_ZERO
           - RECONCILE
           - REMEDIATE
+          - TRANSFER_RESERVE
+          - TRANSFER_RELEASE
+          - TRANSFER_OUT
+          - TRANSFER_IN
+          - TRANSFER_RETURN
       - in: path
         name: requestId
         required: true
@@ -4797,7 +4802,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ParkedPage"
+                $ref: "#/components/schemas/InventoryParkedPage"
           description: OK
       security:
       - session: []
@@ -4836,14 +4841,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RedriveRequestBody"
+              $ref: "#/components/schemas/InventoryOutboxRedriveRequest"
         required: true
       responses:
         "200":
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RedriveResult"
+                $ref: "#/components/schemas/InventoryOutboxRedriveResult"
           description: OK
       security:
       - session: []
@@ -7573,6 +7578,1921 @@ paths:
         \ irreversible zone archival"
       tags:
       - zone-controller
+  /api/v1/organizations/{organizationId}/transfer-command-intents:
+    get:
+      operationId: listPendingTransferCommandIntents
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferCommandIntentPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or transfer unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: List this actor's pending transfer command summaries
+      tags:
+      - transfer-command-intent-controller
+    post:
+      operationId: prepareTransferCommandIntent
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrepareRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferCommandIntentSummary"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or transfer unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Save the exact actor-scoped transfer command before submitting it
+      tags:
+      - transfer-command-intent-controller
+  /api/v1/organizations/{organizationId}/transfer-command-intents/{intentId}:
+    get:
+      operationId: inspectTransferCommandIntent
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: intentId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferCommandIntentInspection"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or transfer unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Inspect an actor-owned pending command and its committed outcome
+      tags:
+      - transfer-command-intent-controller
+  /api/v1/organizations/{organizationId}/transfer-command-intents/{intentId}/acknowledge:
+    post:
+      operationId: acknowledgeTransferCommandIntent
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: intentId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferCommandIntentSummary"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or transfer unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Resolve an intent after its transfer command receipt is visible
+      tags:
+      - transfer-command-intent-controller
+  /api/v1/organizations/{organizationId}/transfer-command-intents/{intentId}/resolve-failure:
+    post:
+      operationId: resolveFailedTransferCommandIntent
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: intentId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FailureRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferCommandIntentSummary"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or transfer unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Resolve a command only after a definite failure and no committed receipt
+      tags:
+      - transfer-command-intent-controller
+  /api/v1/organizations/{organizationId}/transfer-command-intents/{intentId}/submitted:
+    post:
+      operationId: markTransferCommandIntentSubmitted
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: intentId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferCommandIntentSummary"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid intent or request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Intent, organization or transfer unavailable"
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Another unresolved intent exists or the intent is not in the
+            required state
+      security:
+      - session: []
+      summary: Record that the actor is about to submit the saved command
+      tags:
+      - transfer-command-intent-controller
+  /api/v1/organizations/{organizationId}/transfers:
+    get:
+      operationId: listTransfers
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: status
+        required: false
+        schema:
+          type: string
+          enum:
+          - REQUESTED
+          - REJECTED
+          - CANCELLED
+          - APPROVED
+          - PICKING
+          - PICKED
+          - IN_TRANSIT
+          - PARTIALLY_RECEIVED
+          - RECONCILIATION_REQUIRED
+          - RECEIVED
+          - CLOSED_WITH_DISCREPANCY
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 50
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferQueuePage"
+          description: Current transfer queue
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: List transfers for one currently authorized store with optional lifecycle
+        filtering
+      tags:
+      - transfer-controller
+    post:
+      operationId: createTransfer
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTransferRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: Transfer request recorded or exact retry recovered
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Create an auditable stock transfer request without changing stock
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/commands/{operation}/{requestId}:
+    get:
+      operationId: recoverTransferCommand
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: operation
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: requestId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Read the original outcome of a command without repeating a stock movement
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/discrepancies:
+    get:
+      operationId: listTransferDiscrepancies
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 50
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferDiscrepancyPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: List documented discrepancies and pending return requests for a currently
+        authorized store
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/in-transit:
+    get:
+      operationId: listTransfersInTransit
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: storeId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 50
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferInTransitPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: List line-wise in-transit quantities and age for a currently authorized
+        store
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/outbox/parked-events:
+    get:
+      operationId: listParkedTransferOutboxEvents
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          maximum: 10000
+          minimum: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 25
+          maximum: 100
+          minimum: 1
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferParkedPage"
+          description: OK
+      security:
+      - session: []
+      summary: Read payload-free diagnostics for parked transfer events
+      tags:
+      - transfer-outbox-redrive-controller
+  /api/v1/organizations/{organizationId}/transfers/outbox/parked-events/{eventId}/redrives:
+    post:
+      operationId: requestTransferOutboxRedrive
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: eventId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferOutboxRedriveRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferOutboxRedriveResult"
+          description: OK
+      security:
+      - session: []
+      summary: Request an audited replay of the same immutable parked transfer event
+      tags:
+      - transfer-outbox-redrive-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}:
+    get:
+      operationId: getTransfer
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Read a transfer visible through a current grant to either participating
+        store
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/approve:
+    post:
+      operationId: approveTransfer
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferDecisionRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Approve a transfer and reserve its current eligible source stock exactly
+        once
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/cancel:
+    post:
+      operationId: cancelTransfer
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferCancelRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: "Cancel a pre-dispatch transfer, document any physical put-back and\
+        \ release its exact active reservation"
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/close-discrepancy:
+    post:
+      operationId: closeTransferDiscrepancy
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferDecisionRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Confirm reconciliation after every line has zero outstanding custody
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/confirm-return:
+    post:
+      operationId: confirmTransferReturn
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferConfirmReturnRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Confirm physical return at the source and post stock with current safety
+        disposition
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/custody:
+    get:
+      operationId: getTransferCustodyTimeline
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: offset
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 50
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferCustodyPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Read the immutable custody movements for a transfer
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/damage:
+    post:
+      operationId: recordTransferDamage
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferDamageRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Confirm evidenced in-transit loss without recording a physical destination
+        receipt
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/dispatch:
+    post:
+      operationId: dispatchTransfer
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferDispatchRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Atomically dispatch every picked line from source stock into transfer
+        custody
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/open-discrepancy:
+    post:
+      operationId: openTransferDiscrepancy
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferDiscrepancyRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Record an evidenced discrepancy without changing stock or custody quantities
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/pick:
+    post:
+      operationId: recordTransferPick
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferPickRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Record one complete picked transfer line with scanned SKU and lot
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/receive:
+    post:
+      operationId: receiveTransfer
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferReceiveRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Receive one or more whole or partial transfer lines into eligible stock
+        or quarantine
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/reject:
+    post:
+      operationId: rejectTransfer
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferDecisionRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Reject an unapproved transfer request with immutable reason and evidence
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/request-return:
+    post:
+      operationId: requestTransferReturn
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferReturnRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Request return of each selected line's remaining quantity without settling
+        transit
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/start-pick:
+    post:
+      operationId: startTransferPick
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Session-bound CSRF value from the CSRF endpoint
+        in: header
+        name: X-CSRF-TOKEN
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferDecisionRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Begin source picking after rechecking current stock and route eligibility
+      tags:
+      - transfer-controller
   /api/v1/organizations/{organizationId}/transport-lanes:
     get:
       operationId: listTransportLanes
@@ -8754,6 +10674,43 @@ components:
       required:
       - reference
       - source
+    CommandResponse:
+      type: object
+      properties:
+        commandId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - REQUESTED
+          - REJECTED
+          - CANCELLED
+          - APPROVED
+          - PICKING
+          - PICKED
+          - IN_TRANSIT
+          - PARTIALLY_RECEIVED
+          - RECONCILIATION_REQUIRED
+          - RECEIVED
+          - CLOSED_WITH_DISCREPANCY
+        stockMovementId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        transferId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+      required:
+      - commandId
+      - status
+      - stockMovementId
+      - transferId
+      - version
     ConfirmOperatorClassificationRequest:
       type: object
       properties:
@@ -9049,6 +11006,62 @@ components:
       - name
       - requestId
       - zoneId
+    CreateTransferLineRequest:
+      type: object
+      properties:
+        destinationLocationId:
+          type: string
+          format: uuid
+        expectedSourceVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        quantity:
+          type: integer
+          format: int64
+          exclusiveMinimum: 0
+        sourcePositionId:
+          type: string
+          format: uuid
+      required:
+      - destinationLocationId
+      - expectedSourceVersion
+      - quantity
+      - sourcePositionId
+    CreateTransferRequest:
+      type: object
+      properties:
+        destinationStoreId:
+          type: string
+          format: uuid
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreateTransferLineRequest"
+          maxItems: 50
+          minItems: 1
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        sourceStoreId:
+          type: string
+          format: uuid
+      required:
+      - destinationStoreId
+      - evidenceReference
+      - lines
+      - reason
+      - requestId
+      - sourceStoreId
     CreateZoneRequest:
       type: object
       properties:
@@ -9489,6 +11502,16 @@ components:
       - operation
       - outcome
       - requestId
+    FailureRequest:
+      type: object
+      properties:
+        resolution:
+          type: string
+          enum:
+          - REJECTED
+          - CONFLICTED
+      required:
+      - resolution
     FindingPageResponse:
       type: object
       properties:
@@ -9908,6 +11931,125 @@ components:
       - quarantined
       - receiptId
       - reserved
+    InventoryOutboxRedriveRequest:
+      type: object
+      properties:
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedOriginalAttemptCount:
+          type: integer
+          format: int32
+          minimum: 0
+        expectedOriginalClaimVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        sourceFingerprint:
+          type: string
+          minLength: 1
+          pattern: "[0-9a-f]{64}"
+      required:
+      - evidenceReference
+      - expectedOriginalAttemptCount
+      - expectedOriginalClaimVersion
+      - reason
+      - requestId
+      - sourceFingerprint
+    InventoryOutboxRedriveResult:
+      type: object
+      properties:
+        blockedAt:
+          type: string
+          format: date-time
+        eventId:
+          type: string
+          format: uuid
+        generation:
+          type: integer
+          format: int64
+        lastErrorCode:
+          type: string
+        nextAttemptAt:
+          type: string
+          format: date-time
+        publishedAt:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+          format: uuid
+        sendAttemptCount:
+          type: integer
+          format: int32
+        sourceFingerprint:
+          type: string
+        state:
+          type: string
+    InventoryParkedDiagnostic:
+      type: object
+      properties:
+        aggregateVersion:
+          type: integer
+          format: int64
+        eventId:
+          type: string
+          format: uuid
+        eventType:
+          type: string
+        lastErrorCode:
+          type: string
+        latestAttemptAt:
+          type: string
+          format: date-time
+        latestGeneration:
+          type: integer
+          format: int64
+        movementId:
+          type: string
+          format: uuid
+        occurredAt:
+          type: string
+          format: date-time
+        originalAttemptCount:
+          type: integer
+          format: int32
+        originalClaimVersion:
+          type: integer
+          format: int64
+        parkedAt:
+          type: string
+          format: date-time
+        positionId:
+          type: string
+          format: uuid
+        redriveAttemptCount:
+          type: integer
+          format: int32
+        schemaVersion:
+          type: integer
+          format: int32
+        sourceFingerprint:
+          type: string
+        state:
+          type: string
+    InventoryParkedPage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/InventoryParkedDiagnostic"
     InvitationClaimResponse:
       type: object
       properties:
@@ -10415,6 +12557,11 @@ components:
           - VERIFY_ZERO
           - RECONCILE
           - REMEDIATE
+          - TRANSFER_RESERVE
+          - TRANSFER_RELEASE
+          - TRANSFER_OUT
+          - TRANSFER_IN
+          - TRANSFER_RETURN
         positionVersion:
           type: integer
           format: int64
@@ -10611,62 +12758,6 @@ components:
       - membershipId
       - name
       - role
-    ParkedDiagnostic:
-      type: object
-      properties:
-        aggregateVersion:
-          type: integer
-          format: int64
-        eventId:
-          type: string
-          format: uuid
-        eventType:
-          type: string
-        lastErrorCode:
-          type: string
-        latestAttemptAt:
-          type: string
-          format: date-time
-        latestGeneration:
-          type: integer
-          format: int64
-        movementId:
-          type: string
-          format: uuid
-        occurredAt:
-          type: string
-          format: date-time
-        originalAttemptCount:
-          type: integer
-          format: int32
-        originalClaimVersion:
-          type: integer
-          format: int64
-        parkedAt:
-          type: string
-          format: date-time
-        positionId:
-          type: string
-          format: uuid
-        redriveAttemptCount:
-          type: integer
-          format: int32
-        schemaVersion:
-          type: integer
-          format: int32
-        sourceFingerprint:
-          type: string
-        state:
-          type: string
-    ParkedPage:
-      type: object
-      properties:
-        hasMore:
-          type: boolean
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/ParkedDiagnostic"
     PendingIntentsResponse:
       type: object
       properties:
@@ -10701,6 +12792,14 @@ components:
             - WRITE_OFF_STOCK
             - QUARANTINE_STOCK
             - RECORD_SALE
+            - READ_TRANSFERS
+            - REQUEST_TRANSFER
+            - APPROVE_TRANSFER
+            - PICK_TRANSFER
+            - DISPATCH_TRANSFER
+            - CANCEL_TRANSFER
+            - REQUEST_TRANSFER_RETURN
+            - MANAGE_TRANSFER_DISCREPANCIES
             - MANAGE_INVENTORY_ALLOCATIONS
             - RECONCILE_INVENTORY
             - REMEDIATE_INVENTORY
@@ -10798,20 +12897,14 @@ components:
       properties:
         operation:
           type: string
-          enum:
-          - RECEIPT_DOCUMENT
-          - RESERVE
-          - RELEASE
-          - ADJUST
-          - WRITE_OFF
-          - QUARANTINE
-          - HOLD
-          - RELEASE_HOLD
-          - SALE
+          minLength: 1
         payload:
           type: object
           additionalProperties: {}
         prepareId:
+          type: string
+          format: uuid
+        transferId:
           type: string
           format: uuid
       required:
@@ -11326,69 +13419,20 @@ components:
       - reason
       - recallState
       - requestId
-    RedriveRequestBody:
+    RecoveryResponse:
       type: object
       properties:
-        evidenceReference:
+        operation:
           type: string
-          maxLength: 256
-          minLength: 0
-        expectedOriginalAttemptCount:
-          type: integer
-          format: int32
-          minimum: 0
-        expectedOriginalClaimVersion:
-          type: integer
-          format: int64
-          minimum: 0
-        reason:
-          type: string
-          maxLength: 500
-          minLength: 0
+        outcome:
+          $ref: "#/components/schemas/CommandResponse"
         requestId:
           type: string
           format: uuid
-        sourceFingerprint:
-          type: string
-          minLength: 1
-          pattern: "[0-9a-f]{64}"
       required:
-      - evidenceReference
-      - expectedOriginalAttemptCount
-      - expectedOriginalClaimVersion
-      - reason
+      - operation
+      - outcome
       - requestId
-      - sourceFingerprint
-    RedriveResult:
-      type: object
-      properties:
-        blockedAt:
-          type: string
-          format: date-time
-        eventId:
-          type: string
-          format: uuid
-        generation:
-          type: integer
-          format: int64
-        lastErrorCode:
-          type: string
-        nextAttemptAt:
-          type: string
-          format: date-time
-        publishedAt:
-          type: string
-          format: date-time
-        requestId:
-          type: string
-          format: uuid
-        sendAttemptCount:
-          type: integer
-          format: int32
-        sourceFingerprint:
-          type: string
-        state:
-          type: string
     RegisterLotRequest:
       type: object
       properties:
@@ -12038,6 +14082,14 @@ components:
             - WRITE_OFF_STOCK
             - QUARANTINE_STOCK
             - RECORD_SALE
+            - READ_TRANSFERS
+            - REQUEST_TRANSFER
+            - APPROVE_TRANSFER
+            - PICK_TRANSFER
+            - DISPATCH_TRANSFER
+            - CANCEL_TRANSFER
+            - REQUEST_TRANSFER_RETURN
+            - MANAGE_TRANSFER_DISCREPANCIES
             - MANAGE_INVENTORY_ALLOCATIONS
             - RECONCILE_INVENTORY
             - REMEDIATE_INVENTORY
@@ -12083,6 +14135,14 @@ components:
             - WRITE_OFF_STOCK
             - QUARANTINE_STOCK
             - RECORD_SALE
+            - READ_TRANSFERS
+            - REQUEST_TRANSFER
+            - APPROVE_TRANSFER
+            - PICK_TRANSFER
+            - DISPATCH_TRANSFER
+            - CANCEL_TRANSFER
+            - REQUEST_TRANSFER_RETURN
+            - MANAGE_TRANSFER_DISCREPANCIES
             - MANAGE_INVENTORY_ALLOCATIONS
             - RECONCILE_INVENTORY
             - REMEDIATE_INVENTORY
@@ -12130,6 +14190,1023 @@ components:
       - updatedAt
       - version
       - zoneId
+    TransferCancelRequest:
+      type: object
+      properties:
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        putBackConfirmed:
+          type: boolean
+          description: Required and true after physically returning every picked line
+            to its source shelf
+        putBackDocumentReference:
+          type: string
+          description: "Physical put-back record reference, required when any line\
+            \ was picked"
+          maxLength: 200
+          minLength: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - evidenceReference
+      - expectedVersion
+      - reason
+      - requestId
+    TransferCommandIntentInspection:
+      type: object
+      properties:
+        committedOutcome:
+          anyOf:
+          - $ref: "#/components/schemas/CommandResponse"
+          - type: "null"
+        executionStatus:
+          type: string
+          enum:
+          - PREPARED
+          - SUBMITTED_AWAITING_OUTCOME
+          - COMMITTED_AWAITING_ACKNOWLEDGEMENT
+          - ACKNOWLEDGED
+          - REJECTED
+          - CONFLICTED
+        id:
+          type: string
+          format: uuid
+        operation:
+          type: string
+          minLength: 1
+        payload:
+          type: string
+        preparedAt:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          minLength: 1
+        transferId:
+          type: string
+          format: uuid
+      required:
+      - executionStatus
+      - id
+      - operation
+      - payload
+      - preparedAt
+      - requestId
+      - state
+    TransferCommandIntentPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferCommandIntentSummary"
+      required:
+      - items
+    TransferCommandIntentSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        operation:
+          type: string
+          minLength: 1
+        preparedAt:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          minLength: 1
+        transferId:
+          type: string
+          format: uuid
+      required:
+      - id
+      - operation
+      - preparedAt
+      - requestId
+      - state
+    TransferConfirmReturnLineRequest:
+      type: object
+      properties:
+        documentLineReference:
+          type: string
+          maxLength: 64
+          minLength: 0
+        expectedSourceVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        lineId:
+          type: string
+          format: uuid
+        observedLotCode:
+          type: string
+          maxLength: 128
+          minLength: 0
+        observedSku:
+          type: string
+          maxLength: 64
+          minLength: 0
+      required:
+      - documentLineReference
+      - expectedSourceVersion
+      - lineId
+      - observedLotCode
+      - observedSku
+    TransferConfirmReturnRequest:
+      type: object
+      properties:
+        documentReference:
+          type: string
+          maxLength: 200
+          minLength: 0
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferConfirmReturnLineRequest"
+          maxItems: 50
+          minItems: 1
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - documentReference
+      - evidenceReference
+      - expectedVersion
+      - lines
+      - reason
+      - requestId
+    TransferCustodyMovement:
+      type: object
+      properties:
+        actorId:
+          type: string
+          format: uuid
+        commandId:
+          type: string
+          format: uuid
+        evidenceReference:
+          type: string
+        id:
+          type: string
+          format: uuid
+        lineId:
+          type: string
+          format: uuid
+        outstandingAfter:
+          type: integer
+          format: int64
+        outstandingBefore:
+          type: integer
+          format: int64
+        quantity:
+          type: integer
+          format: int64
+        reason:
+          type: string
+        recordedAt:
+          type: string
+          format: date-time
+        stockMovementId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        stockPositionId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        stockStoreId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        type:
+          type: string
+          enum:
+          - DISPATCH
+          - RECEIPT
+          - LOSS
+          - RETURN
+        version:
+          type: integer
+          format: int64
+      required:
+      - actorId
+      - commandId
+      - evidenceReference
+      - id
+      - lineId
+      - outstandingAfter
+      - outstandingBefore
+      - quantity
+      - reason
+      - recordedAt
+      - stockMovementId
+      - stockPositionId
+      - stockStoreId
+      - type
+      - version
+    TransferCustodyPage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferCustodyMovement"
+      required:
+      - hasMore
+      - items
+    TransferDamageLineRequest:
+      type: object
+      properties:
+        documentLineReference:
+          type: string
+          maxLength: 64
+          minLength: 0
+        lineId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          format: int64
+          exclusiveMinimum: 0
+      required:
+      - documentLineReference
+      - lineId
+      - quantity
+    TransferDamageRequest:
+      type: object
+      properties:
+        documentReference:
+          type: string
+          maxLength: 200
+          minLength: 0
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferDamageLineRequest"
+          maxItems: 50
+          minItems: 1
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        reasonCode:
+          type: string
+          minLength: 1
+          pattern: DAMAGED_IN_TRANSIT|DESTROYED_IN_TRANSIT|LOST_WITH_EVIDENCE
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - documentReference
+      - evidenceReference
+      - expectedVersion
+      - lines
+      - reason
+      - reasonCode
+      - requestId
+    TransferDecisionRequest:
+      type: object
+      properties:
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - evidenceReference
+      - expectedVersion
+      - reason
+      - requestId
+    TransferDiscrepancyPage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferDiscrepancyRecord"
+      required:
+      - hasMore
+      - items
+    TransferDiscrepancyRecord:
+      type: object
+      properties:
+        evidenceReference:
+          type: string
+        expectedState:
+          type: string
+        id:
+          type: string
+          format: uuid
+        lineId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        observedState:
+          type: string
+        reason:
+          type: string
+        recordedAt:
+          type: string
+          format: date-time
+        transferId:
+          type: string
+          format: uuid
+        type:
+          type: string
+      required:
+      - evidenceReference
+      - expectedState
+      - id
+      - lineId
+      - observedState
+      - reason
+      - recordedAt
+      - transferId
+      - type
+    TransferDiscrepancyRequest:
+      type: object
+      properties:
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedState:
+          type: string
+          maxLength: 500
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        lineId:
+          type: string
+          format: uuid
+        observedState:
+          type: string
+          maxLength: 500
+          minLength: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - evidenceReference
+      - expectedState
+      - expectedVersion
+      - observedState
+      - reason
+      - requestId
+    TransferDispatchLineRequest:
+      type: object
+      properties:
+        lineId:
+          type: string
+          format: uuid
+        observedLotCode:
+          type: string
+          maxLength: 128
+          minLength: 0
+        observedSku:
+          type: string
+          maxLength: 64
+          minLength: 0
+        quantity:
+          type: integer
+          format: int64
+          exclusiveMinimum: 0
+      required:
+      - lineId
+      - observedLotCode
+      - observedSku
+      - quantity
+    TransferDispatchRequest:
+      type: object
+      properties:
+        documentReference:
+          type: string
+          maxLength: 200
+          minLength: 0
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferDispatchLineRequest"
+          maxItems: 50
+          minItems: 1
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - documentReference
+      - evidenceReference
+      - expectedVersion
+      - lines
+      - reason
+      - requestId
+    TransferInTransitLine:
+      type: object
+      properties:
+        ageSeconds:
+          type: integer
+          format: int64
+        destinationLocationId:
+          type: string
+          format: uuid
+        destinationStoreId:
+          type: string
+          format: uuid
+        dispatchedAt:
+          type: string
+          format: date-time
+        lineId:
+          type: string
+          format: uuid
+        outstanding:
+          type: integer
+          format: int64
+        sourcePositionId:
+          type: string
+          format: uuid
+        sourceStoreId:
+          type: string
+          format: uuid
+        transferId:
+          type: string
+          format: uuid
+      required:
+      - ageSeconds
+      - destinationLocationId
+      - destinationStoreId
+      - dispatchedAt
+      - lineId
+      - outstanding
+      - sourcePositionId
+      - sourceStoreId
+      - transferId
+    TransferInTransitPage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferInTransitLine"
+      required:
+      - hasMore
+      - items
+    TransferLineResponse:
+      type: object
+      properties:
+        destinationLocationId:
+          type: string
+          format: uuid
+        expectedSourceVersion:
+          type: integer
+          format: int64
+        id:
+          type: string
+          format: uuid
+        lineNumber:
+          type: integer
+          format: int32
+        lotCode:
+          type: string
+        lotId:
+          type: string
+          format: uuid
+        picked:
+          type: boolean
+        productId:
+          type: string
+          format: uuid
+        quantities:
+          $ref: "#/components/schemas/TransferQuantities"
+        requestedQuantity:
+          type: integer
+          format: int64
+        reservationAllocationId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        sku:
+          type: string
+        sourcePositionId:
+          type: string
+          format: uuid
+        unit:
+          type: string
+      required:
+      - destinationLocationId
+      - expectedSourceVersion
+      - id
+      - lineNumber
+      - lotCode
+      - lotId
+      - picked
+      - productId
+      - quantities
+      - requestedQuantity
+      - reservationAllocationId
+      - sku
+      - sourcePositionId
+      - unit
+    TransferOutboxRedriveRequest:
+      type: object
+      properties:
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedOriginalAttemptCount:
+          type: integer
+          format: int32
+          minimum: 0
+        expectedOriginalClaimVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+        sourceFingerprint:
+          type: string
+          minLength: 1
+          pattern: "[0-9a-f]{64}"
+      required:
+      - evidenceReference
+      - expectedOriginalAttemptCount
+      - expectedOriginalClaimVersion
+      - reason
+      - requestId
+      - sourceFingerprint
+    TransferOutboxRedriveResult:
+      type: object
+      properties:
+        blockedAt:
+          type: string
+          format: date-time
+        eventId:
+          type: string
+          format: uuid
+        generation:
+          type: integer
+          format: int64
+        lastErrorCode:
+          type: string
+        nextAttemptAt:
+          type: string
+          format: date-time
+        publishedAt:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+          format: uuid
+        sendAttemptCount:
+          type: integer
+          format: int32
+        sourceFingerprint:
+          type: string
+        state:
+          type: string
+    TransferParkedDiagnostic:
+      type: object
+      properties:
+        aggregateVersion:
+          type: integer
+          format: int64
+        eventId:
+          type: string
+          format: uuid
+        eventType:
+          type: string
+        lastErrorCode:
+          type: string
+        latestAttemptAt:
+          type: string
+          format: date-time
+        latestGeneration:
+          type: integer
+          format: int64
+        occurredAt:
+          type: string
+          format: date-time
+        originalAttemptCount:
+          type: integer
+          format: int32
+        originalClaimVersion:
+          type: integer
+          format: int64
+        parkedAt:
+          type: string
+          format: date-time
+        redriveAttemptCount:
+          type: integer
+          format: int32
+        schemaVersion:
+          type: integer
+          format: int32
+        sourceFingerprint:
+          type: string
+        state:
+          type: string
+        transferId:
+          type: string
+          format: uuid
+    TransferParkedPage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferParkedDiagnostic"
+    TransferPickRequest:
+      type: object
+      properties:
+        documentReference:
+          type: string
+          maxLength: 200
+          minLength: 0
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        lineId:
+          type: string
+          format: uuid
+        observedLotCode:
+          type: string
+          maxLength: 128
+          minLength: 0
+        observedSku:
+          type: string
+          maxLength: 64
+          minLength: 0
+        quantity:
+          type: integer
+          format: int64
+          exclusiveMinimum: 0
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - documentReference
+      - evidenceReference
+      - expectedVersion
+      - lineId
+      - observedLotCode
+      - observedSku
+      - quantity
+      - reason
+      - requestId
+    TransferQuantities:
+      type: object
+      properties:
+        confirmedLoss:
+          type: integer
+          format: int64
+        dispatched:
+          type: integer
+          format: int64
+        outstanding:
+          type: integer
+          format: int64
+        physicallyReceived:
+          type: integer
+          format: int64
+        physicallyReturned:
+          type: integer
+          format: int64
+    TransferQueueItem:
+      type: object
+      properties:
+        createdAt:
+          type: string
+          format: date-time
+        destinationStoreId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        lineCount:
+          type: integer
+          format: int64
+        outstandingQuantity:
+          type: integer
+        sourceStoreId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - REQUESTED
+          - REJECTED
+          - CANCELLED
+          - APPROVED
+          - PICKING
+          - PICKED
+          - IN_TRANSIT
+          - PARTIALLY_RECEIVED
+          - RECONCILIATION_REQUIRED
+          - RECEIVED
+          - CLOSED_WITH_DISCREPANCY
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int64
+      required:
+      - createdAt
+      - destinationStoreId
+      - id
+      - lineCount
+      - outstandingQuantity
+      - sourceStoreId
+      - status
+      - updatedAt
+      - version
+    TransferQueuePage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferQueueItem"
+      required:
+      - hasMore
+      - items
+    TransferReceiveLineRequest:
+      type: object
+      properties:
+        documentLineReference:
+          type: string
+          maxLength: 64
+          minLength: 0
+        expectedDestinationVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        lineId:
+          type: string
+          format: uuid
+        observedLotCode:
+          type: string
+          maxLength: 128
+          minLength: 0
+        observedSku:
+          type: string
+          maxLength: 64
+          minLength: 0
+        quantity:
+          type: integer
+          format: int64
+          exclusiveMinimum: 0
+      required:
+      - documentLineReference
+      - expectedDestinationVersion
+      - lineId
+      - observedLotCode
+      - observedSku
+      - quantity
+    TransferReceiveRequest:
+      type: object
+      properties:
+        documentReference:
+          type: string
+          maxLength: 200
+          minLength: 0
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferReceiveLineRequest"
+          maxItems: 50
+          minItems: 1
+        physicallyReceivedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - documentReference
+      - evidenceReference
+      - expectedVersion
+      - lines
+      - physicallyReceivedAt
+      - reason
+      - requestId
+    TransferResponse:
+      type: object
+      properties:
+        createdAt:
+          type: string
+          format: date-time
+        destinationStoreId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        lineCount:
+          type: integer
+          format: int64
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferLineResponse"
+        outstandingQuantity:
+          type: integer
+        sourceStoreId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - REQUESTED
+          - REJECTED
+          - CANCELLED
+          - APPROVED
+          - PICKING
+          - PICKED
+          - IN_TRANSIT
+          - PARTIALLY_RECEIVED
+          - RECONCILIATION_REQUIRED
+          - RECEIVED
+          - CLOSED_WITH_DISCREPANCY
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int64
+      required:
+      - createdAt
+      - destinationStoreId
+      - id
+      - lineCount
+      - lines
+      - outstandingQuantity
+      - sourceStoreId
+      - status
+      - updatedAt
+      - version
+    TransferReturnRequest:
+      type: object
+      properties:
+        documentReference:
+          type: string
+          maxLength: 200
+          minLength: 0
+        evidenceReference:
+          type: string
+          maxLength: 256
+          minLength: 0
+        expectedVersion:
+          type: integer
+          format: int64
+          maximum: 9223372036854775806
+          minimum: 0
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferReturnRequestLine"
+          maxItems: 50
+          minItems: 1
+        reason:
+          type: string
+          maxLength: 500
+          minLength: 0
+        requestId:
+          type: string
+          format: uuid
+      required:
+      - documentReference
+      - evidenceReference
+      - expectedVersion
+      - lines
+      - reason
+      - requestId
+    TransferReturnRequestLine:
+      type: object
+      properties:
+        lineId:
+          type: string
+          format: uuid
+      required:
+      - lineId
     UpdateLaneRequest:
       type: object
       properties:

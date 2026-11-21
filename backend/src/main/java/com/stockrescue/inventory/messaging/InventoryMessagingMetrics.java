@@ -10,6 +10,9 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import com.stockrescue.inventory.persistence.InventoryOutboxRepository;
 import com.stockrescue.inventory.persistence.InventoryOutboxRedriveRepository;
+import com.stockrescue.transfers.persistence.TransferOutboxRepository;
+import com.stockrescue.transfers.persistence.TransferOutboxRedriveRepository;
+import com.stockrescue.transfers.persistence.TransferRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Meter;
@@ -47,9 +50,18 @@ public class InventoryMessagingMetrics {
     private final ConcurrentMap<TopicPartition,AtomicLong> pausedValues=new ConcurrentHashMap<>();
     private final ConcurrentMap<TopicPartition,Meter> pausedGauges=new ConcurrentHashMap<>();
     private final AtomicLong lastSuccessfulProcessingEpochSeconds=new AtomicLong();
+    private final Counter transferPublished;
+    private final Counter transferSendErrors;
+    private final Counter transferClaims;
+    private final Counter transferApplied;
+    private final Counter transferDeferred;
+    private final Counter transferDuplicates;
+    private final Counter transferRedriveClaims;
 
     public InventoryMessagingMetrics(MeterRegistry registry,InventoryOutboxRepository outbox,
             InventoryOutboxRedriveRepository redrives,
+            TransferOutboxRepository transferOutbox,TransferOutboxRedriveRepository transferRedrives,
+            TransferRepository transfers,
             @Value("${stockrescue.inventory.messaging.consumer-name}") String consumerName) {
         this.registry=registry;
         attempted=Counter.builder("stockrescue.inventory.outbox.claims").register(registry);
@@ -62,6 +74,13 @@ public class InventoryMessagingMetrics {
         consumerRetries=Counter.builder("stockrescue.inventory.consumer.retry.attempts").register(registry);
         consumerRetryRecoveryFailures=Counter.builder("stockrescue.inventory.consumer.retry.recovery.failures").register(registry);
         consumerListenerRestartAttempts=Counter.builder("stockrescue.inventory.consumer.listener.restart.attempts").register(registry);
+        transferPublished=Counter.builder("stockrescue.transfer.outbox.published").register(registry);
+        transferSendErrors=Counter.builder("stockrescue.transfer.outbox.errors").register(registry);
+        transferClaims=Counter.builder("stockrescue.transfer.outbox.claims").register(registry);
+        transferApplied=Counter.builder("stockrescue.transfer.consumer.applied").register(registry);
+        transferDeferred=Counter.builder("stockrescue.transfer.consumer.deferred").register(registry);
+        transferDuplicates=Counter.builder("stockrescue.transfer.consumer.duplicates").register(registry);
+        transferRedriveClaims=Counter.builder("stockrescue.transfer.outbox.redrive.claims").register(registry);
         for(var category:InventoryConsumerFailure.Category.values()) {
             failuresByCategory.put(category,Counter.builder("stockrescue.inventory.consumer.failures")
                     .tag("category",category.name()).register(registry));
@@ -88,11 +107,29 @@ public class InventoryMessagingMetrics {
         registry.gauge("stockrescue.inventory.outbox.deliveries.with.errors",outbox,InventoryOutboxRepository::deliveriesWithErrors);
         registry.gauge("stockrescue.inventory.projection.staleness.seconds",outbox,
                 repository->repository.projectionStalenessSeconds(consumerName));
+        registry.gauge("stockrescue.transfer.outbox.pending",transferOutbox,TransferOutboxRepository::pendingCount);
+        registry.gauge("stockrescue.transfer.outbox.oldest.pending.seconds",transferOutbox,TransferOutboxRepository::oldestPendingSeconds);
+        registry.gauge("stockrescue.transfer.outbox.parked",transferOutbox,TransferOutboxRepository::parkedCount);
+        registry.gauge("stockrescue.transfer.outbox.attempts.total",transferOutbox,TransferOutboxRepository::totalAttempts);
+        registry.gauge("stockrescue.transfer.outbox.parked.unresolved",transferRedrives,TransferOutboxRedriveRepository::unresolvedParkedCount);
+        registry.gauge("stockrescue.transfer.outbox.parked.oldest.blocked.seconds",transferRedrives,
+                TransferOutboxRedriveRepository::oldestUnresolvedParkedSeconds);
+        registry.gauge("stockrescue.transfer.outbox.redrive.attempts.total",transferRedrives,
+                TransferOutboxRedriveRepository::totalRedriveAttempts);
+        registry.gauge("stockrescue.transfer.in_transit.oldest.seconds",transfers,TransferRepository::oldestInTransitSeconds);
+        registry.gauge("stockrescue.transfer.custody.ledger.mismatches",transfers,TransferRepository::custodyLedgerMismatchCount);
     }
 
     public void claimed(long count) { attempted.increment(count); }
     public void published() { published.increment(); }
     public void sendError() { sendErrors.increment(); }
+    public void transferClaimed(long count) { transferClaims.increment(count); }
+    public void transferPublished() { transferPublished.increment(); }
+    public void transferSendError() { transferSendErrors.increment(); }
+    public void transferApplied() { transferApplied.increment(); }
+    public void transferDeferred() { transferDeferred.increment(); }
+    public void transferDuplicate() { transferDuplicates.increment(); }
+    public void transferRedriveClaimed(long count) { transferRedriveClaims.increment(count); }
     public void applied() { applied.increment(); }
     public void stale() { stale.increment(); }
     public void duplicate() { duplicates.increment(); }

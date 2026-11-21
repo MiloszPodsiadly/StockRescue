@@ -201,12 +201,30 @@ class OpenApiContractTest extends InfrastructureTestBase {
         var redrivePath=inventory+"/outbox/parked-events";
         assertThat(inventoryPaths.path(redrivePath).path("get").path("operationId").asString())
                 .isEqualTo("listParkedInventoryOutboxEvents");
+        assertThat(inventoryPaths.path(redrivePath).path("get").path("responses").path("200").path("content")
+                .path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/InventoryParkedPage");
         var redrive=inventoryPaths.path(redrivePath+"/{eventId}/redrives").path("post");
         assertThat(redrive.path("operationId").asString()).isEqualTo("requestInventoryOutboxRedrive");
-        var redriveRequired=schemas.path("RedriveRequestBody").path("required");
+        assertThat(redrive.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/InventoryOutboxRedriveRequest");
+        var redriveRequired=schemas.path("InventoryOutboxRedriveRequest").path("required");
         for(var field:java.util.List.of("requestId","expectedOriginalClaimVersion","expectedOriginalAttemptCount",
                 "sourceFingerprint","reason","evidenceReference"))
             assertThat(redriveRequired).anyMatch(value->value.asString().equals(field));
+        var transferParked="/api/v1/organizations/{organizationId}/transfers/outbox/parked-events";
+        var transferParkedRead=document.path("paths").path(transferParked).path("get");
+        assertThat(transferParkedRead.path("operationId").asString()).isEqualTo("listParkedTransferOutboxEvents");
+        assertThat(transferParkedRead.path("responses").has("200")).isTrue();
+        assertThat(transferParkedRead.path("security").get(0).has("session")).isTrue();
+        assertThat(transferParkedRead.path("responses").path("200").path("content").path("application/json")
+                .path("schema").path("$ref").asString()).isEqualTo("#/components/schemas/TransferParkedPage");
+        var transferRedrive=document.path("paths").path(transferParked+"/{eventId}/redrives").path("post");
+        assertThat(transferRedrive.path("operationId").asString()).isEqualTo("requestTransferOutboxRedrive");
+        assertThat(transferRedrive.path("responses").has("200")).isTrue();
+        assertThat(transferRedrive.path("security").get(0).has("session")).isTrue();
+        assertThat(transferRedrive.path("requestBody").path("content").path("application/json").path("schema").path("$ref").asString())
+                .isEqualTo("#/components/schemas/TransferOutboxRedriveRequest");
         var positions=inventoryPaths.path(inventory+"/positions").path("get");
         assertThat(positions.path("operationId").asString()).isEqualTo("listInventoryPositions");
         assertThat(positions.path("security").get(0).has("session")).isTrue();

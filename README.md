@@ -84,7 +84,13 @@ Open a store's **Storage zones** to declare its temperature classes. Org Admins
 can configure **Transport lanes** between compatible zones, approve decimal
 costs with a currency and journey duration, and review previous or future prices.
 Missing configuration is explicit; configured routes do not prove capacity.
-The workspace navigation connects stores, access, transport and **Settings**.
+Open **Transfers** to request stock from one store to a destination location.
+A manager reviews and reserves the request, the source team records complete
+line picks and dispatch, and the destination team records physical receipts,
+including partial receipts. Transit, documented loss and confirmed physical
+returns remain visible for reconciliation; unsafe receipts go to quarantine.
+The workspace navigation connects stores, inventory, transfers, access,
+transport and **Settings**.
 Switch organizations from the selector and sign out from any workspace page.
 Your account reference is available on the account page for invitation review.
 

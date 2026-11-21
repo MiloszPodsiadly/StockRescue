@@ -58,6 +58,11 @@ public class LaneRepository {
         return jdbc.sql(SELECT+" WHERE l.org_id=:org AND l.origin_store_id=:origin AND l.destination_store_id=:destination")
                 .param("org",org).param("origin",origin).param("destination",destination).query((row,index)->lane(row)).optional();
     }
+    public List<Boolean> lockTransferStores(UUID org,UUID origin,UUID destination) {
+        return jdbc.sql("SELECT active FROM stockrescue.store WHERE org_id=:org AND id IN (:ids) ORDER BY id FOR SHARE")
+                .param("org",org).param("ids",List.of(origin,destination).stream().sorted().toList())
+                .query((row,index)->row.getBoolean("active")).list();
+    }
     public void lock(UUID org,UUID id) {
         jdbc.sql("SELECT id FROM stockrescue.transport_lane WHERE org_id=:org AND id=:id FOR UPDATE").param("org",org).param("id",id).query(UUID.class).optional()
                 .orElseThrow(com.stockrescue.access.application.OrganizationUnavailableException::new);

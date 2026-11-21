@@ -198,6 +198,28 @@ public class InventoryRepository {
                         row.getLong("remaining_quantity"),row.getString("state"),row.getLong("version"))).optional();
     }
 
+    public boolean isTransferLinkedAllocation(UUID org,UUID store,UUID position,UUID allocationId) {
+        requireWriteTransaction();
+        return jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM stockrescue.transfer_line
+                    WHERE org_id=:org AND source_store_id=:store AND source_position_id=:position
+                        AND reservation_allocation_id=:allocation)
+                """).param("org",org).param("store",store).param("position",position).param("allocation",allocationId)
+                .query(Boolean.class).single();
+    }
+
+    public boolean transferAllocationMatches(UUID org,UUID store,UUID transferId,UUID lineId,
+            UUID position,UUID allocationId) {
+        requireWriteTransaction();
+        return jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM stockrescue.transfer_line
+                    WHERE org_id=:org AND source_store_id=:store AND transfer_id=:transfer AND id=:line
+                        AND source_position_id=:position AND reservation_allocation_id=:allocation
+                        AND reservation_bucket='RESERVED')
+                """).param("org",org).param("store",store).param("transfer",transferId).param("line",lineId)
+                .param("position",position).param("allocation",allocationId).query(Boolean.class).single();
+    }
+
     public void openAllocation(UUID org,UUID store,UUID position,UUID id,String bucket,UUID owner,UUID membership,long quantity,UUID movement) {
         requireWriteTransaction();
         jdbc.sql("""
