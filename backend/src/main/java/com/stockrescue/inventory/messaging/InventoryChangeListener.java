@@ -37,8 +37,15 @@ public class InventoryChangeListener {
     public void consume(ConsumerRecord<String,String> record,Acknowledgment acknowledgment) {
         try {
             try {
-                String eventType=transferProcessor.eventTypeOrNull(record.value());
-                if(eventType!=null) {
+                String eventType=transferProcessor.eventType(record.value());
+                if(InventoryEventCodec.EVENT_TYPE.equals(eventType)) {
+                    var outcome=processor.process(record.key(),record.value());
+                    switch(outcome) {
+                        case APPLIED -> metrics.applied();
+                        case STALE -> metrics.stale();
+                        case DUPLICATE -> metrics.duplicate();
+                    }
+                } else if(transferProcessor.supportsEventType(eventType)) {
                     var outcome=transferProcessor.process(record.value());
                     switch(outcome) {
                         case APPLIED -> metrics.transferApplied();
@@ -46,12 +53,9 @@ public class InventoryChangeListener {
                         case DUPLICATE -> metrics.transferDuplicate();
                     }
                 } else {
-                    var outcome=processor.process(record.key(),record.value());
-                    switch(outcome) {
-                        case APPLIED -> metrics.applied();
-                        case STALE -> metrics.stale();
-                        case DUPLICATE -> metrics.duplicate();
-                    }
+                    parked.record(consumer,record.topic(),record.partition(),record.offset(),codec.eventIdOrNull(record.value()),
+                            digest(record.value()),"UNSUPPORTED_EVENT_TYPE");
+                    metrics.consumerParked();
                 }
             } catch(InventoryEventContractException invalid) {
                 if(!invalid.isPermanentContractFailure()) throw invalid;
@@ -74,7 +78,7 @@ public class InventoryChangeListener {
     }
 
     private static byte[] digest(String payload) {
-        try { return MessageDigest.getInstance("SHA-256").digest(payload.getBytes(StandardCharsets.UTF_8)); }
+        try { return MessageDigest.getInstance("SHA-256").digest(payload==null?new byte[0]:payload.getBytes(StandardCharsets.UTF_8)); }
         catch(NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 }

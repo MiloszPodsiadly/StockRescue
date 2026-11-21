@@ -10,6 +10,7 @@ import com.stockrescue.transfers.application.TransferService;
 import com.stockrescue.transfers.application.TransferService.CommandOutcome;
 import com.stockrescue.transfers.application.TransferService.CreateLine;
 import com.stockrescue.transfers.application.TransferService.CreateRequest;
+import com.stockrescue.transfers.application.TransferService.CancelRequest;
 import com.stockrescue.transfers.application.TransferService.DecisionRequest;
 import com.stockrescue.transfers.application.TransferService.PickRequest;
 import com.stockrescue.transfers.application.TransferService.DispatchRequest;
@@ -24,6 +25,7 @@ import com.stockrescue.transfers.application.TransferService.ReturnRequestLine;
 import com.stockrescue.transfers.application.TransferService.ConfirmReturnRequest;
 import com.stockrescue.transfers.application.TransferService.ConfirmReturnLine;
 import com.stockrescue.transfers.application.TransferService.Recovery;
+import com.stockrescue.transfers.domain.TransferMovementType;
 import com.stockrescue.transfers.domain.TransferQuantities;
 import com.stockrescue.transfers.domain.TransferStatus;
 import com.stockrescue.transfers.persistence.TransferRepository.TransferDetail;
@@ -119,10 +121,10 @@ public class TransferController {
     }
 
     @PostMapping(value = "/{transferId}/cancel", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(operationId = "cancelTransfer", summary = "Cancel a pre-dispatch transfer and release only its exact active reservation")
+    @Operation(operationId = "cancelTransfer", summary = "Cancel a pre-dispatch transfer, document any physical put-back and release its exact active reservation")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = CommandResponse.class)))
     public CommandResponse cancel(Authentication actor, @PathVariable UUID organizationId, @PathVariable UUID transferId,
-            @Valid @RequestBody TransferDecisionRequest request) {
+            @Valid @RequestBody TransferCancelRequest request) {
         return CommandResponse.from(transfers.cancel(actor(actor), organizationId, transferId, request.toService()));
     }
 
@@ -191,7 +193,7 @@ public class TransferController {
     }
 
     @PostMapping(value = "/{transferId}/close-discrepancy", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(operationId = "closeTransferDiscrepancy", summary = "Close a fully documented discrepancy after every line has zero outstanding custody")
+    @Operation(operationId = "closeTransferDiscrepancy", summary = "Confirm reconciliation after every line has zero outstanding custody")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = CommandResponse.class)))
     public CommandResponse closeDiscrepancy(Authentication actor,@PathVariable UUID organizationId,@PathVariable UUID transferId,
             @Valid @RequestBody TransferDecisionRequest request) {
@@ -209,28 +211,31 @@ public class TransferController {
 
     @GetMapping("/{transferId}/custody")
     @Operation(operationId = "getTransferCustodyTimeline", summary = "Read the immutable custody movements for a transfer")
-    public ResponseEntity<PageResponse<CustodyMovement>> custody(Authentication actor,@PathVariable UUID organizationId,
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferCustodyPage.class)))
+    public ResponseEntity<TransferCustodyPage> custody(Authentication actor,@PathVariable UUID organizationId,
             @PathVariable UUID transferId,@RequestParam(defaultValue="0") int offset,
             @RequestParam(defaultValue="50") int limit) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(PageResponse.from(
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(TransferCustodyPage.from(
                 transfers.custodyTimeline(actor(actor),organizationId,transferId,offset,limit)));
     }
 
     @GetMapping("/in-transit")
     @Operation(operationId = "listTransfersInTransit", summary = "List line-wise in-transit quantities and age for a currently authorized store")
-    public ResponseEntity<PageResponse<InTransitLine>> inTransit(Authentication actor,@PathVariable UUID organizationId,
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferInTransitPage.class)))
+    public ResponseEntity<TransferInTransitPage> inTransit(Authentication actor,@PathVariable UUID organizationId,
             @RequestParam UUID storeId,@RequestParam(defaultValue="0") int offset,
             @RequestParam(defaultValue="50") int limit) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(PageResponse.from(
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(TransferInTransitPage.from(
                 transfers.inTransitAging(actor(actor),organizationId,storeId,offset,limit)));
     }
 
     @GetMapping("/discrepancies")
     @Operation(operationId = "listTransferDiscrepancies", summary = "List documented discrepancies and pending return requests for a currently authorized store")
-    public ResponseEntity<PageResponse<Discrepancy>> discrepancies(Authentication actor,@PathVariable UUID organizationId,
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferDiscrepancyPage.class)))
+    public ResponseEntity<TransferDiscrepancyPage> discrepancies(Authentication actor,@PathVariable UUID organizationId,
             @RequestParam UUID storeId,@RequestParam(defaultValue="0") int offset,
             @RequestParam(defaultValue="50") int limit) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(PageResponse.from(
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(TransferDiscrepancyPage.from(
                 transfers.discrepancies(actor(actor),organizationId,storeId,offset,limit)));
     }
 
@@ -264,6 +269,20 @@ public class TransferController {
             @NotBlank @Size(max = 500) @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String reason,
             @NotBlank @Size(max = 256) @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String evidenceReference) {
         DecisionRequest toService() { return new DecisionRequest(requestId, expectedVersion, reason, evidenceReference); }
+    }
+
+    public record TransferCancelRequest(@NotNull @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID requestId,
+            @NotNull @Min(0) @Max(Long.MAX_VALUE - 1) @Schema(requiredMode = Schema.RequiredMode.REQUIRED) Long expectedVersion,
+            @NotBlank @Size(max = 500) @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String reason,
+            @NotBlank @Size(max = 256) @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String evidenceReference,
+            @Schema(description = "Required and true after physically returning every picked line to its source shelf",
+                    requiredMode = Schema.RequiredMode.NOT_REQUIRED) Boolean putBackConfirmed,
+            @Size(max = 200) @Schema(description = "Physical put-back record reference, required when any line was picked",
+                    requiredMode = Schema.RequiredMode.NOT_REQUIRED) String putBackDocumentReference) {
+        CancelRequest toService() {
+            return new CancelRequest(requestId, expectedVersion, reason, evidenceReference,
+                    putBackConfirmed, putBackDocumentReference);
+        }
     }
 
     public record TransferPickRequest(@NotNull @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID requestId,
@@ -353,8 +372,80 @@ public class TransferController {
             @NotBlank @Size(max=64) String documentLineReference,@NotBlank @Size(max=64) String observedSku,
             @NotBlank @Size(max=128) String observedLotCode) { }
 
-    public record PageResponse<T>(List<T> items,boolean hasMore) {
-        static <T> PageResponse<T> from(Page<T> page) { return new PageResponse<>(page.items(),page.hasMore()); }
+    public record TransferCustodyPage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferCustodyMovement> items,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean hasMore) {
+        static TransferCustodyPage from(Page<CustodyMovement> page) {
+            return new TransferCustodyPage(page.items().stream().map(TransferCustodyMovement::from).toList(), page.hasMore());
+        }
+    }
+
+    public record TransferInTransitPage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferInTransitLine> items,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean hasMore) {
+        static TransferInTransitPage from(Page<InTransitLine> page) {
+            return new TransferInTransitPage(page.items().stream().map(TransferInTransitLine::from).toList(), page.hasMore());
+        }
+    }
+
+    public record TransferDiscrepancyPage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferDiscrepancyRecord> items,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean hasMore) {
+        static TransferDiscrepancyPage from(Page<Discrepancy> page) {
+            return new TransferDiscrepancyPage(page.items().stream().map(TransferDiscrepancyRecord::from).toList(), page.hasMore());
+        }
+    }
+
+    public record TransferCustodyMovement(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID id,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID lineId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long version,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) TransferMovementType type,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID commandId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID actorId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long quantity,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long outstandingBefore,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long outstandingAfter,
+            @Schema(types = {"string", "null"}, format = "uuid", requiredMode = Schema.RequiredMode.REQUIRED) UUID stockStoreId,
+            @Schema(types = {"string", "null"}, format = "uuid", requiredMode = Schema.RequiredMode.REQUIRED) UUID stockMovementId,
+            @Schema(types = {"string", "null"}, format = "uuid", requiredMode = Schema.RequiredMode.REQUIRED) UUID stockPositionId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String reason,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String evidenceReference,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) Instant recordedAt) {
+        static TransferCustodyMovement from(CustodyMovement value) {
+            return new TransferCustodyMovement(value.id(), value.lineId(), value.version(), value.type(), value.commandId(),
+                    value.actorId(), value.quantity(), value.outstandingBefore(), value.outstandingAfter(), value.stockStoreId(),
+                    value.stockMovementId(), value.stockPositionId(), value.reason(), value.evidenceReference(), value.recordedAt());
+        }
+    }
+
+    public record TransferInTransitLine(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID transferId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID lineId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID sourceStoreId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID destinationStoreId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID sourcePositionId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID destinationLocationId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long outstanding,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) Instant dispatchedAt,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long ageSeconds) {
+        static TransferInTransitLine from(InTransitLine value) {
+            return new TransferInTransitLine(value.transferId(), value.lineId(), value.sourceStoreId(), value.destinationStoreId(),
+                    value.sourcePositionId(), value.destinationLocationId(), value.outstanding(), value.dispatchedAt(), value.ageSeconds());
+        }
+    }
+
+    public record TransferDiscrepancyRecord(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID id,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID transferId,
+            @Schema(types = {"string", "null"}, format = "uuid", requiredMode = Schema.RequiredMode.REQUIRED) UUID lineId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String type,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String reason,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String evidenceReference,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String expectedState,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String observedState,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) Instant recordedAt) {
+        static TransferDiscrepancyRecord from(Discrepancy value) {
+            return new TransferDiscrepancyRecord(value.id(), value.transferId(), value.lineId(), value.type(), value.reason(),
+                    value.evidenceReference(), value.expectedState(), value.observedState(), value.recordedAt());
+        }
     }
 
     public record TransferQueuePage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferQueueItem> items,

@@ -17,10 +17,11 @@ class TransferStatusTest {
             Map.entry(TransferStatus.PICKED, Set.of(TransferStatus.IN_TRANSIT, TransferStatus.CANCELLED)),
             Map.entry(TransferStatus.IN_TRANSIT, Set.of(TransferStatus.PARTIALLY_RECEIVED, TransferStatus.RECEIVED,
                     TransferStatus.RECONCILIATION_REQUIRED)),
-            Map.entry(TransferStatus.PARTIALLY_RECEIVED, Set.of(TransferStatus.RECEIVED,
+            Map.entry(TransferStatus.PARTIALLY_RECEIVED, Set.of(TransferStatus.PARTIALLY_RECEIVED, TransferStatus.RECEIVED,
                     TransferStatus.RECONCILIATION_REQUIRED)),
             Map.entry(TransferStatus.RECONCILIATION_REQUIRED, Set.of(TransferStatus.IN_TRANSIT,
-                    TransferStatus.PARTIALLY_RECEIVED, TransferStatus.RECEIVED, TransferStatus.CLOSED_WITH_DISCREPANCY)),
+                    TransferStatus.PARTIALLY_RECEIVED, TransferStatus.RECONCILIATION_REQUIRED, TransferStatus.RECEIVED,
+                    TransferStatus.CLOSED_WITH_DISCREPANCY)),
             Map.entry(TransferStatus.RECEIVED, Set.of()),
             Map.entry(TransferStatus.CLOSED_WITH_DISCREPANCY, Set.of()));
 

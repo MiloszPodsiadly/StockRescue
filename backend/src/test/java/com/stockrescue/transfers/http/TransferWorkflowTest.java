@@ -15,6 +15,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import com.stockrescue.access.application.AccessPolicy;
+import com.stockrescue.access.application.EffectivePermissions.StoreAction;
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationConfirmation.ProductProfile;
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationConfirmation.SourceType;
 import com.stockrescue.catalog.application.FoodSafetyProductClassificationConfirmationService;
@@ -25,7 +27,10 @@ import com.stockrescue.inventory.application.InventoryCommands.ReceiveGoods;
 import com.stockrescue.inventory.application.InventoryCommands.StockChange;
 import com.stockrescue.inventory.application.InventoryService;
 import com.stockrescue.inventory.application.InventoryService.TransferDispatchLine;
+import com.stockrescue.inventory.messaging.InventoryChangeListener;
+import com.stockrescue.inventory.messaging.InventoryEventCodec;
 import com.stockrescue.inventory.messaging.InventoryOutboxRelay;
+import com.stockrescue.inventory.persistence.InventoryOutboxRepository;
 import com.stockrescue.support.InfrastructureTestBase;
 import com.stockrescue.stores.application.LaneService;
 import com.stockrescue.stores.application.OperationalConfiguration.TemperatureClass;
@@ -36,6 +41,7 @@ import com.stockrescue.transfers.persistence.TransferInboxRepository;
 import com.stockrescue.transfers.persistence.TransferOutboxRepository;
 import com.stockrescue.transfers.persistence.TransferOutboxRedriveRepository;
 import com.stockrescue.transfers.persistence.TransferRepository;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.MDC;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,6 +55,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
@@ -71,7 +78,11 @@ class TransferWorkflowTest extends InfrastructureTestBase {
     @Autowired private JdbcClient jdbc;
     @Autowired private ObjectMapper json;
     @Autowired private PasswordEncoder passwords;
+    @MockitoSpyBean private AccessPolicy accessPolicy;
     @Autowired private InventoryService inventory;
+    @Autowired private InventoryChangeListener changeListener;
+    @Autowired private InventoryOutboxRepository inventoryOutbox;
+    @Autowired private InventoryEventCodec inventoryEventCodec;
     @Autowired private FoodSafetyProductClassificationConfirmationService classification;
     @Autowired private LaneService laneService;
     @Autowired private TransferOutboxRepository transferOutbox;
@@ -193,6 +204,8 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(cancelled.statusCode()).as(cancelled.body()).isEqualTo(200);
         assertThat(tree(cancelled).path("status").asString()).isEqualTo("CANCELLED");
         assertThat(tree(cancelled).path("version").asLong()).isEqualTo(1);
+        assertTransferEvent(transferId, 0, "TransferCommandRecorded", "CREATE", "REQUESTED");
+        assertTransferEvent(transferId, 1, "TransferCommandRecorded", "CANCEL", "CANCELLED");
         assertThat(tree(browser.write("POST", base() + "/" + transferId + "/cancel",
                 decision(cancellationId, 0, "No longer required")))).isEqualTo(tree(cancelled));
         problem(browser.write("POST", base() + "/" + transferId + "/cancel",
@@ -247,6 +260,8 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         var rejected = browser.write("POST", base() + "/" + transferId + "/reject", decision(requestId, 0, "Not needed this week"));
         assertThat(rejected.statusCode()).as(rejected.body()).isEqualTo(200);
         assertThat(tree(rejected).path("status").asString()).isEqualTo("REJECTED");
+        assertTransferEvent(transferId, 0, "TransferCommandRecorded", "CREATE", "REQUESTED");
+        assertTransferEvent(transferId, 1, "TransferCommandRecorded", "REJECT", "REJECTED");
         assertThat(tree(browser.write("POST", base() + "/" + transferId + "/reject",
                 decision(requestId, 0, "Not needed this week")))).isEqualTo(tree(rejected));
         problem(browser.write("POST", base(), createRequest(UUID.randomUUID(), fixture.sourceStore,
@@ -321,6 +336,8 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                 .isEqualTo(tree(cancelled));
         assertThat(jdbc.sql("SELECT reserved FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
                 .param("org", fixture.organization).param("position", fixture.position).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT on_hand FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
+                .param("org", fixture.organization).param("position", fixture.position).query(Long.class).single()).isEqualTo(5);
         assertThat(jdbc.sql("SELECT state FROM stockrescue.stock_allocation WHERE org_id=:org AND store_id=:store AND id=:allocation")
                 .param("org", fixture.organization).param("store", fixture.sourceStore).param("allocation", allocationId)
                 .query(String.class).single()).isEqualTo("RELEASED");
@@ -328,8 +345,77 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                 .param("org", fixture.organization).query(Long.class).single()).isEqualTo(1);
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_RELEASE'")
                 .param("org", fixture.organization).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_OUT'")
+                .param("org", fixture.organization).query(Long.class).single()).isZero();
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.audit_entry WHERE org_id=:org AND resource_type='transfer' AND resource_id=:transfer")
                 .param("org", fixture.organization).param("transfer", transferId).query(Long.class).single()).isEqualTo(3);
+    }
+
+    @Test
+    void pickingCancellationRequiresPutBackEvidenceAndReleasesOnlyTheOwnedReservationsOnce() throws Exception {
+        var browser = fixture.owner();
+        long firstSourceVersion = fixture.seedSource(fixture.sourceLocation, 6);
+        long secondSourceVersion = fixture.seedSource(fixture.secondSourceLocation, 7);
+        var created = browser.write("POST", base(), Map.of("requestId", UUID.randomUUID(),
+                "sourceStoreId", fixture.sourceStore, "destinationStoreId", fixture.destinationStore,
+                "lines", java.util.List.of(
+                        Map.of("sourcePositionId", fixture.position, "destinationLocationId", fixture.destinationLocation,
+                                "quantity", 3, "expectedSourceVersion", firstSourceVersion),
+                        Map.of("sourcePositionId", fixture.secondPosition, "destinationLocationId", fixture.secondDestinationLocation,
+                                "quantity", 4, "expectedSourceVersion", secondSourceVersion)),
+                "reason", "Move two independently counted lots", "evidenceReference", "transfer:two-lines-cancel"));
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(200);
+        UUID transferId = UUID.fromString(tree(created).path("transferId").asString());
+        assertThat(browser.write("POST", base() + "/" + transferId + "/approve",
+                decision(UUID.randomUUID(), 0, "Reserve both source lines")).statusCode()).isEqualTo(200);
+        assertThat(browser.write("POST", base() + "/" + transferId + "/start-pick",
+                decision(UUID.randomUUID(), 1, "Start picking both source lines")).statusCode()).isEqualTo(200);
+        var lines = tree(browser.get(base() + "/" + transferId)).path("lines");
+        var pickedLine = lines.get(0);
+        UUID pickedLineId = UUID.fromString(pickedLine.path("id").asString());
+        var pick = browser.write("POST", base() + "/" + transferId + "/pick",
+                pickRequest(UUID.randomUUID(), 2, pickedLineId, "pick-cancel-" + UUID.randomUUID(),
+                        pickedLine.path("requestedQuantity").asLong(), pickedLine.path("sku").asString(),
+                        pickedLine.path("lotCode").asString()));
+        assertThat(pick.statusCode()).as(pick.body()).isEqualTo(200);
+        assertThat(tree(pick).path("status").asString()).isEqualTo("PICKING");
+
+        var missingPutBack = browser.write("POST", base() + "/" + transferId + "/cancel",
+                decision(UUID.randomUUID(), 3, "Return the picked line before cancellation"));
+        problem(missingPutBack, 422, "INVALID_REQUEST");
+        assertThat(jdbc.sql("SELECT status FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org", fixture.organization).param("transfer", transferId).query(String.class).single()).isEqualTo("PICKING");
+        assertThat(jdbc.sql("SELECT reserved FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
+                .param("org", fixture.organization).param("position", fixture.position).query(Long.class).single()).isEqualTo(3);
+
+        UUID cancellationId = UUID.randomUUID();
+        var cancelBody = cancelRequest(cancellationId, 3, "Return the picked line before cancellation", "put-back-picking-01");
+        var committed = browser.write("POST", base() + "/" + transferId + "/cancel", cancelBody);
+        assertThat(committed.statusCode()).as(committed.body()).isEqualTo(200);
+        // Treat the first response as lost; recovery and the exact same request must return the committed outcome.
+        var recovered = tree(browser.get(base() + "/commands/CANCEL/" + cancellationId)).path("outcome");
+        var retry = browser.write("POST", base() + "/" + transferId + "/cancel", cancelBody);
+        assertThat(tree(retry)).isEqualTo(recovered);
+        assertThat(tree(retry).path("status").asString()).isEqualTo("CANCELLED");
+        assertThat(jdbc.sql("SELECT on_hand || ':' || reserved FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
+                .param("org", fixture.organization).param("position", fixture.position).query(String.class).single()).isEqualTo("6:0");
+        assertThat(jdbc.sql("SELECT on_hand || ':' || reserved FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
+                .param("org", fixture.organization).param("position", fixture.secondPosition).query(String.class).single()).isEqualTo("7:0");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_RELEASE'")
+                .param("org", fixture.organization).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_OUT'")
+                .param("org", fixture.organization).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT a.state FROM stockrescue.transfer_line l JOIN stockrescue.stock_allocation a ON a.org_id=l.org_id AND a.store_id=l.source_store_id AND a.id=l.reservation_allocation_id WHERE l.org_id=:org AND l.transfer_id=:transfer")
+                .param("org", fixture.organization).param("transfer", transferId)
+                .query(String.class).list()).containsOnly("RELEASED");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document_line WHERE org_id=:org AND transfer_id=:transfer AND document_type='PICK'")
+                .param("org", fixture.organization).param("transfer", transferId).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document_line WHERE org_id=:org AND transfer_id=:transfer AND document_type='PUT_BACK'")
+                .param("org", fixture.organization).param("transfer", transferId).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT disposition FROM stockrescue.transfer_physical_document_line WHERE org_id=:org AND transfer_id=:transfer AND document_type='PUT_BACK'")
+                .param("org", fixture.organization).param("transfer", transferId).query(String.class).single()).isEqualTo("AVAILABLE");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND transfer_id=:transfer AND operation='CANCEL'")
+                .param("org", fixture.organization).param("transfer", transferId).query(Long.class).single()).isEqualTo(1);
     }
 
     @Test
@@ -480,6 +566,88 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                 .param("org", fixture.organization).param("transfer", prepared.transferId()).query(Long.class).single()).isEqualTo(2);
         problem(first.write("POST", base() + "/" + prepared.transferId() + "/cancel",
                 decision(UUID.randomUUID(), 4, "Attempt cancellation after dispatch")), 409, "INVENTORY_CONFLICT");
+        assertThat(jdbc.sql("SELECT status FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org", fixture.organization).param("transfer", prepared.transferId()).query(String.class).single()).isEqualTo("IN_TRANSIT");
+        assertThat(jdbc.sql("SELECT on_hand || ':' || reserved FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
+                .param("org", fixture.organization).param("position", fixture.position).query(String.class).single()).isEqualTo("3:0");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_RELEASE'")
+                .param("org", fixture.organization).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_OUT'")
+                .param("org", fixture.organization).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void cancellationAndDispatchRaceHasOnePreDispatchOrInTransitWinner() throws Exception {
+        var canceller = fixture.owner();
+        var dispatcher = fixture.owner();
+        var prepared = preparePickedTransfer(canceller, 2);
+        var cancellation = cancelRequest(UUID.randomUUID(), 3, "Cancel before dispatch", "put-back-dispatch-race");
+        var dispatch = dispatchRequest(UUID.randomUUID(), 3, "dispatch-cancel-race", prepared, prepared.quantity());
+
+        var outcomes = concurrent(
+                () -> canceller.write("POST", base() + "/" + prepared.transferId() + "/cancel", cancellation),
+                () -> dispatcher.write("POST", base() + "/" + prepared.transferId() + "/dispatch", dispatch));
+        assertThat(outcomes.stream().filter(response -> response.statusCode() == 200)).hasSize(1);
+        assertThat(outcomes.stream().filter(response -> response.statusCode() == 409)).hasSize(1);
+        String status = jdbc.sql("SELECT status FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org", fixture.organization).param("transfer", prepared.transferId()).query(String.class).single();
+        assertThat(status).isIn("CANCELLED", "IN_TRANSIT");
+        if (status.equals("CANCELLED")) {
+            assertThat(jdbc.sql("SELECT on_hand || ':' || reserved FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
+                    .param("org", fixture.organization).param("position", fixture.position).query(String.class).single()).isEqualTo("5:0");
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_RELEASE'")
+                    .param("org", fixture.organization).query(Long.class).single()).isEqualTo(1);
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_OUT'")
+                    .param("org", fixture.organization).query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document_line WHERE org_id=:org AND transfer_id=:transfer AND document_type='PUT_BACK'")
+                    .param("org", fixture.organization).param("transfer", prepared.transferId()).query(Long.class).single()).isEqualTo(1);
+        } else {
+            assertThat(jdbc.sql("SELECT on_hand || ':' || reserved FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
+                    .param("org", fixture.organization).param("position", fixture.position).query(String.class).single()).isEqualTo("3:0");
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_RELEASE'")
+                    .param("org", fixture.organization).query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_OUT'")
+                    .param("org", fixture.organization).query(Long.class).single()).isEqualTo(1);
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document_line WHERE org_id=:org AND transfer_id=:transfer AND document_type='PUT_BACK'")
+                    .param("org", fixture.organization).param("transfer", prepared.transferId()).query(Long.class).single()).isZero();
+        }
+    }
+
+    @Test
+    void cancellationAndPhysicalPickRaceCannotLeaveAnUnreleasedReservation() throws Exception {
+        var canceller = fixture.owner();
+        var picker = fixture.owner();
+        long sourceVersion = fixture.seedSource(5);
+        var prepared = preparePickingTransfer(canceller, fixture.position, fixture.destinationLocation, 2, sourceVersion);
+        var cancellationId = UUID.randomUUID();
+        var cancellation = cancelRequest(cancellationId, 2, "Cancel during source picking", null);
+        var pick = pickRequest(UUID.randomUUID(), 2, prepared.lineId(), "pick-cancel-race-" + UUID.randomUUID(),
+                prepared.quantity(), prepared.sku(), prepared.lotCode());
+
+        var outcomes = concurrent(
+                () -> canceller.write("POST", base() + "/" + prepared.transferId() + "/cancel", cancellation),
+                () -> picker.write("POST", base() + "/" + prepared.transferId() + "/pick", pick));
+        assertThat(outcomes.stream().filter(response -> response.statusCode() == 200)).hasSize(1);
+        assertThat(outcomes.stream().filter(response -> response.statusCode() == 409)).hasSize(1);
+        String status = jdbc.sql("SELECT status FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org", fixture.organization).param("transfer", prepared.transferId()).query(String.class).single();
+        if (status.equals("PICKED")) {
+            var finalCancel = canceller.write("POST", base() + "/" + prepared.transferId() + "/cancel",
+                    cancelRequest(UUID.randomUUID(), 3, "Cancel after the concurrent pick", "put-back-after-pick-race"));
+            assertThat(finalCancel.statusCode()).as(finalCancel.body()).isEqualTo(200);
+        } else {
+            assertThat(status).isEqualTo("CANCELLED");
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document_line WHERE org_id=:org AND transfer_id=:transfer AND document_type='PICK'")
+                    .param("org", fixture.organization).param("transfer", prepared.transferId()).query(Long.class).single()).isZero();
+        }
+        assertThat(jdbc.sql("SELECT on_hand || ':' || reserved FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
+                .param("org", fixture.organization).param("position", fixture.position).query(String.class).single()).isEqualTo("5:0");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_RELEASE'")
+                .param("org", fixture.organization).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_OUT'")
+                .param("org", fixture.organization).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT status FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org", fixture.organization).param("transfer", prepared.transferId()).query(String.class).single()).isEqualTo("CANCELLED");
     }
 
     @Test
@@ -583,9 +751,63 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         });
     }
 
+    @Test
+    void sharedKafkaTopicInterleavesInventoryAndTransferEventsWithoutDoubleApplyingStock() throws Exception {
+        var browser=fixture.owner();
+        var prepared=preparePickedTransfer(browser,2);
+        dispatch(browser,prepared,3,"dispatch-shared-topic-route");
+        var received=browser.write("POST",base()+"/"+prepared.transferId()+"/receive",
+                receiveRequest(prepared,4,0,2,"receipt-shared-topic-route"));
+        assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
+
+        UUID inventoryEventId=jdbc.sql("SELECT id FROM stockrescue.inventory_outbox_event WHERE org_id=:org AND position_id=:position ORDER BY aggregate_version LIMIT 1")
+                .param("org",fixture.organization).param("position",fixture.position).query(UUID.class).single();
+        var inventoryEvent=inventoryEventCodec.fromOutbox(inventoryOutbox.find(inventoryEventId));
+        var transferEvents=jdbc.sql("SELECT id FROM stockrescue.transfer_outbox_event WHERE org_id=:org AND transfer_id=:transfer ORDER BY aggregate_version")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(UUID.class).list();
+        assertThat(transferEvents).hasSize(6);
+
+        long stockMovementsBefore=jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org")
+                .param("org",fixture.organization).query(Long.class).single();
+        var firstTransfer=transferEventCodec.fromOutbox(transferOutbox.find(transferEvents.getFirst()));
+        consumeSharedTopicRecord(0,prepared.transferId().toString(),transferEventCodec.encode(firstTransfer));
+        String inventoryKey=inventoryEvent.tenantId()+":"+inventoryEvent.aggregateType()+":"+inventoryEvent.aggregateId();
+        consumeSharedTopicRecord(1,inventoryKey,inventoryEventCodec.encode(inventoryEvent));
+        for(int index=1;index<transferEvents.size();index++) {
+            var event=transferEventCodec.fromOutbox(transferOutbox.find(transferEvents.get(index)));
+            consumeSharedTopicRecord(index+1,prepared.transferId().toString(),transferEventCodec.encode(event));
+        }
+
+        UUID dispatched=transferEventId(prepared.transferId(),4);
+        UUID receivedEvent=transferEventId(prepared.transferId(),5);
+        assertThat(jdbc.sql("SELECT status FROM stockrescue.transfer_change_projection WHERE consumer_name='transfer-change-projection-v1' AND org_id=:org AND transfer_id=:transfer")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(String.class).single()).isEqualTo("RECEIVED");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_inbox WHERE consumer_name='transfer-change-projection-v1' AND event_id IN (:dispatched,:received) AND applied_at IS NOT NULL")
+                .param("dispatched",dispatched).param("received",receivedEvent).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_change_feed WHERE consumer_name='inventory-change-projection-v1' AND event_id=:event")
+                .param("event",inventoryEvent.eventId()).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_inbox WHERE consumer_name='inventory-change-projection-v1' AND event_id=:event")
+                .param("event",inventoryEvent.eventId()).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org")
+                .param("org",fixture.organization).query(Long.class).single()).isEqualTo(stockMovementsBefore);
+    }
+
+    private void consumeSharedTopicRecord(long offset,String key,String payload) {
+        var acknowledgment=org.mockito.Mockito.mock(Acknowledgment.class);
+        changeListener.consume(new ConsumerRecord<>("stockrescue.inventory.events.v1",0,9_000_000_000L+offset,key,payload),acknowledgment);
+        org.mockito.Mockito.verify(acknowledgment).acknowledge();
+    }
+
     private UUID transferEventId(UUID transferId,long version) {
         return jdbc.sql("SELECT id FROM stockrescue.transfer_outbox_event WHERE org_id=:org AND transfer_id=:transfer AND aggregate_version=:version")
                 .param("org",fixture.organization).param("transfer",transferId).param("version",version).query(UUID.class).single();
+    }
+
+    private void assertTransferEvent(UUID transferId,long version,String type,String operation,String statusAfter) {
+        var event=transferEventCodec.fromOutbox(transferOutbox.find(transferEventId(transferId,version)));
+        assertThat(event.eventType()).isEqualTo(type);
+        assertThat(event.data().operation()).isEqualTo(operation);
+        assertThat(event.data().statusAfter()).isEqualTo(statusAfter);
     }
 
     @Test
@@ -718,26 +940,55 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(stockOnHand(fixture.sourceStore, fixture.sourceLocation)).isEqualTo(30);
         assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(28);
         assertThat(custody(prepared.transferId(), prepared.lineId())).isEqualTo("20:18:0:0:2");
+        var opened = manager.write("POST", base() + "/" + prepared.transferId() + "/open-discrepancy",
+                Map.of("requestId", UUID.randomUUID(), "expectedVersion", 5, "lineId", prepared.lineId(),
+                        "expectedState", "Eighteen units received", "observedState", "Carrier reports two missing units",
+                        "reason", "Review the carrier's documented shortage", "evidenceReference", "carrier:shortage-20"));
+        assertThat(opened.statusCode()).as(opened.body()).isEqualTo(200);
+        assertThat(tree(opened).path("version").asLong()).isEqualTo(6);
+        assertTransferEvent(prepared.transferId(), 6, "TransferCommandRecorded", "OPEN_DISCREPANCY", "RECONCILIATION_REQUIRED");
         problem(manager.write("POST", base() + "/" + prepared.transferId() + "/close-discrepancy",
-                decision(UUID.randomUUID(), 5, "Cannot close while two units remain in transit")),
+                decision(UUID.randomUUID(), 6, "Cannot close while two units remain in transit")),
                 409, "INVENTORY_CONFLICT");
 
         var damaged = manager.write("POST", base() + "/" + prepared.transferId() + "/damage",
-                damageRequest(prepared, 5, 2, "damage-proof-2"));
+                damageRequest(prepared, 6, 2, "damage-proof-2"));
         assertThat(damaged.statusCode()).as(damaged.body()).isEqualTo(200);
         assertThat(tree(damaged).path("status").asString()).isEqualTo("RECONCILIATION_REQUIRED");
+        assertTransferEvent(prepared.transferId(), 7, "TransferLossConfirmed", "CONFIRM_LOSS", "RECONCILIATION_REQUIRED");
         assertThat(tree(damaged).path("stockMovementId").isNull()).isTrue();
         assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(28);
         assertThat(custody(prepared.transferId(), prepared.lineId())).isEqualTo("20:18:2:0:0");
 
-        var closeRequest = decision(UUID.randomUUID(), 6, "Close fully documented custody discrepancy");
+        String lossPayload=transferEventCodec.encode(transferEventCodec.fromOutbox(
+                transferOutbox.find(transferEventId(prepared.transferId(), 7))));
+
+        var closeRequest = decision(UUID.randomUUID(), 7, "Close fully documented custody discrepancy");
         var closed = manager.write("POST", base() + "/" + prepared.transferId() + "/close-discrepancy", closeRequest);
         assertThat(closed.statusCode()).as(closed.body()).isEqualTo(200);
         assertThat(tree(closed).path("status").asString()).isEqualTo("CLOSED_WITH_DISCREPANCY");
+        assertTransferEvent(prepared.transferId(), 8, "TransferDiscrepancyResolved", "CLOSE", "CLOSED_WITH_DISCREPANCY");
+        String closurePayload=transferEventCodec.encode(transferEventCodec.fromOutbox(
+                transferOutbox.find(transferEventId(prepared.transferId(), 8))));
+        consumeSharedTopicRecord(100, prepared.transferId().toString(), closurePayload);
+        consumeSharedTopicRecord(101, prepared.transferId().toString(), lossPayload);
+        for(long version=0;version<=6;version++) {
+            var event=transferEventCodec.fromOutbox(transferOutbox.find(transferEventId(prepared.transferId(), version)));
+            consumeSharedTopicRecord(102+version, prepared.transferId().toString(), transferEventCodec.encode(event));
+        }
+        assertThat(jdbc.sql("SELECT aggregate_version || ':' || status FROM stockrescue.transfer_change_projection "
+                        + "WHERE consumer_name='transfer-change-projection-v1' AND org_id=:org AND transfer_id=:transfer")
+                .param("org", fixture.organization).param("transfer", prepared.transferId()).query(String.class).single())
+                .isEqualTo("8:CLOSED_WITH_DISCREPANCY");
+        consumeSharedTopicRecord(110, prepared.transferId().toString(), lossPayload);
+        consumeSharedTopicRecord(111, prepared.transferId().toString(), closurePayload);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_inbox WHERE consumer_name='transfer-change-projection-v1' "
+                        + "AND org_id=:org AND transfer_id=:transfer AND applied_at IS NOT NULL")
+                .param("org", fixture.organization).param("transfer", prepared.transferId()).query(Long.class).single()).isEqualTo(9);
         assertThat(tree(manager.write("POST", base() + "/" + prepared.transferId() + "/close-discrepancy", closeRequest)))
                 .isEqualTo(tree(closed));
         problem(manager.write("POST", base() + "/" + prepared.transferId() + "/close-discrepancy",
-                decision(UUID.randomUUID(), 7, "A closed transfer cannot be closed again")), 409, "INVENTORY_CONFLICT");
+                decision(UUID.randomUUID(), 8, "A closed transfer cannot be closed again")), 409, "INVENTORY_CONFLICT");
         assertThat(custody(prepared.transferId(), prepared.lineId())).isEqualTo("20:18:2:0:0");
 
         var timeline = tree(manager.get(base() + "/" + prepared.transferId() + "/custody"));
@@ -749,6 +1000,102 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(timeline.path("items").get(1).path("stockMovementId").isNull()).isFalse();
         assertThat(timeline.path("items").get(2).path("stockMovementId").isNull()).isFalse();
         assertThat(transfers.custodyLedgerMismatchCount()).isZero();
+    }
+
+    @Test
+    void transferCommandIntentPersistsExactActorScopedPayloadAndRechecksPermissionBeforeSubmission() throws Exception {
+        var manager = fixture.storeManager();
+        UUID managerMembership = fixture.operatorMembership;
+        var prepared = preparePickedTransfer(manager, 2);
+        String intentsPath = "/api/v1/organizations/" + fixture.organization + "/transfer-command-intents";
+        UUID requestId = UUID.randomUUID();
+        UUID prepareId = UUID.randomUUID();
+        var payload = decision(requestId, 3, "Close the documented reconciliation after review");
+        var prepare = Map.of("prepareId", prepareId, "operation", "CLOSE", "transferId", prepared.transferId(), "payload", payload);
+
+        var first = manager.write("POST", intentsPath, prepare);
+        assertThat(first.statusCode()).as(first.body()).isEqualTo(200);
+        var summary = tree(first);
+        assertThat(summary.path("state").asString()).isEqualTo("PREPARED");
+        UUID intentId = UUID.fromString(summary.path("id").asString());
+        assertThat(tree(manager.write("POST", intentsPath, prepare)).path("id").asString()).isEqualTo(intentId.toString());
+
+        var changedPayload = new java.util.HashMap<String, Object>(payload);
+        changedPayload.put("reason", "Changed command details must conflict under the same request key");
+        problem(manager.write("POST", intentsPath, Map.of("prepareId", prepareId, "operation", "CLOSE",
+                "transferId", prepared.transferId(), "payload", changedPayload)), 409, "IDEMPOTENCY_CONFLICT");
+
+        var operator = fixture.operator();
+        var otherActorPending = tree(operator.get(intentsPath));
+        assertThat(otherActorPending.path("items")).isEmpty();
+        var pending = tree(manager.get(intentsPath));
+        assertThat(pending.path("items")).hasSize(1);
+        assertThat(pending.path("items").get(0).path("id").asString()).isEqualTo(intentId.toString());
+
+        String intentPath = intentsPath + "/" + intentId;
+        var inspection = tree(manager.get(intentPath));
+        assertThat(inspection.path("executionStatus").asString()).isEqualTo("PREPARED");
+        assertThat(inspection.path("payload").path("requestId").asString()).isEqualTo(requestId.toString());
+        var submitted = manager.write("POST", intentPath + "/submitted", null);
+        assertThat(submitted.statusCode()).as(submitted.body()).isEqualTo(200);
+        assertThat(tree(manager.get(intentPath)).path("executionStatus").asString()).isEqualTo("SUBMITTED_AWAITING_OUTCOME");
+
+        var failure = manager.write("POST", intentPath + "/resolve-failure", Map.of("resolution", "CONFLICTED"));
+        assertThat(failure.statusCode()).as(failure.body()).isEqualTo(200);
+        assertThat(tree(failure).path("state").asString()).isEqualTo("CONFLICTED");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND operation='CLOSE' AND request_id=:request")
+                .param("org", fixture.organization)
+                .param("request", requestId).query(Long.class).single()).isZero();
+
+        UUID staleRequestId = UUID.randomUUID();
+        var stalePayload = decision(staleRequestId, 3, "Do not submit after the discrepancy grant is revoked");
+        var stalePrepared = manager.write("POST", intentsPath, Map.of("prepareId", UUID.randomUUID(), "operation", "CLOSE",
+                "transferId", prepared.transferId(), "payload", stalePayload));
+        assertThat(stalePrepared.statusCode()).as(stalePrepared.body()).isEqualTo(200);
+        UUID staleIntentId = UUID.fromString(tree(stalePrepared).path("id").asString());
+        fixture.revokeGrant(managerMembership, fixture.sourceStore);
+        fixture.revokeGrant(managerMembership, fixture.destinationStore);
+        assertThat(manager.write("POST", intentsPath + "/" + staleIntentId + "/submitted", null).statusCode()).isEqualTo(404);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND operation='CLOSE' AND request_id=:request")
+                .param("org", fixture.organization)
+                .param("request", staleRequestId).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void managerMustResolveAnOpenDiscrepancyAfterEveryUnitIsPhysicallyReceived() throws Exception {
+        var manager = fixture.storeManager();
+        var prepared = preparePickedTransfer(manager, 2);
+        dispatch(manager, prepared, 3, "dispatch-clean-resolution");
+        var opened = manager.write("POST", base() + "/" + prepared.transferId() + "/open-discrepancy",
+                Map.of("requestId", UUID.randomUUID(), "expectedVersion", 4, "lineId", prepared.lineId(),
+                        "expectedState", "Two dispatched units", "observedState", "Carrier evidence requires review",
+                        "reason", "Review carrier evidence before settling custody", "evidenceReference", "carrier:review-clean-receipt"));
+        assertThat(opened.statusCode()).as(opened.body()).isEqualTo(200);
+        assertThat(tree(opened).path("status").asString()).isEqualTo("RECONCILIATION_REQUIRED");
+
+        var received = manager.write("POST", base() + "/" + prepared.transferId() + "/receive",
+                receiveRequest(prepared, 5, 0, 2, "receipt-after-discrepancy"));
+        assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
+        assertThat(tree(received).path("status").asString()).isEqualTo("RECONCILIATION_REQUIRED");
+        assertThat(tree(received).path("version").asLong()).isEqualTo(6);
+        assertTransferEvent(prepared.transferId(), 6, "TransferReceived", "RECEIVE", "RECONCILIATION_REQUIRED");
+        assertThat(custody(prepared.transferId(), prepared.lineId())).isEqualTo("2:2:0:0:0");
+
+        problem(manager.write("POST", base() + "/" + prepared.transferId() + "/close-discrepancy",
+                decision(UUID.randomUUID(), 5, "Reject stale reconciliation confirmation")), 409, "INVENTORY_CONFLICT");
+        var closeRequest = decision(UUID.randomUUID(), 6, "Resolve the reviewed discrepancy after full receipt");
+        var resolved = manager.write("POST", base() + "/" + prepared.transferId() + "/close-discrepancy", closeRequest);
+        assertThat(resolved.statusCode()).as(resolved.body()).isEqualTo(200);
+        assertThat(tree(resolved).path("status").asString()).isEqualTo("RECEIVED");
+        assertThat(tree(resolved).path("version").asLong()).isEqualTo(7);
+        assertTransferEvent(prepared.transferId(), 7, "TransferDiscrepancyResolved", "CLOSE", "RECEIVED");
+        assertThat(tree(manager.write("POST", base() + "/" + prepared.transferId() + "/close-discrepancy", closeRequest)))
+                .isEqualTo(tree(resolved));
+        assertThat(jdbc.sql("SELECT observed_state->>'resolvedStatus' FROM stockrescue.transfer_reconciliation_evidence "
+                        + "WHERE org_id=:org AND transfer_id=:transfer AND evidence_type='CUSTODY_RECONCILIATION' AND command_id=:command")
+                .param("org", fixture.organization).param("transfer", prepared.transferId())
+                .param("command", UUID.fromString(tree(resolved).path("commandId").asString()))
+                .query(String.class).single()).isEqualTo("RECEIVED");
     }
 
     @Test
@@ -927,6 +1274,17 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                 .query(String.class).single()).isEqualTo("5:2");
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_OUT'")
                 .param("org", fixture.organization).query(Long.class).single()).isZero();
+
+        var cancellation = browser.write("POST", base() + "/" + prepared.transferId() + "/cancel",
+                cancelRequest(UUID.randomUUID(), 3, "Route revision prevents dispatch", "put-back-after-route-revision"));
+        assertThat(cancellation.statusCode()).as(cancellation.body()).isEqualTo(200);
+        assertThat(tree(cancellation).path("status").asString()).isEqualTo("CANCELLED");
+        assertThat(jdbc.sql("SELECT on_hand || ':' || reserved FROM stockrescue.stock_position WHERE org_id=:org AND id=:position")
+                .param("org", fixture.organization).param("position", fixture.position).query(String.class).single()).isEqualTo("5:0");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_RELEASE'")
+                .param("org", fixture.organization).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document_line WHERE org_id=:org AND transfer_id=:transfer AND document_type='PUT_BACK'")
+                .param("org", fixture.organization).param("transfer", prepared.transferId()).query(Long.class).single()).isEqualTo(1);
     }
 
     @Test
@@ -1099,6 +1457,8 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                         "reason", "Counted the returned goods at source", "evidenceReference", "source:return-receipt"));
         assertThat(returned.statusCode()).as(returned.body()).isEqualTo(200);
         assertThat(tree(returned).path("status").asString()).isEqualTo("RECONCILIATION_REQUIRED");
+        assertTransferEvent(prepared.transferId(), 5, "TransferCommandRecorded", "REQUEST_RETURN", "RECONCILIATION_REQUIRED");
+        assertTransferEvent(prepared.transferId(), 6, "TransferReturned", "CONFIRM_RETURN", "RECONCILIATION_REQUIRED");
         assertThat(tree(returned).path("stockMovementId").asString()).isNotBlank();
         assertThat(custody(prepared.transferId(), prepared.lineId())).isEqualTo("5:0:0:5:0");
         assertThat(stockOnHand(fixture.sourceStore, fixture.sourceLocation)).isEqualTo(8);
@@ -1110,6 +1470,7 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                 decision(UUID.randomUUID(), 6, "Close the documented physical return"));
         assertThat(closed.statusCode()).as(closed.body()).isEqualTo(200);
         assertThat(tree(closed).path("status").asString()).isEqualTo("CLOSED_WITH_DISCREPANCY");
+        assertTransferEvent(prepared.transferId(), 7, "TransferDiscrepancyResolved", "CLOSE", "CLOSED_WITH_DISCREPANCY");
     }
 
     @Test
@@ -1236,6 +1597,270 @@ class TransferWorkflowTest extends InfrastructureTestBase {
     }
 
     @Test
+    void multipleReceiptLinesShareOneDestinationStockPostingAndRecoverExactly() throws Exception {
+        var manager = fixture.storeManager();
+        long firstSourceVersion = fixture.seedSource(fixture.sourceLocation, 7);
+        long secondSourceVersion = fixture.seedSource(fixture.secondSourceLocation, 5);
+        var created = manager.write("POST", base(), Map.of("requestId", UUID.randomUUID(),
+                "sourceStoreId", fixture.sourceStore, "destinationStoreId", fixture.destinationStore,
+                "lines", java.util.List.of(
+                        Map.of("sourcePositionId", fixture.position, "destinationLocationId", fixture.destinationLocation,
+                                "quantity", 7, "expectedSourceVersion", firstSourceVersion),
+                        Map.of("sourcePositionId", fixture.secondPosition, "destinationLocationId", fixture.destinationLocation,
+                                "quantity", 5, "expectedSourceVersion", secondSourceVersion)),
+                "reason", "Move two source positions to the same receiving shelf",
+                "evidenceReference", "transfer:shared-destination"));
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(200);
+        UUID transferId = UUID.fromString(tree(created).path("transferId").asString());
+        assertThat(manager.write("POST", base() + "/" + transferId + "/approve",
+                decision(UUID.randomUUID(), 0, "Reserve both source positions")).statusCode()).isEqualTo(200);
+        assertThat(manager.write("POST", base() + "/" + transferId + "/start-pick",
+                decision(UUID.randomUUID(), 1, "Start both physical picks")).statusCode()).isEqualTo(200);
+
+        var lines = tree(manager.get(base() + "/" + transferId)).path("lines");
+        var first = lines.get(0);
+        var second = lines.get(1);
+        for (int index = 0; index < lines.size(); index++) {
+            var line = lines.get(index);
+            var picked = manager.write("POST", base() + "/" + transferId + "/pick",
+                    pickRequest(UUID.randomUUID(), 2 + index, UUID.fromString(line.path("id").asString()),
+                            "pick-shared-destination-" + index, line.path("requestedQuantity").asLong(),
+                            line.path("sku").asString(), line.path("lotCode").asString()));
+            assertThat(picked.statusCode()).as(picked.body()).isEqualTo(200);
+        }
+        var dispatched = manager.write("POST", base() + "/" + transferId + "/dispatch", Map.of(
+                "requestId", UUID.randomUUID(), "expectedVersion", 4, "documentReference", "dispatch-shared-destination",
+                "lines", java.util.List.of(
+                        Map.of("lineId", first.path("id").asString(), "quantity", first.path("requestedQuantity").asLong(),
+                                "observedSku", first.path("sku").asString(), "observedLotCode", first.path("lotCode").asString()),
+                        Map.of("lineId", second.path("id").asString(), "quantity", second.path("requestedQuantity").asLong(),
+                                "observedSku", second.path("sku").asString(), "observedLotCode", second.path("lotCode").asString())),
+                "reason", "Hand off both source positions", "evidenceReference", "dispatch:shared-destination"));
+        assertThat(dispatched.statusCode()).as(dispatched.body()).isEqualTo(200);
+
+        long firstReceived = first.path("requestedQuantity").asLong() == 7 ? 6 : 4;
+        long secondReceived = second.path("requestedQuantity").asLong() == 7 ? 6 : 4;
+        assertThat(fixture.seedDestination(1)).isEqualTo(1);
+        var conflictingVersions = receiptLines(first, second, firstReceived, secondReceived, 1, 2);
+        var conflict = manager.write("POST", base() + "/" + transferId + "/receive", Map.of(
+                "requestId", UUID.randomUUID(), "expectedVersion", 5, "documentReference", "receipt-shared-version-conflict",
+                "physicallyReceivedAt", Instant.now(), "lines", conflictingVersions,
+                "reason", "Reject conflicting versions for the same destination position",
+                "evidenceReference", "receipt:version-conflict"));
+        assertThat(conflict.statusCode()).as(conflict.body()).isEqualTo(409);
+        assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_IN'")
+                .param("org", fixture.organization).query(Long.class).single()).isZero();
+        var staleVersion = manager.write("POST", base() + "/" + transferId + "/receive", Map.of(
+                "requestId", UUID.randomUUID(), "expectedVersion", 5, "documentReference", "receipt-shared-stale-position",
+                "physicallyReceivedAt", Instant.now(), "lines", receiptLines(first, second, firstReceived, secondReceived, 0, 0),
+                "reason", "Reject destination versions made stale by a concurrent stock write",
+                "evidenceReference", "receipt:stale-destination-version"));
+        assertThat(staleVersion.statusCode()).as(staleVersion.body()).isEqualTo(409);
+        assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_custody_movement WHERE org_id=:org AND transfer_id=:transfer AND movement_type='RECEIPT'")
+                .param("org", fixture.organization).param("transfer", transferId).query(Long.class).single()).isZero();
+        var invalidLines = new java.util.ArrayList<>(receiptLines(first, second, firstReceived, secondReceived, 1, 1));
+        var invalidLine = new java.util.HashMap<String, Object>(invalidLines.getFirst());
+        invalidLine.put("observedLotCode", "UNEXPECTED-LOT");
+        invalidLines.set(0, invalidLine);
+        var invalidGroupLine = manager.write("POST", base() + "/" + transferId + "/receive", Map.of(
+                "requestId", UUID.randomUUID(), "expectedVersion", 5, "documentReference", "receipt-shared-invalid-line",
+                "physicallyReceivedAt", Instant.now(), "lines", invalidLines,
+                "reason", "Reject a bad observed lot without partial application",
+                "evidenceReference", "receipt:shared-invalid-line"));
+        assertThat(invalidGroupLine.statusCode()).as(invalidGroupLine.body()).isEqualTo(409);
+        assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_IN'")
+                .param("org", fixture.organization).query(Long.class).single()).isZero();
+
+        var firstReceipt = Map.<String, Object>of("requestId", UUID.randomUUID(), "expectedVersion", 5,
+                "documentReference", "receipt-shared-first", "physicallyReceivedAt", Instant.now(),
+                "lines", receiptLines(first, second, firstReceived, secondReceived, 1, 1),
+                "reason", "Count both received quantities on the shared shelf", "evidenceReference", "receipt:shared-first");
+        var firstOutcome = manager.write("POST", base() + "/" + transferId + "/receive", firstReceipt);
+        assertThat(firstOutcome.statusCode()).as(firstOutcome.body()).isEqualTo(200);
+        assertThat(tree(firstOutcome).path("status").asString()).isEqualTo("PARTIALLY_RECEIVED");
+        assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(11);
+        assertThat(jdbc.sql("SELECT l.position_version || ':' || l.delta_on_hand FROM stockrescue.stock_movement_line l JOIN stockrescue.stock_movement m ON m.org_id=l.org_id AND m.store_id=l.store_id AND m.id=l.movement_id WHERE l.org_id=:org AND l.store_id=:store AND l.position_id=:position AND m.operation='TRANSFER_IN' ORDER BY l.position_version")
+                .param("org", fixture.organization).param("store", fixture.destinationStore)
+                .param("position", fixture.stockPosition(fixture.destinationStore, fixture.destinationLocation))
+                .query(String.class).list()).containsExactly("2:10");
+        assertThat(custody(transferId, UUID.fromString(first.path("id").asString())))
+                .isEqualTo(first.path("requestedQuantity").asLong() + ":" + firstReceived + ":0:0:"
+                        + (first.path("requestedQuantity").asLong() - firstReceived));
+        assertThat(custody(transferId, UUID.fromString(second.path("id").asString())))
+                .isEqualTo(second.path("requestedQuantity").asLong() + ":" + secondReceived + ":0:0:"
+                        + (second.path("requestedQuantity").asLong() - secondReceived));
+
+        var secondReceipt = Map.<String, Object>of("requestId", UUID.randomUUID(), "expectedVersion", 6,
+                "documentReference", "receipt-shared-complete", "physicallyReceivedAt", Instant.now(),
+                "lines", receiptLines(first, second, first.path("requestedQuantity").asLong() - firstReceived,
+                        second.path("requestedQuantity").asLong() - secondReceived, 2, 2),
+                "reason", "Count the remaining quantities on the shared shelf", "evidenceReference", "receipt:shared-complete");
+        var completed = manager.write("POST", base() + "/" + transferId + "/receive", secondReceipt);
+        assertThat(completed.statusCode()).as(completed.body()).isEqualTo(200);
+        assertThat(tree(completed).path("status").asString()).isEqualTo("RECEIVED");
+        assertThat(tree(manager.write("POST", base() + "/" + transferId + "/receive", secondReceipt)))
+                .isEqualTo(tree(completed));
+        assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(13);
+        assertThat(jdbc.sql("SELECT l.position_version || ':' || l.delta_on_hand FROM stockrescue.stock_movement_line l JOIN stockrescue.stock_movement m ON m.org_id=l.org_id AND m.store_id=l.store_id AND m.id=l.movement_id WHERE l.org_id=:org AND l.store_id=:store AND l.position_id=:position AND m.operation='TRANSFER_IN' ORDER BY l.position_version")
+                .param("org", fixture.organization).param("store", fixture.destinationStore)
+                .param("position", fixture.stockPosition(fixture.destinationStore, fixture.destinationLocation))
+                .query(String.class).list()).containsExactly("2:10", "3:2");
+        assertThat(custody(transferId, UUID.fromString(first.path("id").asString())))
+                .isEqualTo(first.path("requestedQuantity").asLong() + ":" + first.path("requestedQuantity").asLong() + ":0:0:0");
+        assertThat(custody(transferId, UUID.fromString(second.path("id").asString())))
+                .isEqualTo(second.path("requestedQuantity").asLong() + ":" + second.path("requestedQuantity").asLong() + ":0:0:0");
+        assertThat(transfers.custodyLedgerMismatchCount()).isZero();
+    }
+
+    private static java.util.List<Map<String, Object>> receiptLines(tools.jackson.databind.JsonNode first,
+            tools.jackson.databind.JsonNode second, long firstQuantity, long secondQuantity,
+            long firstDestinationVersion, long secondDestinationVersion) {
+        return java.util.List.of(
+                Map.of("lineId", first.path("id").asString(), "quantity", firstQuantity,
+                        "expectedDestinationVersion", firstDestinationVersion,
+                        "documentLineReference", "receipt-line-" + UUID.randomUUID(),
+                        "observedSku", first.path("sku").asString(), "observedLotCode", first.path("lotCode").asString()),
+                Map.of("lineId", second.path("id").asString(), "quantity", secondQuantity,
+                        "expectedDestinationVersion", secondDestinationVersion,
+                        "documentLineReference", "receipt-line-" + UUID.randomUUID(),
+                        "observedSku", second.path("sku").asString(), "observedLotCode", second.path("lotCode").asString()));
+    }
+
+    @Test
+    void unsafeLinesSharingAReceiptPositionAreAllQuarantinedInOnePosting() throws Exception {
+        var manager = fixture.storeManager();
+        var owner = fixture.owner();
+        var prepared = prepareSharedDestinationTransfer(manager, 2, 2);
+        var recalled = owner.write("POST", "/api/v1/organizations/" + fixture.organization + "/lots/" + fixture.lot
+                + "/safety-status-evidence", Map.of("requestId", UUID.randomUUID(), "expectedVersion", 0,
+                        "reason", "A verified manufacturer recall arrived during transit", "recallState", "RECALLED",
+                        "damageState", "NOT_REPORTED", "provenance", Map.of("source", "Manufacturer recall notice",
+                                "reference", "recall:shared-receipt")));
+        assertThat(recalled.statusCode()).as(recalled.body()).isEqualTo(201);
+
+        var received = manager.write("POST", base() + "/" + prepared.transferId() + "/receive", Map.of(
+                "requestId", UUID.randomUUID(), "expectedVersion", 5, "documentReference", "receipt-recalled-shared-group",
+                "physicallyReceivedAt", Instant.now(), "lines", receiptLines(prepared.firstLine(), prepared.secondLine(), 2, 2, 0, 0),
+                "reason", "Quarantine every recalled unit in the shared group",
+                "evidenceReference", "receipt:recalled-shared-group"));
+        assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
+        assertThat(tree(received).path("status").asString()).isEqualTo("RECEIVED");
+        assertThat(jdbc.sql("SELECT on_hand || ':' || quarantined || ':' || available FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location AND lot_id=:lot")
+                .param("org", fixture.organization).param("store", fixture.destinationStore)
+                .param("location", fixture.destinationLocation).param("lot", fixture.lot)
+                .query(String.class).single()).isEqualTo("4:4:0");
+        assertThat(jdbc.sql("SELECT delta_on_hand || ':' || delta_quarantined FROM stockrescue.stock_movement_line l JOIN stockrescue.stock_movement m ON m.org_id=l.org_id AND m.store_id=l.store_id AND m.id=l.movement_id WHERE l.org_id=:org AND m.operation='TRANSFER_IN'")
+                .param("org", fixture.organization).query(String.class).single()).isEqualTo("4:4");
+        assertThat(jdbc.sql("SELECT disposition FROM stockrescue.transfer_physical_document_line WHERE org_id=:org AND transfer_id=:transfer AND document_type='RECEIPT'")
+                .param("org", fixture.organization).param("transfer", prepared.transferId())
+                .query(String.class).list()).containsExactlyInAnyOrder("QUARANTINED", "QUARANTINED");
+        assertThat(jdbc.sql("SELECT count(*) || ':' || sum(remaining_quantity) FROM stockrescue.stock_allocation WHERE org_id=:org AND store_id=:store AND bucket='QUARANTINED' AND state='ACTIVE'")
+                .param("org", fixture.organization).param("store", fixture.destinationStore)
+                .query(String.class).single()).isEqualTo("2:4");
+    }
+
+    @Test
+    void postgresRejectsReceiptWhenGroupedStockAndCustodyQuantitiesDiverge() throws Exception {
+        var manager = fixture.storeManager();
+        var prepared = prepareSharedDestinationTransfer(manager, 2, 2);
+        var corruptedLineId = UUID.fromString(prepared.firstLine().path("id").asString());
+        String documentTrigger = "test_corrupt_transfer_receipt_document";
+        String custodyTrigger = "test_corrupt_transfer_receipt_custody";
+        String documentFunction = "test_corrupt_transfer_receipt_document_fn";
+        String custodyFunction = "test_corrupt_transfer_receipt_custody_fn";
+        jdbc.sql("DROP TRIGGER IF EXISTS " + documentTrigger + " ON stockrescue.transfer_physical_document_line").update();
+        jdbc.sql("DROP TRIGGER IF EXISTS " + custodyTrigger + " ON stockrescue.transfer_custody_movement").update();
+        jdbc.sql("DROP FUNCTION IF EXISTS stockrescue." + documentFunction + "()").update();
+        jdbc.sql("DROP FUNCTION IF EXISTS stockrescue." + custodyFunction + "()").update();
+        try {
+            jdbc.sql("CREATE FUNCTION stockrescue." + documentFunction + "() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                    + "IF NEW.transfer_id='" + prepared.transferId() + "'::uuid AND NEW.line_id='" + corruptedLineId
+                    + "'::uuid AND NEW.document_type='RECEIPT' THEN NEW.quantity:=NEW.quantity-1; END IF; RETURN NEW; END; $$").update();
+            jdbc.sql("CREATE FUNCTION stockrescue." + custodyFunction + "() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                    + "IF NEW.transfer_id='" + prepared.transferId() + "'::uuid AND NEW.line_id='" + corruptedLineId
+                    + "'::uuid AND NEW.movement_type='RECEIPT' THEN NEW.quantity:=NEW.quantity-1; "
+                    + "NEW.outstanding_after:=NEW.outstanding_before-NEW.quantity; END IF; RETURN NEW; END; $$").update();
+            jdbc.sql("CREATE TRIGGER " + documentTrigger + " BEFORE INSERT ON stockrescue.transfer_physical_document_line "
+                    + "FOR EACH ROW EXECUTE FUNCTION stockrescue." + documentFunction + "()").update();
+            jdbc.sql("CREATE TRIGGER " + custodyTrigger + " BEFORE INSERT ON stockrescue.transfer_custody_movement "
+                    + "FOR EACH ROW EXECUTE FUNCTION stockrescue." + custodyFunction + "()").update();
+
+            var receipt = manager.write("POST", base() + "/" + prepared.transferId() + "/receive", Map.of(
+                    "requestId", UUID.randomUUID(), "expectedVersion", 5, "documentReference", "receipt-corrupt-group",
+                    "physicallyReceivedAt", Instant.now(), "lines", receiptLines(prepared.firstLine(), prepared.secondLine(), 2, 2, 0, 0),
+                    "reason", "Verify grouped custody matches the posted stock delta",
+                    "evidenceReference", "receipt:corrupt-group"));
+            assertThat(receipt.statusCode()).as(receipt.body()).isEqualTo(409);
+            assertThat(tree(receipt).path("code").asString()).isEqualTo("CONFIGURATION_CONFLICT");
+            assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isZero();
+            assertThat(jdbc.sql("SELECT status FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                    .param("org", fixture.organization).param("transfer", prepared.transferId()).query(String.class).single())
+                    .isEqualTo("IN_TRANSIT");
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_IN'")
+                    .param("org", fixture.organization).query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_type='RECEIPT'")
+                    .param("org", fixture.organization).param("transfer", prepared.transferId()).query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_custody_movement WHERE org_id=:org AND transfer_id=:transfer AND movement_type='RECEIPT'")
+                    .param("org", fixture.organization).param("transfer", prepared.transferId()).query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND transfer_id=:transfer AND operation='RECEIVE'")
+                    .param("org", fixture.organization).param("transfer", prepared.transferId()).query(Long.class).single()).isZero();
+        } finally {
+            jdbc.sql("DROP TRIGGER IF EXISTS " + documentTrigger + " ON stockrescue.transfer_physical_document_line").update();
+            jdbc.sql("DROP TRIGGER IF EXISTS " + custodyTrigger + " ON stockrescue.transfer_custody_movement").update();
+            jdbc.sql("DROP FUNCTION IF EXISTS stockrescue." + documentFunction + "()").update();
+            jdbc.sql("DROP FUNCTION IF EXISTS stockrescue." + custodyFunction + "()").update();
+        }
+    }
+
+    private PreparedSharedTransfer prepareSharedDestinationTransfer(Fixture.Browser manager,
+            long firstQuantity, long secondQuantity) throws Exception {
+        long firstSourceVersion = fixture.seedSource(fixture.sourceLocation, firstQuantity);
+        long secondSourceVersion = fixture.seedSource(fixture.secondSourceLocation, secondQuantity);
+        var created = manager.write("POST", base(), Map.of("requestId", UUID.randomUUID(),
+                "sourceStoreId", fixture.sourceStore, "destinationStoreId", fixture.destinationStore,
+                "lines", java.util.List.of(
+                        Map.of("sourcePositionId", fixture.position, "destinationLocationId", fixture.destinationLocation,
+                                "quantity", firstQuantity, "expectedSourceVersion", firstSourceVersion),
+                        Map.of("sourcePositionId", fixture.secondPosition, "destinationLocationId", fixture.destinationLocation,
+                                "quantity", secondQuantity, "expectedSourceVersion", secondSourceVersion)),
+                "reason", "Move two source positions to the same receiving shelf",
+                "evidenceReference", "transfer:shared-destination"));
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(200);
+        UUID transferId = UUID.fromString(tree(created).path("transferId").asString());
+        assertThat(manager.write("POST", base() + "/" + transferId + "/approve",
+                decision(UUID.randomUUID(), 0, "Reserve both source positions")).statusCode()).isEqualTo(200);
+        assertThat(manager.write("POST", base() + "/" + transferId + "/start-pick",
+                decision(UUID.randomUUID(), 1, "Start both physical picks")).statusCode()).isEqualTo(200);
+        var lines = tree(manager.get(base() + "/" + transferId)).path("lines");
+        var first = lines.get(0);
+        var second = lines.get(1);
+        for (int index = 0; index < lines.size(); index++) {
+            var line = lines.get(index);
+            var picked = manager.write("POST", base() + "/" + transferId + "/pick",
+                    pickRequest(UUID.randomUUID(), 2 + index, UUID.fromString(line.path("id").asString()),
+                            "pick-shared-destination-" + index, line.path("requestedQuantity").asLong(),
+                            line.path("sku").asString(), line.path("lotCode").asString()));
+            assertThat(picked.statusCode()).as(picked.body()).isEqualTo(200);
+        }
+        var dispatched = manager.write("POST", base() + "/" + transferId + "/dispatch", Map.of(
+                "requestId", UUID.randomUUID(), "expectedVersion", 4, "documentReference", "dispatch-shared-destination",
+                "lines", java.util.List.of(
+                        Map.of("lineId", first.path("id").asString(), "quantity", first.path("requestedQuantity").asLong(),
+                                "observedSku", first.path("sku").asString(), "observedLotCode", first.path("lotCode").asString()),
+                        Map.of("lineId", second.path("id").asString(), "quantity", second.path("requestedQuantity").asLong(),
+                                "observedSku", second.path("sku").asString(), "observedLotCode", second.path("lotCode").asString())),
+                "reason", "Hand off both source positions", "evidenceReference", "dispatch:shared-destination"));
+        assertThat(dispatched.statusCode()).as(dispatched.body()).isEqualTo(200);
+        return new PreparedSharedTransfer(transferId, first, second);
+    }
+
+    private record PreparedSharedTransfer(UUID transferId, tools.jackson.databind.JsonNode firstLine,
+            tools.jackson.databind.JsonNode secondLine) { }
+
+    @Test
     void sourceOperatorCanCancelTheirOwnRequestAndRetryRequiresCurrentGrant() throws Exception {
         var operator = fixture.operator();
         var transfer = operator.write("POST", base(), createRequest(UUID.randomUUID(), fixture.sourceStore,
@@ -1261,6 +1886,88 @@ class TransferWorkflowTest extends InfrastructureTestBase {
     }
 
     @Test
+    void requesterPermissionDoesNotAuthorizeCancellationAfterPickingBegins() throws Exception {
+        var operator = fixture.operator();
+        var owner = fixture.owner();
+        long sourceVersion = fixture.seedSource(5);
+        var created = operator.write("POST", base(), createRequest(UUID.randomUUID(), fixture.sourceStore,
+                fixture.destinationStore, fixture.position, fixture.destinationLocation, 1, sourceVersion,
+                "Request stock for a store operation"));
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(200);
+        UUID transferId = UUID.fromString(tree(created).path("transferId").asString());
+        assertThat(owner.write("POST", base() + "/" + transferId + "/approve",
+                decision(UUID.randomUUID(), 0, "Approve the store request")).statusCode()).isEqualTo(200);
+        assertThat(owner.write("POST", base() + "/" + transferId + "/start-pick",
+                decision(UUID.randomUUID(), 1, "Begin source picking")).statusCode()).isEqualTo(200);
+
+        var requestId = UUID.randomUUID();
+        problem(operator.write("POST", base() + "/" + transferId + "/cancel",
+                cancelRequest(requestId, 2, "Requester lacks cancel authority after approval", null)),
+                403, "ACCESS_DENIED");
+        assertThat(jdbc.sql("SELECT status FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org", fixture.organization).param("transfer", transferId).query(String.class).single()).isEqualTo("PICKING");
+        UUID operatorId = jdbc.sql("SELECT user_id FROM stockrescue.membership WHERE org_id=:org AND id=:membership")
+                .param("org", fixture.organization).param("membership", fixture.operatorMembership).query(UUID.class).single();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND transfer_id=:transfer AND actor_user_id=:actor AND operation='CANCEL'")
+                .param("org", fixture.organization).param("transfer", transferId).param("actor", operatorId)
+                .query(Long.class).single()).isZero();
+        var cancelled = owner.write("POST", base() + "/" + transferId + "/cancel",
+                decision(UUID.randomUUID(), 2, "Manager cancels before physical picking"));
+        assertThat(cancelled.statusCode()).as(cancelled.body()).isEqualTo(200);
+    }
+
+    @Test
+    void requesterCancellationRechecksPermissionAfterConcurrentPickingBegins() throws Exception {
+        var requester = fixture.operator();
+        var owner = fixture.owner();
+        long sourceVersion = fixture.seedSource(5);
+        var created = requester.write("POST", base(), createRequest(UUID.randomUUID(), fixture.sourceStore,
+                fixture.destinationStore, fixture.position, fixture.destinationLocation, 1, sourceVersion,
+                "Request stock for a store operation"));
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(200);
+        UUID transferId = UUID.fromString(tree(created).path("transferId").asString());
+        UUID requesterId = jdbc.sql("SELECT user_id FROM stockrescue.membership WHERE org_id=:org AND id=:membership")
+                .param("org", fixture.organization).param("membership", fixture.operatorMembership).query(UUID.class).single();
+        var authorized = new CountDownLatch(1);
+        var continueCancellation = new CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(call -> {
+            var result = call.callRealMethod();
+            authorized.countDown();
+            if (!continueCancellation.await(15, TimeUnit.SECONDS))
+                throw new IllegalStateException("Cancellation authorization barrier timed out");
+            return result;
+        }).when(accessPolicy).requireTransferStore(
+                org.mockito.ArgumentMatchers.eq(requesterId),
+                org.mockito.ArgumentMatchers.eq(fixture.organization),
+                org.mockito.ArgumentMatchers.eq(fixture.sourceStore),
+                org.mockito.ArgumentMatchers.eq(StoreAction.REQUEST_TRANSFER),
+                org.mockito.ArgumentMatchers.eq(true));
+
+        try (var workers = Executors.newFixedThreadPool(1)) {
+            var cancellation = workers.submit(() -> requester.write("POST", base() + "/" + transferId + "/cancel",
+                    cancelRequest(UUID.randomUUID(), 0, "Withdraw a request while approval is racing", null)));
+            assertThat(authorized.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(owner.write("POST", base() + "/" + transferId + "/approve",
+                    decision(UUID.randomUUID(), 0, "Approve the store request")).statusCode()).isEqualTo(200);
+            assertThat(owner.write("POST", base() + "/" + transferId + "/start-pick",
+                    decision(UUID.randomUUID(), 1, "Begin source picking")).statusCode()).isEqualTo(200);
+            continueCancellation.countDown();
+            assertThat(cancellation.get(15, TimeUnit.SECONDS).statusCode()).isEqualTo(403);
+        } finally {
+            continueCancellation.countDown();
+        }
+
+        assertThat(jdbc.sql("SELECT status FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org", fixture.organization).param("transfer", transferId).query(String.class).single())
+                .isEqualTo("PICKING");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND transfer_id=:transfer AND actor_user_id=:actor AND operation='CANCEL'")
+                .param("org", fixture.organization).param("transfer", transferId).param("actor", requesterId)
+                .query(Long.class).single()).isZero();
+        assertThat(owner.write("POST", base() + "/" + transferId + "/cancel",
+                decision(UUID.randomUUID(), 2, "Manager cancels before physical picking")).statusCode()).isEqualTo(200);
+    }
+
+    @Test
     void requiredReviewedVersionsCannotBeOmittedFromTransferCommands() throws Exception {
         var browser = fixture.owner();
         var requestId = UUID.randomUUID();
@@ -1278,6 +1985,26 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         return preparePickedTransfer(browser, quantity, quantity + 3);
     }
 
+    private PreparedTransfer preparePickingTransfer(Fixture.Browser browser, UUID sourcePosition,
+            UUID destinationLocation, long quantity, long sourceVersion) throws Exception {
+        var created = browser.write("POST", base(), createRequest(UUID.randomUUID(), fixture.sourceStore,
+                fixture.destinationStore, sourcePosition, destinationLocation, quantity, sourceVersion,
+                "Request a documented whole-line movement"));
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(200);
+        UUID transferId = UUID.fromString(tree(created).path("transferId").asString());
+        assertThat(browser.write("POST", base() + "/" + transferId + "/approve",
+                decision(UUID.randomUUID(), 0, "Reserve the current source units")).statusCode()).isEqualTo(200);
+        var line = tree(browser.get(base() + "/" + transferId)).path("lines").get(0);
+        UUID lineId = UUID.fromString(line.path("id").asString());
+        UUID allocationId = UUID.fromString(line.path("reservationAllocationId").asString());
+        var picking = browser.write("POST", base() + "/" + transferId + "/start-pick",
+                decision(UUID.randomUUID(), 1, "Begin whole-line physical picking"));
+        assertThat(picking.statusCode()).as(picking.body()).isEqualTo(200);
+        return new PreparedTransfer(transferId, lineId, allocationId, quantity,
+                line.path("sku").asString(), line.path("lotCode").asString(),
+                line.path("expectedSourceVersion").asLong());
+    }
+
     private PreparedTransfer preparePickedTransfer(Fixture.Browser browser, long quantity, long sourceQuantity) throws Exception {
         long sourceVersion = fixture.seedSource(sourceQuantity);
         return preparePickedTransfer(browser, fixture.sourceStore, fixture.destinationStore, fixture.position,
@@ -1291,19 +2018,23 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                 "Request a documented whole-line movement"));
         assertThat(created.statusCode()).as(created.body()).isEqualTo(200);
         UUID transferId = UUID.fromString(tree(created).path("transferId").asString());
+        assertTransferEvent(transferId, 0, "TransferCommandRecorded", "CREATE", "REQUESTED");
         var approved = browser.write("POST", base() + "/" + transferId + "/approve",
                 decision(UUID.randomUUID(), 0, "Reserve the current source units"));
         assertThat(approved.statusCode()).as(approved.body()).isEqualTo(200);
+        assertTransferEvent(transferId, 1, "TransferCommandRecorded", "APPROVE", "APPROVED");
         var line = tree(browser.get(base() + "/" + transferId)).path("lines").get(0);
         UUID lineId = UUID.fromString(line.path("id").asString());
         UUID allocationId = UUID.fromString(line.path("reservationAllocationId").asString());
         var picking = browser.write("POST", base() + "/" + transferId + "/start-pick",
                 decision(UUID.randomUUID(), 1, "Begin whole-line physical picking"));
         assertThat(picking.statusCode()).as(picking.body()).isEqualTo(200);
+        assertTransferEvent(transferId, 2, "TransferCommandRecorded", "START_PICK", "PICKING");
         var picked = browser.write("POST", base() + "/" + transferId + "/pick",
                 pickRequest(UUID.randomUUID(), 2, lineId, "pick-slip-" + UUID.randomUUID(), quantity,
                         line.path("sku").asString(), line.path("lotCode").asString()));
         assertThat(picked.statusCode()).as(picked.body()).isEqualTo(200);
+        assertTransferEvent(transferId, 3, "TransferCommandRecorded", "PICK", "PICKED");
         long pickedVersion = jdbc.sql("""
                 SELECT l.source_position_version FROM stockrescue.transfer_physical_document d
                 JOIN stockrescue.transfer_physical_document_line l
@@ -1322,6 +2053,7 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                 dispatchRequest(UUID.randomUUID(), expectedVersion, documentReference, transfer, transfer.quantity()));
         assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
         assertThat(tree(response).path("status").asString()).isEqualTo("IN_TRANSIT");
+        assertTransferEvent(transfer.transferId(), expectedVersion + 1, "TransferDispatched", "DISPATCH", "IN_TRANSIT");
     }
 
     private Map<String, Object> receiveRequest(PreparedTransfer transfer, long expectedTransferVersion,
@@ -1403,6 +2135,16 @@ class TransferWorkflowTest extends InfrastructureTestBase {
     private static Map<String, Object> decision(UUID requestId, long version, String reason) {
         return Map.of("requestId", requestId, "expectedVersion", version, "reason", reason,
                 "evidenceReference", "transfer-review:decision");
+    }
+
+    private static Map<String, Object> cancelRequest(UUID requestId, long version, String reason,
+            String putBackDocumentReference) {
+        var request = new java.util.HashMap<String, Object>(decision(requestId, version, reason));
+        if (putBackDocumentReference != null) {
+            request.put("putBackConfirmed", true);
+            request.put("putBackDocumentReference", putBackDocumentReference);
+        }
+        return request;
     }
 
     private long count(String table, UUID organization) {

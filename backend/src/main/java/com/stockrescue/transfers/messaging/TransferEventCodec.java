@@ -1,5 +1,6 @@
 package com.stockrescue.transfers.messaging;
 
+import java.io.StringReader;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -8,6 +9,9 @@ import java.util.UUID;
 
 import com.stockrescue.platform.correlation.CorrelationIds;
 import com.stockrescue.transfers.persistence.TransferOutboxRepository.OutboxEvent;
+import tools.jackson.core.ObjectReadContext;
+import tools.jackson.core.StreamReadFeature;
+import tools.jackson.core.json.JsonFactory;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -15,8 +19,10 @@ import tools.jackson.databind.ObjectMapper;
 
 @Component
 public class TransferEventCodec {
+    private static final JsonFactory ROUTING_JSON_FACTORY=JsonFactory.builder()
+            .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build();
     private static final Set<String> EVENT_TYPES=Set.of("TransferCommandRecorded","TransferDispatched","TransferReceived",
-            "TransferReturned","TransferDiscrepancyResolved");
+            "TransferReturned","TransferLossConfirmed","TransferDiscrepancyResolved");
     private static final Set<String> OPERATIONS=Set.of("CREATE","APPROVE","REJECT","CANCEL","START_PICK","PICK",
             "DISPATCH","RECEIVE","OPEN_DISCREPANCY","CONFIRM_LOSS","REQUEST_RETURN","CONFIRM_RETURN",
             "RESUME","CLOSE","RECONCILE");
@@ -90,10 +96,17 @@ public class TransferEventCodec {
             case "DISPATCH" -> "TransferDispatched";
             case "RECEIVE" -> "TransferReceived";
             case "CONFIRM_RETURN" -> "TransferReturned";
-            case "CONFIRM_LOSS" -> "TransferDiscrepancyResolved";
+            case "CONFIRM_LOSS" -> "TransferLossConfirmed";
+            case "CLOSE" -> "TransferDiscrepancyResolved";
             default -> "TransferCommandRecorded";
         };
         if(!type.equals(expectedType)) throw failure("MALFORMED_EVENT");
+        if(operation.equals("CONFIRM_LOSS") && (!after.equals("RECONCILIATION_REQUIRED")
+                ||custody.isEmpty()||custody.stream().anyMatch(movement->!movement.movementType().equals("LOSS"))))
+            throw failure("MALFORMED_EVENT");
+        if(operation.equals("CLOSE") && (!"RECONCILIATION_REQUIRED".equals(before)
+                ||!Set.of("RECEIVED","CLOSED_WITH_DISCREPANCY").contains(after)
+                ||!stock.isEmpty()||!custody.isEmpty())) throw failure("MALFORMED_EVENT");
         return new TransferAggregateEvent(id,type,version,occurred,org,transfer,aggregateVersion,correlation,causation,
                 command,"INTERNAL",new TransferAggregateEvent.Data(operation,before,after,source,destination,stock,custody));
     }
@@ -117,12 +130,18 @@ public class TransferEventCodec {
         } catch(TransferEventContractException invalid) { throw failure("OUTBOX_CONTRACT_INVALID"); }
     }
 
-    public String eventTypeOrNull(String payload) {
-        try {
-            JsonNode root=json.readTree(payload);
-            return root!=null&&root.isObject()&&root.path("eventType").isString()?root.path("eventType").stringValue():null;
-        } catch(JacksonException malformed) { return null; }
+    public String eventType(String payload) {
+        if(payload==null) throw failure("MALFORMED_EVENT");
+        try(var parser=ROUTING_JSON_FACTORY.createParser(ObjectReadContext.empty(),new StringReader(payload))) {
+            JsonNode root=json.readTree(parser);
+            if(root==null||!root.isObject()||parser.nextToken()!=null) throw failure("MALFORMED_EVENT");
+            JsonNode eventType=root.get("eventType");
+            if(eventType==null||!eventType.isString()||eventType.stringValue().isBlank()) throw failure("MALFORMED_EVENT");
+            return eventType.stringValue();
+        } catch(JacksonException malformed) { throw failure("MALFORMED_EVENT"); }
     }
+
+    public boolean supportsEventType(String eventType) { return EVENT_TYPES.contains(eventType); }
 
     private static void requireObject(JsonNode node,Set<String> fields) {
         if(node==null||!node.isObject()||node.size()!=fields.size()) throw failure("MALFORMED_EVENT");

@@ -26,6 +26,61 @@ class TransferEventContractTest {
     }
 
     @Test
+    void lossConfirmationAndDiscrepancyResolutionHaveDistinctEventSemantics() throws IOException {
+        var loss=codec.decode(fixture("valid-transfer-loss-confirmed.json"));
+        assertThat(loss.eventType()).isEqualTo("TransferLossConfirmed");
+        assertThat(loss.data().operation()).isEqualTo("CONFIRM_LOSS");
+        assertThat(loss.data().statusAfter()).isEqualTo("RECONCILIATION_REQUIRED");
+        assertThat(loss.data().custodyMovements()).singleElement()
+                .satisfies(movement->assertThat(movement.movementType()).isEqualTo("LOSS"));
+        assertThat(codec.supportsEventType("TransferLossConfirmed")).isTrue();
+
+        var closure=codec.decode(fixture("valid-transfer-discrepancy-resolved.json"));
+        assertThat(closure.eventType()).isEqualTo("TransferDiscrepancyResolved");
+        assertThat(closure.data().operation()).isEqualTo("CLOSE");
+        assertThat(closure.data().statusAfter()).isEqualTo("CLOSED_WITH_DISCREPANCY");
+        assertThat(closure.data().custodyMovements()).isEmpty();
+        assertThat(codec.encode(closure)).contains("TransferDiscrepancyResolved");
+
+        assertMalformed(fixture("valid-transfer-loss-confirmed.json")
+                .replace("TransferLossConfirmed","TransferDiscrepancyResolved"));
+        assertMalformed(fixture("valid-transfer-loss-confirmed.json")
+                .replace("RECONCILIATION_REQUIRED","CLOSED_WITH_DISCREPANCY"));
+        assertMalformed(fixture("valid-transfer-discrepancy-resolved.json")
+                .replace("CLOSED_WITH_DISCREPANCY","PARTIALLY_RECEIVED"));
+        assertMalformed(fixture("valid-transfer-discrepancy-resolved.json")
+                .replace("TransferDiscrepancyResolved","TransferLossConfirmed"));
+    }
+
+    @Test
+    void eventTypesMatchEverySupportedTransferCommand() throws IOException {
+        String dispatched=fixture("valid-transfer-dispatched.json");
+        var mappings=java.util.Map.ofEntries(
+                java.util.Map.entry("APPROVE","TransferCommandRecorded"),
+                java.util.Map.entry("REJECT","TransferCommandRecorded"),
+                java.util.Map.entry("CANCEL","TransferCommandRecorded"),
+                java.util.Map.entry("START_PICK","TransferCommandRecorded"),
+                java.util.Map.entry("PICK","TransferCommandRecorded"),
+                java.util.Map.entry("DISPATCH","TransferDispatched"),
+                java.util.Map.entry("RECEIVE","TransferReceived"),
+                java.util.Map.entry("OPEN_DISCREPANCY","TransferCommandRecorded"),
+                java.util.Map.entry("CONFIRM_RETURN","TransferReturned"),
+                java.util.Map.entry("REQUEST_RETURN","TransferCommandRecorded"),
+                java.util.Map.entry("RESUME","TransferCommandRecorded"),
+                java.util.Map.entry("RECONCILE","TransferCommandRecorded"));
+        for(var mapping:mappings.entrySet()) {
+            String payload=dispatched.replace("\"eventType\": \"TransferDispatched\"",
+                            "\"eventType\": \""+mapping.getValue()+"\"")
+                    .replace("\"operation\": \"DISPATCH\"",
+                            "\"operation\": \""+mapping.getKey()+"\"");
+            assertThat(codec.decode(payload).eventType()).as(mapping.getKey()).isEqualTo(mapping.getValue());
+        }
+        assertThat(codec.decode(fixture("valid-transfer-loss-confirmed.json")).eventType()).isEqualTo("TransferLossConfirmed");
+        assertThat(codec.decode(fixture("valid-transfer-discrepancy-resolved.json")).eventType())
+                .isEqualTo("TransferDiscrepancyResolved");
+    }
+
+    @Test
     void rejectsUnknownFieldsVersionAndCausationMismatch() throws IOException {
         String fixture=fixture("valid-transfer-dispatched.json");
         assertMalformed(fixture.replace("\"schemaVersion\": 1","\"schemaVersion\": 2"));

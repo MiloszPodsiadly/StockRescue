@@ -39,5 +39,6 @@ public class TransferInboxProcessor {
         } catch(NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 
-    public String eventTypeOrNull(String payload) { return codec.eventTypeOrNull(payload); }
+    public String eventType(String payload) { return codec.eventType(payload); }
+    public boolean supportsEventType(String eventType) { return codec.supportsEventType(eventType); }
 }

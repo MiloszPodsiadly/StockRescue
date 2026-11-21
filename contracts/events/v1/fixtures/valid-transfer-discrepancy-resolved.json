@@ -1,0 +1,22 @@
+{
+  "eventId": "a2b9a314-9195-41f8-9bf4-bd06a4c82746",
+  "eventType": "TransferDiscrepancyResolved",
+  "schemaVersion": 1,
+  "occurredAt": "2026-11-20T12:50:00Z",
+  "orgId": "b9635f6d-a20e-43ba-9ec8-1e59058048f0",
+  "transferId": "ec34c078-3646-46dd-948b-20f49f114042",
+  "aggregateVersion": 8,
+  "correlationId": "transfer-reconciliation-411",
+  "causationId": "63da1e09-f801-4266-a9c7-4bf4aafedc21",
+  "commandId": "63da1e09-f801-4266-a9c7-4bf4aafedc21",
+  "dataClassification": "INTERNAL",
+  "data": {
+    "operation": "CLOSE",
+    "statusBefore": "RECONCILIATION_REQUIRED",
+    "statusAfter": "CLOSED_WITH_DISCREPANCY",
+    "sourceStoreId": "bf347f28-7d4c-4f13-b784-12d52311d593",
+    "destinationStoreId": "7fe15b9d-1e0f-4ebc-81dc-428743d1d4e3",
+    "stockMovements": [],
+    "custodyMovements": []
+  }
+}

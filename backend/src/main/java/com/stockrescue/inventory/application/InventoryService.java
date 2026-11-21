@@ -425,23 +425,50 @@ public class InventoryService {
         if(replay!=null) return replay;
 
         inventory.lockStoreForWrite(org,store);
-        var identities=lines.stream().map(line -> new PositionIdentity(line.locationId(),line.productId(),line.lotId())).toList();
+        var grouped=new java.util.TreeMap<PositionIdentity,List<TransferReceiptLine>>(Comparator
+                .comparing(PositionIdentity::productId).thenComparing(PositionIdentity::lotId)
+                .thenComparing(PositionIdentity::locationId));
+        for(var line:lines) grouped.computeIfAbsent(new PositionIdentity(line.locationId(),line.productId(),line.lotId()),
+                ignored -> new ArrayList<>()).add(line);
+        var identities=List.copyOf(grouped.keySet());
         inventory.lockActiveContexts(org,store,identities);
-        var candidates=lines.stream().map(line -> inventory.positionByIdentity(org,store,line.locationId(),line.lotId())
-                .orElseGet(() -> inventory.createPosition(UUID.randomUUID(),org,store,line.locationId(),line.productId(),line.lotId()))).toList();
-        var locked=inventory.lockPositions(org,store,candidates.stream().map(StockPosition::id).toList());
+        var candidatesByIdentity=new LinkedHashMap<PositionIdentity,StockPosition>();
+        for(var identity:identities) {
+            var candidate=inventory.positionByIdentity(org,store,identity.locationId(),identity.lotId())
+                    .orElseGet(() -> inventory.createPosition(UUID.randomUUID(),org,store,identity.locationId(),identity.productId(),identity.lotId()));
+            if(!candidate.productId().equals(identity.productId())) throw new OrganizationUnavailableException();
+            candidatesByIdentity.put(identity,candidate);
+        }
+        var locked=inventory.lockPositions(org,store,candidatesByIdentity.values().stream().map(StockPosition::id).toList());
         var byId=locked.stream().collect(java.util.stream.Collectors.toMap(StockPosition::id,position -> position));
         var prepared=new ArrayList<PreparedTransferStockLine>(lines.size());
-        for(var line:lines) {
-            var candidate=candidates.stream().filter(position -> position.locationId().equals(line.locationId())
-                    && position.productId().equals(line.productId()) && position.lotId().equals(line.lotId()))
-                    .findFirst().orElseThrow(OrganizationUnavailableException::new);
+        for(var entry:grouped.entrySet()) {
+            var groupLines=entry.getValue();
+            long expectedVersion=groupLines.getFirst().expectedVersion();
+            if(groupLines.stream().anyMatch(line -> line.expectedVersion()!=expectedVersion)) throw failure(Kind.CONFLICT);
+            long totalQuantity=0;
+            try {
+                for(var line:groupLines) totalQuantity=Math.addExact(totalQuantity,line.quantity());
+            } catch(ArithmeticException overflow) {
+                throw failure(Kind.INVALID_REQUEST);
+            }
+            var candidate=candidatesByIdentity.get(entry.getKey());
             var before=byId.get(candidate.id());
             if(before==null) throw new OrganizationUnavailableException();
-            if(before.version()!=line.expectedVersion()) throw failure(Kind.CONFLICT);
+            if(before.version()!=expectedVersion) throw failure(Kind.CONFLICT);
             if(before.trust()==Trust.FROZEN) throw failure(Kind.POSITION_FROZEN);
-            boolean quarantine=!eligible(actor,org,store,before,FoodSafetyEvaluation.Operation.TRANSFER);
-            var delta=new Delta(line.quantity(),0,quarantine?line.quantity():0,0);
+            var quarantineByLine=new LinkedHashMap<UUID,Boolean>();
+            long quarantinedQuantity=0;
+            try {
+                for(var line:groupLines) {
+                    boolean quarantine=!eligible(actor,org,store,before,FoodSafetyEvaluation.Operation.TRANSFER);
+                    quarantineByLine.put(line.lineId(),quarantine);
+                    if(quarantine) quarantinedQuantity=Math.addExact(quarantinedQuantity,line.quantity());
+                }
+            } catch(ArithmeticException overflow) {
+                throw failure(Kind.INVALID_REQUEST);
+            }
+            var delta=new Delta(totalQuantity,0,quarantinedQuantity,0);
             StockBuckets buckets;long version;
             try {
                 buckets=before.buckets().apply(delta);
@@ -449,8 +476,12 @@ public class InventoryService {
             } catch(ArithmeticException | IllegalArgumentException invalid) {
                 throw failure(Kind.INVALID_REQUEST);
             }
-            prepared.add(new PreparedTransferStockLine(line.lineId(),before,line.quantity(),delta,buckets,version,
-                    quarantine?UUID.randomUUID():null,null));
+            for(var line:groupLines) {
+                boolean quarantine=quarantineByLine.get(line.lineId());
+                prepared.add(new PreparedTransferStockLine(line.lineId(),before,line.quantity(),
+                        new Delta(line.quantity(),0,quarantine?line.quantity():0,0),buckets,version,
+                        quarantine?UUID.randomUUID():null,null));
+            }
         }
         return postTransferStock(actor,org,store,member.membershipId(),requestId,digest,reason,evidenceReference,
                 InventoryOperation.TRANSFER_IN,prepared);
@@ -613,6 +644,41 @@ public class InventoryService {
         var command=new CommandReceipt(commandId,org,store,actor,membership,operation,requestId,digest,json.writeValueAsString(result));
         if(!inventory.recordCommand(command)) throw failure(Kind.IDEMPOTENCY_CONFLICT);
         inventory.recordMovement(movementId,command,reason,evidence);
+        if(operation==InventoryOperation.TRANSFER_IN) {
+            var byPosition=prepared.stream().collect(java.util.stream.Collectors.groupingBy(
+                    line->line.before().id(),LinkedHashMap::new,java.util.stream.Collectors.toList()));
+            var orderedGroups=byPosition.values().stream().sorted(Comparator
+                    .comparing((List<PreparedTransferStockLine> group)->group.getFirst().before().productId())
+                    .thenComparing(group->group.getFirst().before().lotId())
+                    .thenComparing(group->group.getFirst().before().locationId())
+                    .thenComparing(group->group.getFirst().before().id())).toList();
+            for(var group:orderedGroups) {
+                var first=group.getFirst();
+                long onHand=0,quarantined=0;
+                try {
+                    for(var line:group) {
+                        if(!line.before().equals(first.before()) || line.version()!=first.version()
+                                || !line.buckets().equals(first.buckets())) throw failure(Kind.CONFLICT);
+                        onHand=Math.addExact(onHand,line.delta().onHand());
+                        quarantined=Math.addExact(quarantined,line.delta().quarantined());
+                    }
+                } catch(ArithmeticException overflow) {
+                    throw failure(Kind.INVALID_REQUEST);
+                }
+                var delta=new Delta(onHand,0,quarantined,0);
+                var after=inventory.postLine(org,store,movementId,first.before().id(),first.before().version(),delta,Trust.UNVERIFIED);
+                if(after.version()!=first.version() || !after.buckets().equals(first.buckets())) throw failure(Kind.CONFLICT);
+                for(var line:group) {
+                    if(line.allocationId()!=null) inventory.openAllocation(org,store,after.id(),line.allocationId(),
+                            "QUARANTINED",actor,membership,line.quantity(),movementId);
+                    var lineResult=new Result(movementId,after.id(),after.version(),after.buckets(),line.allocationId(),null);
+                    audit.securityChange(actor,org,"stock-position",after.id(),"STOCK_"+operation.name(),
+                            Map.of("outcome","SUCCEEDED","before",line.before(),"after",lineResult,
+                                    "transferLineId",line.lineId()),reason);
+                }
+            }
+            return result;
+        }
         for(var line:prepared) {
             var after=inventory.postLine(org,store,movementId,line.before().id(),line.before().version(),line.delta(),Trust.UNVERIFIED);
             if(operation==InventoryOperation.TRANSFER_RESERVE) {
@@ -691,12 +757,12 @@ public class InventoryService {
 
     private static List<TransferReceiptLine> normalizeTransferReceipts(List<TransferReceiptLine> lines) {
         if(lines==null || lines.isEmpty() || lines.size()>MAX_TRANSFER_LINES) throw failure(Kind.INVALID_REQUEST);
-        var lineIds=new HashSet<UUID>();var positions=new HashSet<String>();
+        var lineIds=new HashSet<UUID>();
         var normalized=new ArrayList<TransferReceiptLine>(lines.size());
         for(var line:lines) {
             if(line==null || line.lineId()==null || line.locationId()==null || line.productId()==null || line.lotId()==null
                     || line.expectedVersion()<0 || line.expectedVersion()==Long.MAX_VALUE || line.quantity()<=0
-                    || !lineIds.add(line.lineId()) || !positions.add(line.locationId()+":"+line.lotId()))
+                    || !lineIds.add(line.lineId()))
                 throw failure(Kind.INVALID_REQUEST);
             normalized.add(line);
         }

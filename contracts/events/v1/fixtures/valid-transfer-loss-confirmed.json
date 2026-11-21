@@ -1,0 +1,24 @@
+{
+  "eventId": "1afc3968-2e46-474b-9b55-0ccfca6142e7",
+  "eventType": "TransferLossConfirmed",
+  "schemaVersion": 1,
+  "occurredAt": "2026-11-20T12:45:00Z",
+  "orgId": "b9635f6d-a20e-43ba-9ec8-1e59058048f0",
+  "transferId": "ec34c078-3646-46dd-948b-20f49f114042",
+  "aggregateVersion": 7,
+  "correlationId": "transfer-loss-411",
+  "causationId": "a5033c7c-72ad-48b6-bb09-0247d43d08cb",
+  "commandId": "a5033c7c-72ad-48b6-bb09-0247d43d08cb",
+  "dataClassification": "INTERNAL",
+  "data": {
+    "operation": "CONFIRM_LOSS",
+    "statusBefore": "IN_TRANSIT",
+    "statusAfter": "RECONCILIATION_REQUIRED",
+    "sourceStoreId": "bf347f28-7d4c-4f13-b784-12d52311d593",
+    "destinationStoreId": "7fe15b9d-1e0f-4ebc-81dc-428743d1d4e3",
+    "stockMovements": [],
+    "custodyMovements": [
+      { "id": "f79ac2d4-cf7d-451b-866f-69bb8add344a", "lineId": "756e5a9f-8c6f-4505-9e2c-cba2e8cabd99", "movementType": "LOSS", "quantity": 2, "stockStoreId": null, "stockMovementId": null, "stockPositionId": null }
+    ]
+  }
+}

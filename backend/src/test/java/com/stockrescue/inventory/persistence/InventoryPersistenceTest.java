@@ -57,7 +57,7 @@ class InventoryPersistenceTest {
         flyway.validate();
         MigrationAssertions.assertCurrent(flyway);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
-        assertThat(jdbc.sql("SELECT count(*) FROM information_schema.tables WHERE table_schema='stockrescue'").query(Integer.class).single()).isEqualTo(60);
+        assertThat(jdbc.sql("SELECT count(*) FROM information_schema.tables WHERE table_schema='stockrescue'").query(Integer.class).single()).isEqualTo(66);
     }
 
     @Test void consolidatedBaselinePreservesInventoryDataAndHistoryAfterRestart() throws Exception {

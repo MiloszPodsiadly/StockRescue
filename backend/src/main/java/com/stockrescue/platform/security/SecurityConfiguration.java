@@ -119,7 +119,9 @@ public class SecurityConfiguration {
                                     "/api/v1/organizations/*/stores/*/storage-zones/*/archive-impact",
                                     "/api/v1/organizations/*/transport-lanes", "/api/v1/organizations/*/transport-lanes/*", "/api/v1/organizations/*/transport-lanes/*/revisions").authenticated()
                             .requestMatchers(HttpMethod.GET, "/api/v1/organizations/*/stores/*/inventory/**",
-                                    "/api/v1/organizations/*/transfers/**").authenticated()
+                                    "/api/v1/organizations/*/transfers/**",
+                                    "/api/v1/organizations/*/transfer-command-intents",
+                                    "/api/v1/organizations/*/transfer-command-intents/*").authenticated()
                             .requestMatchers(HttpMethod.POST, "/api/v1/organizations/*/stores/*/storage-zones", "/api/v1/organizations/*/stores/*/storage-zones/*/archive",
                                     "/api/v1/organizations/*/transport-lanes", "/api/v1/organizations/*/transport-lanes/*/revisions",
                                     "/api/v1/organizations/*/transport-lanes/*/scheduled-revisions/cancel",
@@ -135,6 +137,10 @@ public class SecurityConfiguration {
                                     "/api/v1/organizations/*/transfers/*/request-return",
                                     "/api/v1/organizations/*/transfers/*/confirm-return",
                                     "/api/v1/organizations/*/transfers/*/close-discrepancy",
+                                    "/api/v1/organizations/*/transfer-command-intents",
+                                    "/api/v1/organizations/*/transfer-command-intents/*/submitted",
+                                    "/api/v1/organizations/*/transfer-command-intents/*/acknowledge",
+                                    "/api/v1/organizations/*/transfer-command-intents/*/resolve-failure",
                                     "/api/v1/organizations/*/transfers/outbox/parked-events/*/redrives").authenticated()
                             .requestMatchers(HttpMethod.PATCH, "/api/v1/organizations/*/stores/*/storage-zones/*", "/api/v1/organizations/*/transport-lanes/*").authenticated();
                     if (environment.acceptsProfiles(Profiles.of("contract"))) {

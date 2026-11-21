@@ -6,9 +6,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import com.stockrescue.access.application.AccessPolicy;
@@ -43,10 +43,13 @@ import org.springframework.security.access.AccessDeniedException;
 import org.slf4j.MDC;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
 
 @Service
 public class TransferService {
     public static final int MAX_LINES = 50;
+    public static final Set<String> COMMAND_OPERATIONS = Set.of("CREATE", "APPROVE", "REJECT", "CANCEL", "START_PICK",
+            "PICK", "DISPATCH", "RECEIVE", "OPEN_DISCREPANCY", "CONFIRM_LOSS", "REQUEST_RETURN", "CONFIRM_RETURN", "CLOSE");
     private static final String CREATE = "CREATE";
     private static final String APPROVE = "APPROVE";
     private static final String REJECT = "REJECT";
@@ -66,6 +69,8 @@ public class TransferService {
     public record CreateRequest(UUID requestId, UUID sourceStoreId, UUID destinationStoreId,
             List<CreateLine> lines, String reason, String evidenceReference) { }
     public record DecisionRequest(UUID requestId, long expectedVersion, String reason, String evidenceReference) { }
+    public record CancelRequest(UUID requestId, long expectedVersion, String reason, String evidenceReference,
+            Boolean putBackConfirmed, String putBackDocumentReference) { }
     public record PickRequest(UUID requestId, long expectedVersion, UUID lineId, String documentReference,
             long quantity, String observedSku, String observedLotCode, String reason, String evidenceReference) { }
     public record DispatchLine(UUID lineId, long quantity, String observedSku, String observedLotCode) { }
@@ -112,7 +117,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome create(UUID actor, UUID organizationId, CreateRequest request) {
-        var normalized = normalize(request);
+        var normalized = TransferRequestNormalizer.normalize(request);
         var member = access.requireTransferStore(actor, organizationId, normalized.sourceStoreId(), StoreAction.REQUEST_TRANSFER, true);
         byte[] digest = fingerprint(organizationId, CREATE, normalized.sourceStoreId(), normalized.destinationStoreId(),
                 normalized.reason(), normalized.evidenceReference(), normalized.lines().stream()
@@ -128,12 +133,13 @@ public class TransferService {
                 normalized.sourceStoreId(), line.sourcePositionId(), false).orElseThrow(OrganizationUnavailableException::new)).toList();
         inventory.lockActiveContexts(organizationId, normalized.sourceStoreId(), observed.stream()
                 .map(position -> new PositionIdentity(position.locationId(), position.productId(), position.lotId())).toList());
-        for (var locationId : normalized.lines().stream().map(NormalizedLine::destinationLocationId).distinct().sorted().toList()) {
+        for (var locationId : normalized.lines().stream()
+                .map(TransferRequestNormalizer.NormalizedLine::destinationLocationId).distinct().sorted().toList()) {
             if (!transfers.lockDestinationContext(organizationId, normalized.destinationStoreId(), locationId))
                 throw new OrganizationUnavailableException();
         }
         var locked = inventory.lockPositions(organizationId, normalized.sourceStoreId(),
-                normalized.lines().stream().map(NormalizedLine::sourcePositionId).toList());
+                normalized.lines().stream().map(TransferRequestNormalizer.NormalizedLine::sourcePositionId).toList());
         var byId = locked.stream().collect(java.util.stream.Collectors.toMap(StockPosition::id, position -> position));
         for (var line : normalized.lines()) {
             var position = byId.get(line.sourcePositionId());
@@ -159,7 +165,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome approve(UUID actor, UUID organizationId, UUID transferId, DecisionRequest request) {
-        var normalized = normalize(request);
+        var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.APPROVE_TRANSFER, true);
         access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.RESERVE_STOCK, true);
@@ -235,7 +241,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome reject(UUID actor, UUID organizationId, UUID transferId, DecisionRequest request) {
-        var normalized = normalize(request);
+        var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.APPROVE_TRANSFER, true);
         byte[] digest = fingerprint(organizationId, REJECT, transferId, normalized.expectedVersion(),
@@ -261,8 +267,8 @@ public class TransferService {
     }
 
     @Transactional
-    public CommandOutcome cancel(UUID actor, UUID organizationId, UUID transferId, DecisionRequest request) {
-        var normalized = normalize(request);
+    public CommandOutcome cancel(UUID actor, UUID organizationId, UUID transferId, CancelRequest request) {
+        var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         boolean originalOwnerRetry = actor.equals(identity.createdByUserId())
                 && transfers.command(organizationId, actor, CANCEL, normalized.requestId()).isPresent();
@@ -271,23 +277,51 @@ public class TransferService {
                 ? StoreAction.REQUEST_TRANSFER : StoreAction.CANCEL_TRANSFER;
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), action, true);
         byte[] digest = fingerprint(organizationId, CANCEL, transferId, normalized.expectedVersion(),
-                normalized.reason(), normalized.evidenceReference());
+                normalized.reason(), normalized.evidenceReference(), normalized.putBackConfirmed(),
+                normalized.putBackDocumentReference());
         transfers.lockCommand(organizationId, actor, CANCEL, normalized.requestId());
         var replay = replay(actor, organizationId, CANCEL, normalized.requestId(), digest);
         if (replay != null) return replay;
         inventory.lockRequest(organizationId, actor, InventoryOperation.TRANSFER_RELEASE, normalized.requestId());
         lockStores(organizationId, identity.sourceStoreId(), identity.destinationStoreId());
         var current = transfers.lockTransferForCommand(organizationId, transferId);
+        var currentAction = actor.equals(identity.createdByUserId()) && current.status() == TransferStatus.REQUESTED
+                ? StoreAction.REQUEST_TRANSFER : StoreAction.CANCEL_TRANSFER;
+        member = access.requireTransferStore(actor, organizationId, current.sourceStoreId(), currentAction, true);
         if (current.version() != normalized.expectedVersion()) throw new TransferWriteConflict();
-        if (current.status() != TransferStatus.REQUESTED && current.status() != TransferStatus.APPROVED)
+        if (current.status() != TransferStatus.REQUESTED && current.status() != TransferStatus.APPROVED
+                && current.status() != TransferStatus.PICKING && current.status() != TransferStatus.PICKED)
             throw new TransferWriteConflict();
 
         UUID stockCommandId = null;
         UUID stockMovementId = null;
         String stockOperation = null;
         UUID stockStoreId = null;
-        if (current.status() == TransferStatus.APPROVED) {
-            var detail = transfers.detail(organizationId, transferId).orElseThrow(OrganizationUnavailableException::new);
+        var detail = current.status() == TransferStatus.REQUESTED ? null
+                : transfers.detail(organizationId, transferId).orElseThrow(OrganizationUnavailableException::new);
+        var pickEvidenceByLine = new java.util.HashMap<UUID, TransferRepository.PickEvidence>();
+        if (detail != null) {
+            for (var line : detail.lines()) {
+                var pick = transfers.pickEvidence(organizationId, transferId, line.id());
+                if (line.picked() != pick.isPresent()) throw new TransferWriteConflict();
+                pick.ifPresent(evidence -> pickEvidenceByLine.put(line.id(), evidence));
+            }
+        }
+        var pickedLines = detail == null ? List.<TransferRepository.TransferLine>of()
+                : detail.lines().stream().filter(line -> pickEvidenceByLine.containsKey(line.id())).toList();
+        if (!pickedLines.isEmpty()) {
+            if (!normalized.putBackConfirmed() || normalized.putBackDocumentReference() == null)
+                throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
+            transfers.lockDocumentIdentity(organizationId, current.sourceStoreId(), "PUT_BACK",
+                    normalized.putBackDocumentReference());
+            if (transfers.physicalDocumentExists(organizationId, current.sourceStoreId(), "PUT_BACK",
+                    normalized.putBackDocumentReference()))
+                throw new InventoryFailure(InventoryFailure.Kind.DOCUMENT_ALREADY_RECEIVED);
+        } else if (normalized.putBackConfirmed() || normalized.putBackDocumentReference() != null) {
+            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
+        }
+
+        if (detail != null) {
             var releaseLines = detail.lines().stream().map(line -> {
                 if (line.reservationAllocationId() == null || line.quantities().dispatched() != 0)
                     throw new TransferWriteConflict();
@@ -306,19 +340,34 @@ public class TransferService {
         var outcome = new CommandOutcome(transferId, TransferStatus.CANCELLED, nextVersion, commandId, stockMovementId);
         recordCommand(organizationId, transferId, actor, member.membershipId(), CANCEL, normalized.requestId(), digest,
                 outcome, stockStoreId, stockCommandId, stockOperation, commandId);
+        if (!pickedLines.isEmpty()) {
+            UUID documentId = UUID.randomUUID();
+            transfers.recordPhysicalDocument(new PhysicalDocument(documentId, organizationId, transferId,
+                    current.sourceStoreId(), current.destinationStoreId(), current.sourceStoreId(), commandId,
+                    "SOURCE", "PUT_BACK", normalized.putBackDocumentReference(), normalized.reason(),
+                    normalized.evidenceReference(), actor, member.membershipId()));
+            for (var line : pickedLines) {
+                var pick = pickEvidenceByLine.get(line.id());
+                transfers.recordPhysicalDocumentLine(new PhysicalDocumentLine(organizationId, transferId, documentId,
+                        line.id(), "PUT_BACK", line.lineNumber(), line.id().toString(), pick.quantity(), "AVAILABLE",
+                        pick.observedSku(), pick.observedLotCode(), pick.sourcePositionVersion()));
+            }
+        }
         transfers.advanceStatus(organizationId, transferId, current.version(), TransferStatus.CANCELLED, commandId,
                 actor, member.membershipId(), normalized.reason(), normalized.evidenceReference(), null, null);
         audit.securityChange(actor, organizationId, "transfer", transferId, "TRANSFER_CANCELLED",
                 Map.of("outcome", "SUCCEEDED", "before", current.status(), "after", TransferStatus.CANCELLED,
                         "version", nextVersion, "commandId", commandId, "stockMovementId",
-                        stockMovementId == null ? "NONE" : stockMovementId, "evidenceReference", normalized.evidenceReference()),
+                        stockMovementId == null ? "NONE" : stockMovementId, "evidenceReference", normalized.evidenceReference(),
+                        "putBackDocumentReference", normalized.putBackDocumentReference() == null
+                                ? "NONE" : normalized.putBackDocumentReference()),
                 normalized.reason());
         return outcome;
     }
 
     @Transactional
     public CommandOutcome startPick(UUID actor, UUID organizationId, UUID transferId, DecisionRequest request) {
-        var normalized = normalize(request);
+        var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.PICK_TRANSFER, true);
         byte[] digest = fingerprint(organizationId, START_PICK, transferId, normalized.expectedVersion(),
@@ -355,7 +404,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome recordPick(UUID actor, UUID organizationId, UUID transferId, PickRequest request) {
-        var normalized = normalize(request);
+        var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.PICK_TRANSFER, true);
         byte[] digest = fingerprint(organizationId, PICK, transferId, normalized.expectedVersion(), normalized.lineId(),
@@ -414,7 +463,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome dispatch(UUID actor, UUID organizationId, UUID transferId, DispatchRequest request) {
-        var normalized = normalize(request);
+        var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.DISPATCH_TRANSFER, true);
         byte[] digest = fingerprint(organizationId, DISPATCH, transferId, normalized.expectedVersion(),
@@ -486,7 +535,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome receive(UUID actor, UUID organizationId, UUID transferId, ReceiveRequest request) {
-        var normalized=normalize(request);
+        var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),StoreAction.RECEIVE_STOCK,true);
         byte[] digest=fingerprint(organizationId,RECEIVE,transferId,normalized.expectedVersion(),normalized.documentReference(),
@@ -554,7 +603,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome openDiscrepancy(UUID actor,UUID organizationId,UUID transferId,DiscrepancyRequest request) {
-        var normalized=normalize(request);
+        var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=requireDiscrepancyManager(actor,organizationId,identity);
         byte[] digest=fingerprint(organizationId,OPEN_DISCREPANCY,transferId,normalized.expectedVersion(),normalized.lineId(),
@@ -588,7 +637,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome recordDamage(UUID actor,UUID organizationId,UUID transferId,DamageRequest request) {
-        var normalized=normalize(request);
+        var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),
                 StoreAction.MANAGE_TRANSFER_DISCREPANCIES,true);
@@ -645,7 +694,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome requestReturn(UUID actor,UUID organizationId,UUID transferId,RequestReturn request) {
-        var normalized=normalize(request);
+        var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),StoreAction.REQUEST_TRANSFER_RETURN,true);
         byte[] digest=fingerprint(organizationId,REQUEST_RETURN,transferId,normalized.expectedVersion(),normalized.documentReference(),
@@ -689,7 +738,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome confirmReturn(UUID actor,UUID organizationId,UUID transferId,ConfirmReturnRequest request) {
-        var normalized=normalize(request);
+        var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=access.requireTransferStore(actor,organizationId,identity.sourceStoreId(),StoreAction.RECEIVE_STOCK,true);
         byte[] digest=fingerprint(organizationId,CONFIRM_RETURN,transferId,normalized.expectedVersion(),normalized.documentReference(),
@@ -761,7 +810,7 @@ public class TransferService {
 
     @Transactional
     public CommandOutcome closeDiscrepancy(UUID actor,UUID organizationId,UUID transferId,DecisionRequest request) {
-        var normalized=normalize(request);
+        var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=requireDiscrepancyManager(actor,organizationId,identity);
         byte[] digest=fingerprint(organizationId,CLOSE,transferId,normalized.expectedVersion(),normalized.reason(),normalized.evidenceReference());
@@ -775,19 +824,25 @@ public class TransferService {
         var detail=transfers.detail(organizationId,transferId).orElseThrow(OrganizationUnavailableException::new);
         if(detail.lines().isEmpty() || detail.lines().stream().anyMatch(line -> line.quantities().outstanding()!=0)
                 || !transfers.hasReconciliationEvidence(organizationId,transferId)) throw new TransferWriteConflict();
+        boolean fullyReceived=detail.lines().stream().allMatch(line ->
+                line.quantities().physicallyReceived()==line.quantities().dispatched()
+                        && line.quantities().confirmedLoss()==0 && line.quantities().physicallyReturned()==0);
+        TransferStatus resolvedStatus=fullyReceived?TransferStatus.RECEIVED:TransferStatus.CLOSED_WITH_DISCREPANCY;
         long version=nextVersion(current.version());
         UUID commandId=UUID.randomUUID();
-        var outcome=new CommandOutcome(transferId,TransferStatus.CLOSED_WITH_DISCREPANCY,version,commandId,null);
+        var outcome=new CommandOutcome(transferId,resolvedStatus,version,commandId,null);
         recordCommand(organizationId,transferId,actor,member.membershipId(),CLOSE,normalized.requestId(),digest,
                 outcome,null,null,null,commandId);
         transfers.recordReconciliationEvidence(new TransferRepository.ReconciliationEvidence(UUID.randomUUID(),organizationId,
                 transferId,null,commandId,actor,member.membershipId(),"CUSTODY_RECONCILIATION",
-                json.writeValueAsString(Map.of("outstanding",0)),json.writeValueAsString(Map.of("closed",true)),
+                json.writeValueAsString(Map.of("outstanding",0)),json.writeValueAsString(Map.of("closed",true,
+                        "resolvedStatus",resolvedStatus,"settlement",fullyReceived?"FULL_PHYSICAL_RECEIPT":"LOSS_OR_RETURN")),
                 normalized.reason(),normalized.evidenceReference()));
-        transfers.advanceStatus(organizationId,transferId,current.version(),TransferStatus.CLOSED_WITH_DISCREPANCY,
+        transfers.advanceStatus(organizationId,transferId,current.version(),resolvedStatus,
                 commandId,actor,member.membershipId(),normalized.reason(),normalized.evidenceReference(),null,null);
-        audit.securityChange(actor,organizationId,"transfer",transferId,"TRANSFER_DISCREPANCY_CLOSED",
-                Map.of("outcome","SUCCEEDED","before",current.status(),"after",TransferStatus.CLOSED_WITH_DISCREPANCY,
+        audit.securityChange(actor,organizationId,"transfer",transferId,
+                fullyReceived?"TRANSFER_RECONCILIATION_RESOLVED":"TRANSFER_DISCREPANCY_CLOSED",
+                Map.of("outcome","SUCCEEDED","before",current.status(),"after",resolvedStatus,
                         "version",version,"commandId",commandId,"lineCount",detail.lines().size()),normalized.reason());
         return outcome;
     }
@@ -816,6 +871,49 @@ public class TransferService {
         var detail = transfers.detail(organizationId, receipt.transferId()).orElseThrow(OrganizationUnavailableException::new);
         authorizeRead(actor, organizationId, detail.transfer().sourceStoreId(), detail.transfer().destinationStoreId());
         return new Recovery(receipt.operation(), receipt.requestId(), json.readValue(receipt.outcome(), CommandOutcome.class));
+    }
+
+    @Transactional
+    public UUID authorizeCommandIntent(UUID actor, UUID organizationId, String operation, UUID transferId, JsonNode payload) {
+        if (operation == null || organizationId == null || actor == null || !COMMAND_OPERATIONS.contains(operation) || payload == null || !payload.isObject()
+                || (operation.equals(CREATE) != (transferId == null)))
+            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
+        if (operation.equals(CREATE)) {
+            UUID sourceStoreId = payloadUuid(payload, "sourceStoreId");
+            return access.requireTransferStore(actor, organizationId, sourceStoreId, StoreAction.REQUEST_TRANSFER, true).membershipId();
+        }
+        var identity = identity(organizationId, transferId);
+        return switch (operation) {
+            case APPROVE, REJECT -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.APPROVE_TRANSFER, true).membershipId();
+            case CANCEL -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.CANCEL_TRANSFER, true).membershipId();
+            case START_PICK, PICK -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.PICK_TRANSFER, true).membershipId();
+            case DISPATCH -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.DISPATCH_TRANSFER, true).membershipId();
+            case RECEIVE -> access.requireTransferStore(actor, organizationId, identity.destinationStoreId(), StoreAction.RECEIVE_STOCK, true).membershipId();
+            case CONFIRM_RETURN -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.RECEIVE_STOCK, true).membershipId();
+            case REQUEST_RETURN -> access.requireTransferStore(actor, organizationId, identity.destinationStoreId(), StoreAction.REQUEST_TRANSFER_RETURN, true).membershipId();
+            case OPEN_DISCREPANCY, CONFIRM_LOSS, CLOSE -> requireDiscrepancyManager(actor, organizationId, identity).membershipId();
+            default -> throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
+        };
+    }
+
+    @Transactional(readOnly = true)
+    public void authorizeCommandIntentRead(UUID actor, UUID organizationId, String operation, UUID transferId, JsonNode payload) {
+        if (operation == null || organizationId == null || actor == null || !COMMAND_OPERATIONS.contains(operation) || payload == null || !payload.isObject()
+                || (operation.equals(CREATE) != (transferId == null)))
+            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
+        if (operation.equals(CREATE)) {
+            UUID sourceStoreId = payloadUuid(payload, "sourceStoreId");
+            access.requireTransferStore(actor, organizationId, sourceStoreId, StoreAction.READ_TRANSFERS, false);
+        } else {
+            detail(actor, organizationId, transferId);
+        }
+    }
+
+    private static UUID payloadUuid(JsonNode payload, String field) {
+        String value = payload.path(field).asString();
+        if (value == null) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
+        try { return UUID.fromString(value); }
+        catch (IllegalArgumentException invalid) { throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST); }
     }
 
     @Transactional(readOnly = true)
@@ -870,6 +968,7 @@ public class TransferService {
 
     private static TransferStatus receiptStatus(TransferStatus current,List<TransferRepository.TransferLine> lines,
             Map<UUID,Long> receivedNow) {
+        // A clean receipt settles custody quantities, but it cannot resolve an already-open review by itself.
         if(current==TransferStatus.RECONCILIATION_REQUIRED) return current;
         boolean settled=true;
         boolean allPhysicallyReceived=true;
@@ -950,163 +1049,6 @@ public class TransferService {
         if (!transfers.recordCommand(receipt)) throw new InventoryFailure(InventoryFailure.Kind.IDEMPOTENCY_CONFLICT);
     }
 
-    private static NormalizedRequest normalize(CreateRequest request) {
-        if (request == null || request.requestId() == null || request.sourceStoreId() == null
-                || request.destinationStoreId() == null || request.sourceStoreId().equals(request.destinationStoreId())
-                || request.lines() == null || request.lines().isEmpty() || request.lines().size() > MAX_LINES)
-            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        var reason = text(request.reason(), 500);
-        var evidence = text(request.evidenceReference(), 256);
-        var seen = new java.util.HashSet<UUID>();
-        var lines = new ArrayList<NormalizedLine>(request.lines().size());
-        for (var line : request.lines()) {
-            if (line == null || line.sourcePositionId() == null || line.destinationLocationId() == null
-                    || line.quantity() <= 0 || line.expectedSourceVersion() < 0
-                    || line.expectedSourceVersion() == Long.MAX_VALUE || !seen.add(line.sourcePositionId()))
-                throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            lines.add(new NormalizedLine(line.sourcePositionId(), line.destinationLocationId(), line.quantity(),
-                    line.expectedSourceVersion(), 0));
-        }
-        lines.sort(Comparator.comparing(NormalizedLine::sourcePositionId));
-        var numbered = new ArrayList<NormalizedLine>(lines.size());
-        for (int index = 0; index < lines.size(); index++) {
-            var line = lines.get(index);
-            numbered.add(new NormalizedLine(line.sourcePositionId(), line.destinationLocationId(), line.quantity(),
-                    line.expectedSourceVersion(), index + 1));
-        }
-        return new NormalizedRequest(request.requestId(), request.sourceStoreId(), request.destinationStoreId(),
-                List.copyOf(numbered), reason, evidence);
-    }
-
-    private static DecisionRequest normalize(DecisionRequest request) {
-        if (request == null || request.requestId() == null || request.expectedVersion() < 0
-                || request.expectedVersion() == Long.MAX_VALUE)
-            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        return new DecisionRequest(request.requestId(), request.expectedVersion(), text(request.reason(), 500),
-                text(request.evidenceReference(), 256));
-    }
-
-    private static PickRequest normalize(PickRequest request) {
-        if (request == null || request.requestId() == null || request.expectedVersion() < 0
-                || request.expectedVersion() == Long.MAX_VALUE || request.lineId() == null || request.quantity() <= 0)
-            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        return new PickRequest(request.requestId(), request.expectedVersion(), request.lineId(),
-                text(request.documentReference(), 200), request.quantity(), text(request.observedSku(), 64),
-                text(request.observedLotCode(), 128), text(request.reason(), 500),
-                text(request.evidenceReference(), 256));
-    }
-
-    private static DispatchRequest normalize(DispatchRequest request) {
-        if (request == null || request.requestId() == null || request.expectedVersion() < 0
-                || request.expectedVersion() == Long.MAX_VALUE || request.lines() == null
-                || request.lines().isEmpty() || request.lines().size() > MAX_LINES)
-            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        var seen = new java.util.HashSet<UUID>();
-        var lines = new ArrayList<DispatchLine>(request.lines().size());
-        for (var line : request.lines()) {
-            if (line == null || line.lineId() == null || line.quantity() <= 0 || !seen.add(line.lineId()))
-                throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            lines.add(new DispatchLine(line.lineId(), line.quantity(), text(line.observedSku(), 64),
-                    text(line.observedLotCode(), 128)));
-        }
-        lines.sort(Comparator.comparing(DispatchLine::lineId));
-        return new DispatchRequest(request.requestId(), request.expectedVersion(),
-                text(request.documentReference(), 200), List.copyOf(lines), text(request.reason(), 500),
-                text(request.evidenceReference(), 256));
-    }
-
-    private static ReceiveRequest normalize(ReceiveRequest request) {
-        if(request==null || request.requestId()==null || request.expectedVersion()<0
-                || request.expectedVersion()==Long.MAX_VALUE || request.physicallyReceivedAt()==null
-                || request.lines()==null || request.lines().isEmpty() || request.lines().size()>MAX_LINES)
-            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        var ids=new java.util.HashSet<UUID>();var lineReferences=new java.util.HashSet<String>();
-        var lines=new ArrayList<ReceiveLine>(request.lines().size());
-        for(var line:request.lines()) {
-            if(line==null || line.lineId()==null || line.quantity()<=0 || line.expectedDestinationVersion()<0
-                    || line.expectedDestinationVersion()==Long.MAX_VALUE || !ids.add(line.lineId()))
-                throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            String reference=text(line.documentLineReference(),64);
-            if(!lineReferences.add(reference)) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            lines.add(new ReceiveLine(line.lineId(),line.quantity(),line.expectedDestinationVersion(),reference,
-                    text(line.observedSku(),64),text(line.observedLotCode(),128)));
-        }
-        lines.sort(Comparator.comparing(ReceiveLine::lineId));
-        return new ReceiveRequest(request.requestId(),request.expectedVersion(),text(request.documentReference(),200),
-                request.physicallyReceivedAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS),List.copyOf(lines),
-                text(request.reason(),500),text(request.evidenceReference(),256));
-    }
-
-    private static DamageRequest normalize(DamageRequest request) {
-        if(request==null || request.requestId()==null || request.expectedVersion()<0
-                || request.expectedVersion()==Long.MAX_VALUE || request.lines()==null || request.lines().isEmpty()
-                || request.lines().size()>MAX_LINES) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        var reasonCode=text(request.reasonCode(),48);
-        if(!List.of("DAMAGED_IN_TRANSIT","DESTROYED_IN_TRANSIT","LOST_WITH_EVIDENCE").contains(reasonCode))
-            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        var ids=new java.util.HashSet<UUID>();var lineReferences=new java.util.HashSet<String>();
-        var lines=new ArrayList<DamageLine>(request.lines().size());
-        for(var line:request.lines()) {
-            if(line==null || line.lineId()==null || line.quantity()<=0 || !ids.add(line.lineId()))
-                throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            String reference=text(line.documentLineReference(),64);
-            if(!lineReferences.add(reference)) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            lines.add(new DamageLine(line.lineId(),line.quantity(),reference));
-        }
-        lines.sort(Comparator.comparing(DamageLine::lineId));
-        return new DamageRequest(request.requestId(),request.expectedVersion(),text(request.documentReference(),200),
-                reasonCode,List.copyOf(lines),text(request.reason(),500),text(request.evidenceReference(),256));
-    }
-
-    private static DiscrepancyRequest normalize(DiscrepancyRequest request) {
-        if(request==null || request.requestId()==null || request.expectedVersion()<0
-                || request.expectedVersion()==Long.MAX_VALUE) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        return new DiscrepancyRequest(request.requestId(),request.expectedVersion(),request.lineId(),
-                text(request.expectedState(),500),text(request.observedState(),500),text(request.reason(),500),
-                text(request.evidenceReference(),256));
-    }
-
-    private static RequestReturn normalize(RequestReturn request) {
-        if(request==null || request.requestId()==null || request.expectedVersion()<0
-                || request.expectedVersion()==Long.MAX_VALUE || request.lines()==null || request.lines().isEmpty()
-                || request.lines().size()>MAX_LINES) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        var ids=new java.util.HashSet<UUID>();var lines=new ArrayList<ReturnRequestLine>(request.lines().size());
-        for(var line:request.lines()) {
-            if(line==null || line.lineId()==null || !ids.add(line.lineId())) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            lines.add(line);
-        }
-        lines.sort(Comparator.comparing(ReturnRequestLine::lineId));
-        return new RequestReturn(request.requestId(),request.expectedVersion(),text(request.documentReference(),200),
-                List.copyOf(lines),text(request.reason(),500),text(request.evidenceReference(),256));
-    }
-
-    private static ConfirmReturnRequest normalize(ConfirmReturnRequest request) {
-        if(request==null || request.requestId()==null || request.expectedVersion()<0
-                || request.expectedVersion()==Long.MAX_VALUE || request.lines()==null || request.lines().isEmpty()
-                || request.lines().size()>MAX_LINES) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        var ids=new java.util.HashSet<UUID>();var lineReferences=new java.util.HashSet<String>();
-        var lines=new ArrayList<ConfirmReturnLine>(request.lines().size());
-        for(var line:request.lines()) {
-            if(line==null || line.lineId()==null || line.expectedSourceVersion()<0
-                    || line.expectedSourceVersion()==Long.MAX_VALUE || !ids.add(line.lineId()))
-                throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            String reference=text(line.documentLineReference(),64);
-            if(!lineReferences.add(reference)) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            lines.add(new ConfirmReturnLine(line.lineId(),line.expectedSourceVersion(),reference,
-                    text(line.observedSku(),64),text(line.observedLotCode(),128)));
-        }
-        lines.sort(Comparator.comparing(ConfirmReturnLine::lineId));
-        return new ConfirmReturnRequest(request.requestId(),request.expectedVersion(),text(request.documentReference(),200),
-                List.copyOf(lines),text(request.reason(),500),text(request.evidenceReference(),256));
-    }
-
-    private static String text(String value, int maximum) {
-        if (value == null || value.isBlank() || value.length() > maximum
-                || value.codePoints().anyMatch(Character::isISOControl))
-            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        return value.strip();
-    }
-
     private static long nextVersion(long current) {
         try {
             return Math.incrementExact(current);
@@ -1135,8 +1077,4 @@ public class TransferService {
         }
     }
 
-    private record NormalizedLine(UUID sourcePositionId, UUID destinationLocationId, long quantity,
-            long expectedSourceVersion, int lineNumber) { }
-    private record NormalizedRequest(UUID requestId, UUID sourceStoreId, UUID destinationStoreId,
-            List<NormalizedLine> lines, String reason, String evidenceReference) { }
 }

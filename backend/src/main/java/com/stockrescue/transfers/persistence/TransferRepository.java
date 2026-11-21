@@ -152,8 +152,31 @@ public class TransferRepository {
                             p.location_id IS DISTINCT FROM l.destination_location_id
                             OR p.product_id IS DISTINCT FROM source_position.product_id
                             OR p.lot_id IS DISTINCT FROM source_position.lot_id))
-                        OR ml.delta_on_hand IS DISTINCT FROM CASE WHEN c.movement_type='DISPATCH'
-                            THEN -c.quantity ELSE c.quantity END
+                        OR (c.movement_type='DISPATCH' AND ml.delta_on_hand<>-c.quantity)
+                        OR (c.movement_type='RETURN' AND ml.delta_on_hand<>c.quantity)
+                        OR (c.movement_type='RECEIPT' AND (
+                            ml.delta_on_hand::numeric IS DISTINCT FROM (
+                                SELECT coalesce(sum(receipt.quantity),0)
+                                FROM stockrescue.transfer_custody_movement receipt
+                                WHERE receipt.movement_type='RECEIPT'
+                                  AND receipt.org_id=c.org_id AND receipt.stock_store_id=c.stock_store_id
+                                  AND receipt.stock_movement_id=c.stock_movement_id
+                                  AND receipt.stock_position_id=c.stock_position_id)
+                            OR ml.delta_quarantined::numeric IS DISTINCT FROM (
+                                SELECT coalesce(sum(receipt.quantity) FILTER (WHERE document_line.disposition='QUARANTINED'),0)
+                                FROM stockrescue.transfer_custody_movement receipt
+                                JOIN stockrescue.transfer_physical_document document
+                                  ON document.org_id=receipt.org_id AND document.transfer_id=receipt.transfer_id
+                                    AND document.command_id=receipt.command_id AND document.document_type='RECEIPT'
+                                JOIN stockrescue.transfer_physical_document_line document_line
+                                  ON document_line.org_id=document.org_id AND document_line.transfer_id=document.transfer_id
+                                    AND document_line.document_id=document.id AND document_line.document_type='RECEIPT'
+                                    AND document_line.line_id=receipt.line_id
+                                WHERE receipt.movement_type='RECEIPT'
+                                  AND receipt.org_id=c.org_id AND receipt.stock_store_id=c.stock_store_id
+                                  AND receipt.stock_movement_id=c.stock_movement_id
+                                  AND receipt.stock_position_id=c.stock_position_id)
+                            OR ml.delta_other_blocked<>0))
                         OR ml.delta_reserved IS DISTINCT FROM CASE WHEN c.movement_type='DISPATCH'
                             THEN -c.quantity ELSE 0 END
                     )

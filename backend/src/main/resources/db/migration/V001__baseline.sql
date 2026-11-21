@@ -2397,6 +2397,116 @@ CREATE TABLE stockrescue.transfer_command_receipt (
 );
 CREATE INDEX transfer_command_transfer_idx
     ON stockrescue.transfer_command_receipt(org_id,transfer_id,recorded_at,id);
+CREATE UNIQUE INDEX transfer_command_stock_receipt_unique
+    ON stockrescue.transfer_command_receipt(org_id,stock_store_id,stock_command_receipt_id)
+    WHERE stock_command_receipt_id IS NOT NULL;
+
+CREATE TABLE stockrescue.transfer_command_intent (
+    id UUID PRIMARY KEY,
+    org_id UUID NOT NULL,
+    transfer_id UUID,
+    actor_user_id UUID NOT NULL,
+    membership_id UUID NOT NULL,
+    operation VARCHAR(32) NOT NULL CHECK (operation IN
+        ('CREATE','APPROVE','REJECT','CANCEL','START_PICK','PICK','DISPATCH','RECEIVE','OPEN_DISCREPANCY',
+         'CONFIRM_LOSS','REQUEST_RETURN','CONFIRM_RETURN','CLOSE')),
+    request_id UUID NOT NULL,
+    payload_fingerprint BYTEA NOT NULL CHECK (octet_length(payload_fingerprint)=32),
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload)='object' AND octet_length(payload::text)<=65536),
+    state VARCHAR(16) NOT NULL DEFAULT 'PREPARED' CHECK (state IN ('PREPARED','SUBMITTED','ACKNOWLEDGED','REJECTED','CONFLICTED')),
+    prepared_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp() CHECK (isfinite(prepared_at)),
+    executed_at TIMESTAMPTZ CHECK (executed_at IS NULL OR isfinite(executed_at)),
+    resolved_at TIMESTAMPTZ CHECK (resolved_at IS NULL OR isfinite(resolved_at)),
+    CONSTRAINT transfer_command_intent_resolution CHECK
+        ((state IN ('PREPARED','SUBMITTED') AND resolved_at IS NULL AND executed_at IS NULL)
+         OR (state='ACKNOWLEDGED' AND resolved_at IS NOT NULL AND executed_at IS NOT NULL)
+         OR (state IN ('REJECTED','CONFLICTED') AND resolved_at IS NOT NULL AND executed_at IS NULL)),
+    CONSTRAINT transfer_command_intent_request_unique UNIQUE (org_id,actor_user_id,operation,request_id),
+    CONSTRAINT transfer_command_intent_actor_scope UNIQUE (org_id,actor_user_id,id),
+    CONSTRAINT transfer_command_intent_transfer_kind CHECK ((operation='CREATE')=(transfer_id IS NULL)),
+    CONSTRAINT transfer_command_intent_transfer_fk FOREIGN KEY (org_id,transfer_id)
+        REFERENCES stockrescue.transfer_order(org_id,id) ON DELETE RESTRICT,
+    CONSTRAINT transfer_command_intent_actor_fk FOREIGN KEY (org_id,membership_id,actor_user_id)
+        REFERENCES stockrescue.membership(org_id,id,user_id) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX transfer_command_intent_active_actor_idx
+    ON stockrescue.transfer_command_intent(org_id,actor_user_id) WHERE state IN ('PREPARED','SUBMITTED');
+CREATE INDEX transfer_command_intent_pending_actor_idx
+    ON stockrescue.transfer_command_intent(org_id,actor_user_id,prepared_at,id) WHERE state IN ('PREPARED','SUBMITTED');
+CREATE INDEX transfer_command_intent_retention_idx
+    ON stockrescue.transfer_command_intent(resolved_at,id) WHERE state IN ('ACKNOWLEDGED','REJECTED','CONFLICTED');
+
+CREATE FUNCTION stockrescue.guard_transfer_command_intent() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+    IF TG_OP='DELETE' THEN
+        IF OLD.state IN ('PREPARED','SUBMITTED') OR OLD.resolved_at>clock_timestamp()-interval '90 days' THEN
+            RAISE EXCEPTION 'Only resolved transfer intents past retention may be removed' USING ERRCODE='23514';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF (NEW.id,NEW.org_id,NEW.transfer_id,NEW.actor_user_id,NEW.membership_id,NEW.operation,NEW.request_id,
+            NEW.payload_fingerprint,NEW.payload,NEW.prepared_at)
+        IS DISTINCT FROM (OLD.id,OLD.org_id,OLD.transfer_id,OLD.actor_user_id,OLD.membership_id,OLD.operation,OLD.request_id,
+            OLD.payload_fingerprint,OLD.payload,OLD.prepared_at)
+        OR OLD.state NOT IN ('PREPARED','SUBMITTED')
+        OR NEW.state NOT IN ('PREPARED','SUBMITTED','ACKNOWLEDGED','REJECTED','CONFLICTED')
+        OR OLD.state='PREPARED' AND NEW.state NOT IN ('PREPARED','SUBMITTED','REJECTED','CONFLICTED')
+        OR OLD.state='SUBMITTED' AND NEW.state NOT IN ('SUBMITTED','ACKNOWLEDGED','REJECTED','CONFLICTED')
+        OR NEW.state IN ('PREPARED','SUBMITTED') AND (NEW.resolved_at IS NOT NULL OR NEW.executed_at IS NOT NULL)
+        OR NEW.state='ACKNOWLEDGED' AND (NEW.resolved_at IS NULL OR NEW.executed_at IS NULL)
+        OR NEW.state IN ('REJECTED','CONFLICTED') AND (NEW.resolved_at IS NULL OR NEW.executed_at IS NOT NULL) THEN
+        RAISE EXCEPTION 'Transfer intent content is immutable and can resolve only once' USING ERRCODE='23514';
+    END IF;
+    IF NEW.state='ACKNOWLEDGED' AND NOT EXISTS (
+        SELECT 1 FROM stockrescue.transfer_command_receipt c
+        WHERE c.org_id=OLD.org_id AND c.actor_user_id=OLD.actor_user_id
+          AND c.operation=OLD.operation AND c.request_id=OLD.request_id
+          AND (OLD.transfer_id IS NULL OR c.transfer_id=OLD.transfer_id)
+    ) THEN
+        RAISE EXCEPTION 'A transfer intent can be acknowledged only after its command commits' USING ERRCODE='23514';
+    END IF;
+    IF NEW.state IN ('REJECTED','CONFLICTED') AND EXISTS (
+        SELECT 1 FROM stockrescue.transfer_command_receipt c
+        WHERE c.org_id=OLD.org_id AND c.actor_user_id=OLD.actor_user_id
+          AND c.operation=OLD.operation AND c.request_id=OLD.request_id
+    ) THEN
+        RAISE EXCEPTION 'A committed transfer intent cannot be resolved as a failure' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER transfer_command_intent_guard
+    BEFORE UPDATE OR DELETE ON stockrescue.transfer_command_intent
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.guard_transfer_command_intent();
+CREATE FUNCTION stockrescue.reject_transfer_command_intent_truncate() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+    RAISE EXCEPTION 'Transfer command intents cannot be truncated' USING ERRCODE='23514';
+END;
+$$;
+CREATE TRIGGER transfer_command_intent_no_truncate BEFORE TRUNCATE ON stockrescue.transfer_command_intent
+    FOR EACH STATEMENT EXECUTE FUNCTION stockrescue.reject_transfer_command_intent_truncate();
+COMMENT ON TABLE stockrescue.transfer_command_intent IS
+    'Actor-scoped durable request details for recovering transfer commands whose HTTP result is uncertain.';
+
+CREATE FUNCTION stockrescue.guard_transfer_command_receipt_intent() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE intent_state VARCHAR(16);
+BEGIN
+    SELECT state INTO intent_state FROM stockrescue.transfer_command_intent
+    WHERE org_id=NEW.org_id AND actor_user_id=NEW.actor_user_id
+      AND operation=NEW.operation AND request_id=NEW.request_id
+    FOR UPDATE;
+    IF intent_state IN ('REJECTED','CONFLICTED') THEN
+        RAISE EXCEPTION 'A resolved transfer command intent cannot later commit' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER transfer_command_receipt_intent_guard
+    BEFORE INSERT ON stockrescue.transfer_command_receipt
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.guard_transfer_command_receipt_intent();
 
 CREATE TABLE stockrescue.transfer_transition (
     org_id UUID NOT NULL,
@@ -2445,6 +2555,7 @@ BEGIN
         WHEN NEW.status_after='PICKED' THEN 'PICK'
         WHEN NEW.status_after='IN_TRANSIT' AND NEW.status_before='PICKED' THEN 'DISPATCH'
         WHEN NEW.status_after='IN_TRANSIT' AND NEW.status_before='RECONCILIATION_REQUIRED' THEN 'RESUME'
+        WHEN NEW.status_after='RECEIVED' AND NEW.status_before='RECONCILIATION_REQUIRED' THEN 'CLOSE'
         WHEN NEW.status_after IN ('PARTIALLY_RECEIVED','RECEIVED') THEN 'RECEIVE'
         WHEN NEW.status_after='RECONCILIATION_REQUIRED' THEN NULL
         WHEN NEW.status_after='CLOSED_WITH_DISCREPANCY' THEN 'CLOSE'
@@ -2458,6 +2569,13 @@ BEGIN
         OR (NEW.status_after<>'RECONCILIATION_REQUIRED' AND
             (expected_operation IS NULL OR command_operation<>expected_operation)) THEN
         RAISE EXCEPTION 'Transfer transition must match its typed command' USING ERRCODE='23514';
+    END IF;
+    IF NEW.status_after='RECEIVED' AND NEW.status_before='RECONCILIATION_REQUIRED'
+        AND NOT EXISTS (SELECT 1 FROM stockrescue.transfer_reconciliation_evidence e
+            WHERE e.org_id=NEW.org_id AND e.transfer_id=NEW.transfer_id AND e.command_id=NEW.command_id
+              AND e.evidence_type='CUSTODY_RECONCILIATION'
+              AND e.observed_state->>'closed'='true' AND e.observed_state->>'resolvedStatus'='RECEIVED') THEN
+        RAISE EXCEPTION 'Resolving reconciliation as RECEIVED requires explicit manager evidence' USING ERRCODE='23514';
     END IF;
     RETURN NEW;
 END;
@@ -2514,7 +2632,7 @@ CREATE TABLE stockrescue.transfer_physical_document (
     document_store_id UUID NOT NULL,
     command_id UUID NOT NULL,
     store_side VARCHAR(16) NOT NULL CHECK (store_side IN ('SOURCE','DESTINATION')),
-    document_type VARCHAR(16) NOT NULL CHECK (document_type IN ('PICK','DISPATCH','RECEIPT','DAMAGE','RETURN','LOSS')),
+    document_type VARCHAR(16) NOT NULL CHECK (document_type IN ('PICK','PUT_BACK','DISPATCH','RECEIPT','DAMAGE','RETURN','LOSS')),
     document_reference VARCHAR(200) COLLATE "C" NOT NULL
         CHECK (document_reference=btrim(document_reference) AND length(document_reference)>0 AND document_reference !~ '[[:cntrl:]]'),
     reason VARCHAR(500) NOT NULL CHECK (length(btrim(reason))>0 AND reason COLLATE "C" !~ '[[:cntrl:]]'),
@@ -2545,7 +2663,7 @@ CREATE TABLE stockrescue.transfer_physical_document_line (
     transfer_id UUID NOT NULL,
     document_id UUID NOT NULL,
     line_id UUID NOT NULL,
-    document_type VARCHAR(16) NOT NULL CHECK (document_type IN ('PICK','DISPATCH','RECEIPT','DAMAGE','RETURN','LOSS')),
+    document_type VARCHAR(16) NOT NULL CHECK (document_type IN ('PICK','PUT_BACK','DISPATCH','RECEIPT','DAMAGE','RETURN','LOSS')),
     line_number INTEGER NOT NULL CHECK (line_number>0),
     document_line_reference VARCHAR(64) COLLATE "C" NOT NULL
         CHECK (document_line_reference=btrim(document_line_reference) AND length(document_line_reference)>0 AND document_line_reference !~ '[[:cntrl:]]'),
@@ -2563,6 +2681,8 @@ CREATE TABLE stockrescue.transfer_physical_document_line (
     CONSTRAINT transfer_document_line_evidence CHECK (
         (document_type='PICK' AND disposition='PICKED' AND source_position_version IS NOT NULL
             AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
+        OR (document_type='PUT_BACK' AND disposition='AVAILABLE' AND source_position_version IS NOT NULL
+            AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
         OR (document_type='DISPATCH' AND disposition='COUNTED' AND source_position_version IS NULL
             AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
         OR (document_type='RECEIPT' AND disposition IN ('AVAILABLE','QUARANTINED') AND source_position_version IS NULL
@@ -2578,6 +2698,8 @@ CREATE INDEX transfer_document_line_transfer_idx
     ON stockrescue.transfer_physical_document_line(org_id,transfer_id,line_id,document_id);
 CREATE UNIQUE INDEX transfer_pick_line_once_idx
     ON stockrescue.transfer_physical_document_line(org_id,transfer_id,line_id) WHERE document_type='PICK';
+CREATE UNIQUE INDEX transfer_put_back_line_once_idx
+    ON stockrescue.transfer_physical_document_line(org_id,transfer_id,line_id) WHERE document_type='PUT_BACK';
 CREATE UNIQUE INDEX transfer_dispatch_document_once_idx
     ON stockrescue.transfer_physical_document(org_id,transfer_id) WHERE document_type='DISPATCH';
 
@@ -2592,7 +2714,7 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Physical evidence requires its transfer line' USING ERRCODE='23503';
     END IF;
-    IF NEW.document_type IN ('PICK','DISPATCH') THEN
+    IF NEW.document_type IN ('PICK','PUT_BACK','DISPATCH') THEN
         IF NEW.quantity<>transfer_line_row.requested_quantity THEN
             RAISE EXCEPTION 'Picking and dispatch evidence must match the complete requested line' USING ERRCODE='23514';
         END IF;
@@ -2623,6 +2745,18 @@ BEGIN
         ) THEN
             RAISE EXCEPTION 'Dispatch requires a current matching physical pick record' USING ERRCODE='23514';
         END IF;
+        IF NEW.document_type='PUT_BACK' AND NOT EXISTS (
+            SELECT 1 FROM stockrescue.transfer_physical_document d
+            JOIN stockrescue.transfer_physical_document_line pick
+              ON pick.org_id=d.org_id AND pick.transfer_id=d.transfer_id AND pick.document_id=d.id
+                AND pick.document_type=d.document_type
+            WHERE d.org_id=NEW.org_id AND d.transfer_id=NEW.transfer_id AND d.document_type='PICK'
+              AND pick.line_id=NEW.line_id AND pick.quantity=NEW.quantity
+              AND pick.observed_sku=NEW.observed_sku AND pick.observed_lot_code=NEW.observed_lot_code
+              AND pick.source_position_version=NEW.source_position_version
+        ) THEN
+            RAISE EXCEPTION 'Put-back evidence requires a matching immutable physical pick record' USING ERRCODE='23514';
+        END IF;
     END IF;
     RETURN NEW;
 END;
@@ -2636,6 +2770,7 @@ DECLARE command_operation VARCHAR(32); expected_operation VARCHAR(32); command_a
 BEGIN
     expected_operation:=CASE NEW.document_type
         WHEN 'PICK' THEN 'PICK'
+        WHEN 'PUT_BACK' THEN 'CANCEL'
         WHEN 'DISPATCH' THEN 'DISPATCH'
         WHEN 'RECEIPT' THEN 'RECEIVE'
         WHEN 'DAMAGE' THEN 'CONFIRM_LOSS'
@@ -2793,6 +2928,19 @@ BEGIN
                 AND d.document_type='PICK' AND d.quantity=l.requested_quantity)) THEN
         RAISE EXCEPTION 'Every transfer line requires complete pick evidence before PICKED' USING ERRCODE='23514';
     END IF;
+    IF NEW.status='CANCELLED' AND OLD.status IN ('PICKING','PICKED') AND EXISTS (
+        SELECT 1 FROM stockrescue.transfer_physical_document_line pick
+        WHERE pick.org_id=NEW.org_id AND pick.transfer_id=NEW.id AND pick.document_type='PICK'
+          AND NOT EXISTS (
+              SELECT 1 FROM stockrescue.transfer_physical_document_line put_back
+              WHERE put_back.org_id=pick.org_id AND put_back.transfer_id=pick.transfer_id
+                AND put_back.line_id=pick.line_id AND put_back.document_type='PUT_BACK'
+                AND put_back.quantity=pick.quantity
+                AND put_back.observed_sku=pick.observed_sku
+                AND put_back.observed_lot_code=pick.observed_lot_code
+                AND put_back.source_position_version=pick.source_position_version)) THEN
+        RAISE EXCEPTION 'Every physically picked line must have immutable source put-back evidence before cancellation' USING ERRCODE='23514';
+    END IF;
     IF NEW.status='IN_TRANSIT' AND EXISTS (
         SELECT 1 FROM stockrescue.transfer_line l
         JOIN stockrescue.transfer_custody_account a
@@ -2812,6 +2960,12 @@ BEGIN
           AND (a.outstanding<>0 OR a.physically_received<>a.dispatched
               OR a.confirmed_loss<>0 OR a.physically_returned<>0)) THEN
         RAISE EXCEPTION 'RECEIVED requires every dispatched unit to be physically received with no outstanding custody' USING ERRCODE='23514';
+    END IF;
+    IF NEW.status='RECEIVED' AND OLD.status='RECONCILIATION_REQUIRED'
+        AND NOT EXISTS (SELECT 1 FROM stockrescue.transfer_reconciliation_evidence e
+            WHERE e.org_id=NEW.org_id AND e.transfer_id=NEW.id AND e.evidence_type='CUSTODY_RECONCILIATION'
+              AND e.observed_state->>'closed'='true' AND e.observed_state->>'resolvedStatus'='RECEIVED') THEN
+        RAISE EXCEPTION 'RECONCILIATION_REQUIRED can become RECEIVED only after documented manager resolution' USING ERRCODE='23514';
     END IF;
     IF NEW.status='CLOSED_WITH_DISCREPANCY' AND (
         EXISTS (SELECT 1 FROM stockrescue.transfer_custody_account a
@@ -2999,7 +3153,7 @@ BEGIN
          WHERE p.org_id=NEW.org_id AND p.store_id=line_row.source_store_id AND p.id=line_row.source_position_id;
         SELECT p.product_id,p.lot_id,p.location_id INTO destination_position FROM stockrescue.stock_position p
             WHERE p.org_id=NEW.org_id AND p.store_id=line_row.destination_store_id AND p.id=NEW.stock_position_id;
-        IF NEW.stock_store_id<>line_row.destination_store_id OR stock_line.delta_on_hand<>NEW.quantity
+        IF NEW.stock_store_id<>line_row.destination_store_id OR stock_line.delta_on_hand<NEW.quantity
             OR stock_line.delta_reserved<>0 OR stock_line.delta_quarantined<0 OR stock_line.delta_other_blocked<0
             OR stock_line.delta_quarantined::numeric+stock_line.delta_other_blocked::numeric>stock_line.delta_on_hand::numeric
             OR destination_position.product_id IS DISTINCT FROM source_position.product_id
@@ -3012,7 +3166,7 @@ BEGIN
                 WHERE d.org_id=NEW.org_id AND d.transfer_id=NEW.transfer_id AND d.command_id=NEW.command_id
                     AND d.document_type='RECEIPT' AND d.document_store_id=line_row.destination_store_id
                     AND l.line_id=NEW.line_id AND l.quantity=NEW.quantity
-                    AND l.disposition=CASE WHEN stock_line.delta_quarantined=NEW.quantity THEN 'QUARANTINED' ELSE 'AVAILABLE' END
+                    AND l.disposition IN ('AVAILABLE','QUARANTINED')
                     AND l.observed_sku=source_position.sku AND l.observed_lot_code=source_position.lot_code)
             OR stock_line.delta_other_blocked<>0 THEN
             RAISE EXCEPTION 'Receipt custody must match destination stock and source product/lot identity' USING ERRCODE='23514';
@@ -3048,6 +3202,138 @@ END;
 $$;
 CREATE TRIGGER transfer_custody_movement_validate BEFORE INSERT ON stockrescue.transfer_custody_movement
     FOR EACH ROW EXECUTE FUNCTION stockrescue.validate_transfer_custody_movement();
+
+CREATE FUNCTION stockrescue.assert_transfer_receipt_stock_group() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE p_org UUID; p_store UUID; p_movement UUID; movement_operation VARCHAR(24); stock_command UUID;
+BEGIN
+    IF TG_TABLE_NAME='stock_movement' THEN
+        p_org:=NEW.org_id; p_store:=NEW.store_id; p_movement:=NEW.id;
+    ELSIF TG_TABLE_NAME='stock_movement_line' THEN
+        p_org:=NEW.org_id; p_store:=NEW.store_id; p_movement:=NEW.movement_id;
+    ELSE
+        IF NEW.movement_type<>'RECEIPT' OR NEW.stock_movement_id IS NULL THEN RETURN NULL; END IF;
+        p_org:=NEW.org_id; p_store:=NEW.stock_store_id; p_movement:=NEW.stock_movement_id;
+    END IF;
+
+    SELECT operation,command_id INTO movement_operation,stock_command
+      FROM stockrescue.stock_movement
+     WHERE org_id=p_org AND store_id=p_store AND id=p_movement;
+    IF NOT FOUND OR movement_operation<>'TRANSFER_IN' THEN RETURN NULL; END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM stockrescue.stock_movement_line l
+        WHERE l.org_id=p_org AND l.store_id=p_store AND l.movement_id=p_movement) THEN
+        RAISE EXCEPTION 'Transfer receipt movement requires at least one stock position line' USING ERRCODE='23514';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM stockrescue.stock_movement_line sl
+        LEFT JOIN LATERAL (
+            SELECT count(c.id) AS custody_count,coalesce(sum(c.quantity),0)::numeric AS receipt_quantity,
+                coalesce(sum(c.quantity) FILTER (WHERE evidence.disposition='QUARANTINED'),0)::numeric AS quarantined_quantity,
+                coalesce(sum(c.quantity) FILTER (WHERE evidence.disposition='AVAILABLE'),0)::numeric AS available_quantity
+            FROM stockrescue.transfer_custody_movement c
+            LEFT JOIN LATERAL (
+                SELECT count(*) AS row_count,min(dl.quantity) AS quantity,min(dl.disposition) AS disposition
+                FROM stockrescue.transfer_physical_document d
+                JOIN stockrescue.transfer_physical_document_line dl
+                  ON dl.org_id=d.org_id AND dl.transfer_id=d.transfer_id AND dl.document_id=d.id
+                WHERE d.org_id=c.org_id AND d.transfer_id=c.transfer_id AND d.command_id=c.command_id
+                  AND d.document_type='RECEIPT' AND d.document_store_id=c.stock_store_id
+                  AND dl.document_type='RECEIPT' AND dl.line_id=c.line_id
+            ) evidence ON true
+            WHERE c.movement_type='RECEIPT' AND c.org_id=sl.org_id AND c.stock_store_id=sl.store_id
+              AND c.stock_movement_id=sl.movement_id AND c.stock_position_id=sl.position_id
+        ) receipt ON true
+        WHERE sl.org_id=p_org AND sl.store_id=p_store AND sl.movement_id=p_movement
+          AND (sl.delta_on_hand<=0 OR sl.delta_reserved<>0 OR sl.delta_quarantined<0
+              OR sl.delta_quarantined::numeric>sl.delta_on_hand::numeric OR sl.delta_other_blocked<>0
+              OR receipt.custody_count=0 OR receipt.receipt_quantity<>sl.delta_on_hand::numeric
+              OR receipt.quarantined_quantity<>sl.delta_quarantined::numeric
+              OR receipt.available_quantity<>sl.delta_on_hand::numeric-sl.delta_quarantined::numeric)
+    ) THEN
+        RAISE EXCEPTION 'Each transfer receipt stock line must equal its complete linked custody and physical receipt group' USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM stockrescue.transfer_custody_movement c
+        JOIN stockrescue.transfer_line tl
+          ON tl.org_id=c.org_id AND tl.transfer_id=c.transfer_id AND tl.id=c.line_id
+        JOIN stockrescue.transfer_command_receipt tc
+          ON tc.org_id=c.org_id AND tc.transfer_id=c.transfer_id AND tc.id=c.command_id
+        JOIN stockrescue.stock_movement sm
+          ON sm.org_id=c.org_id AND sm.store_id=c.stock_store_id AND sm.id=c.stock_movement_id
+        JOIN stockrescue.stock_movement_line sl
+          ON sl.org_id=c.org_id AND sl.store_id=c.stock_store_id AND sl.movement_id=c.stock_movement_id
+            AND sl.position_id=c.stock_position_id
+        JOIN stockrescue.stock_position source_position
+          ON source_position.org_id=tl.org_id AND source_position.store_id=tl.source_store_id
+            AND source_position.id=tl.source_position_id
+        JOIN stockrescue.product product
+          ON product.org_id=source_position.org_id AND product.id=source_position.product_id
+        JOIN stockrescue.manufacturer_lot lot
+          ON lot.org_id=source_position.org_id AND lot.product_id=source_position.product_id AND lot.id=source_position.lot_id
+        JOIN stockrescue.stock_position destination_position
+          ON destination_position.org_id=c.org_id AND destination_position.store_id=c.stock_store_id
+            AND destination_position.id=c.stock_position_id
+        LEFT JOIN LATERAL (
+            SELECT count(*) AS row_count,min(dl.quantity) AS quantity,min(dl.observed_sku) AS observed_sku,
+                min(dl.observed_lot_code) AS observed_lot_code,min(dl.disposition) AS disposition
+            FROM stockrescue.transfer_physical_document d
+            JOIN stockrescue.transfer_physical_document_line dl
+              ON dl.org_id=d.org_id AND dl.transfer_id=d.transfer_id AND dl.document_id=d.id
+            WHERE d.org_id=c.org_id AND d.transfer_id=c.transfer_id AND d.command_id=c.command_id
+              AND d.document_type='RECEIPT' AND d.document_store_id=c.stock_store_id
+              AND dl.document_type='RECEIPT' AND dl.line_id=c.line_id
+        ) evidence ON true
+        WHERE c.org_id=p_org AND c.stock_store_id=p_store AND c.stock_movement_id=p_movement
+          AND c.movement_type='RECEIPT'
+          AND (sm.operation<>'TRANSFER_IN' OR sm.command_id<>stock_command
+              OR tc.operation<>'RECEIVE' OR tc.stock_store_id<>p_store
+              OR tc.stock_command_receipt_id<>stock_command OR tc.stock_operation<>'TRANSFER_IN'
+              OR tl.destination_store_id<>p_store OR destination_position.location_id<>tl.destination_location_id
+              OR destination_position.product_id<>source_position.product_id
+              OR destination_position.lot_id<>source_position.lot_id
+              OR sl.delta_on_hand<c.quantity OR evidence.row_count<>1 OR evidence.quantity<>c.quantity
+              OR evidence.observed_sku<>product.sku OR evidence.observed_lot_code<>lot.lot_code
+              OR evidence.disposition NOT IN ('AVAILABLE','QUARANTINED'))
+    ) THEN
+        RAISE EXCEPTION 'Transfer receipt custody requires matching command, destination identity and one physical line' USING ERRCODE='23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM stockrescue.transfer_command_receipt tc
+        JOIN stockrescue.transfer_physical_document d
+          ON d.org_id=tc.org_id AND d.transfer_id=tc.transfer_id AND d.command_id=tc.id
+            AND d.document_type='RECEIPT' AND d.document_store_id=tc.stock_store_id
+        JOIN stockrescue.transfer_physical_document_line dl
+          ON dl.org_id=d.org_id AND dl.transfer_id=d.transfer_id AND dl.document_id=d.id
+            AND dl.document_type='RECEIPT'
+        WHERE tc.org_id=p_org AND tc.stock_store_id=p_store AND tc.stock_command_receipt_id=stock_command
+          AND tc.operation='RECEIVE'
+          AND NOT EXISTS (
+              SELECT 1 FROM stockrescue.transfer_custody_movement c
+              WHERE c.org_id=tc.org_id AND c.transfer_id=tc.transfer_id AND c.command_id=tc.id
+                AND c.line_id=dl.line_id AND c.movement_type='RECEIPT'
+                AND c.stock_store_id=p_store AND c.stock_movement_id=p_movement
+                AND c.stock_position_id IN (SELECT line.position_id FROM stockrescue.stock_movement_line line
+                    WHERE line.org_id=p_org AND line.store_id=p_store AND line.movement_id=p_movement)
+                AND c.quantity=dl.quantity
+          )
+    ) THEN
+        RAISE EXCEPTION 'Transfer receipt movement cannot contain physical document lines without custody quantities' USING ERRCODE='23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER transfer_receipt_movement_group_validate
+    AFTER INSERT ON stockrescue.stock_movement DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.assert_transfer_receipt_stock_group();
+CREATE CONSTRAINT TRIGGER transfer_receipt_stock_line_group_validate
+    AFTER INSERT ON stockrescue.stock_movement_line DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.assert_transfer_receipt_stock_group();
+CREATE CONSTRAINT TRIGGER transfer_receipt_custody_group_validate
+    AFTER INSERT ON stockrescue.transfer_custody_movement DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION stockrescue.assert_transfer_receipt_stock_group();
 CREATE TRIGGER transfer_custody_movement_immutable BEFORE UPDATE OR DELETE ON stockrescue.transfer_custody_movement
     FOR EACH ROW EXECUTE FUNCTION stockrescue.reject_history_mutation();
 CREATE TRIGGER transfer_custody_movement_no_truncate BEFORE TRUNCATE ON stockrescue.transfer_custody_movement
@@ -3122,7 +3408,7 @@ CREATE TABLE stockrescue.transfer_outbox_event (
     transfer_id UUID NOT NULL,
     aggregate_version BIGINT NOT NULL CHECK (aggregate_version>=0),
     event_type VARCHAR(48) NOT NULL CHECK (event_type IN
-        ('TransferCommandRecorded','TransferDispatched','TransferReceived','TransferReturned','TransferDiscrepancyResolved')),
+        ('TransferCommandRecorded','TransferDispatched','TransferReceived','TransferReturned','TransferLossConfirmed','TransferDiscrepancyResolved')),
     schema_version INTEGER NOT NULL CHECK (schema_version=1),
     payload JSONB NOT NULL CHECK (jsonb_typeof(payload)='object'),
     correlation_id VARCHAR(64) CHECK (correlation_id IS NULL OR correlation_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'),
@@ -3339,7 +3625,8 @@ BEGIN
         WHEN 'DISPATCH' THEN 'TransferDispatched'
         WHEN 'RECEIVE' THEN 'TransferReceived'
         WHEN 'CONFIRM_RETURN' THEN 'TransferReturned'
-        WHEN 'CONFIRM_LOSS' THEN 'TransferDiscrepancyResolved'
+        WHEN 'CONFIRM_LOSS' THEN 'TransferLossConfirmed'
+        WHEN 'CLOSE' THEN 'TransferDiscrepancyResolved'
         ELSE 'TransferCommandRecorded' END;
     SELECT coalesce(jsonb_agg(jsonb_build_object('id',m.id,'lineId',m.line_id,'movementType',m.movement_type,
             'quantity',m.quantity,'stockStoreId',m.stock_store_id,'stockMovementId',m.stock_movement_id,

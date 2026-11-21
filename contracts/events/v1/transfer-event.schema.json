@@ -7,7 +7,7 @@
   "required": ["eventId", "eventType", "schemaVersion", "occurredAt", "orgId", "transferId", "aggregateVersion", "correlationId", "causationId", "commandId", "dataClassification", "data"],
   "properties": {
     "eventId": { "$ref": "#/$defs/uuid" },
-    "eventType": { "enum": ["TransferCommandRecorded", "TransferDispatched", "TransferReceived", "TransferReturned", "TransferDiscrepancyResolved"] },
+    "eventType": { "enum": ["TransferCommandRecorded", "TransferDispatched", "TransferReceived", "TransferReturned", "TransferLossConfirmed", "TransferDiscrepancyResolved"] },
     "schemaVersion": { "const": 1 },
     "occurredAt": { "type": "string", "format": "date-time" },
     "orgId": { "$ref": "#/$defs/uuid" },
