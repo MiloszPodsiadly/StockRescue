@@ -118,8 +118,8 @@ jobs:
         with:
           name: compose-integration-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            .tools/stockrescue-check-*-failure.log
-            .tools/stockrescue-check-*-cleanup.log
+            ${{ runner.temp }}/stockrescue-compose-diagnostics/stockrescue-check-*-failure.log
+            ${{ runner.temp }}/stockrescue-compose-diagnostics/stockrescue-check-*-cleanup.log
           if-no-files-found: warn
           retention-days: 7
 

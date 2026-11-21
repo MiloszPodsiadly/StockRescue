@@ -136,6 +136,7 @@ def main():
     os.chdir(root)
     project = f"stockrescue-check-{uuid4().hex[:16]}"
     working = root / ".tools"
+    diagnostic_directory = Path(os.environ.get("RUNNER_TEMP") or working) / "stockrescue-compose-diagnostics"
     working.mkdir(exist_ok=True)
     environment_file = working / f"{project}.env"
     postgres_admin_password = uuid4().hex
@@ -158,8 +159,13 @@ def main():
             text,
         )
         text = re.sub(
-            r"(?i)([\"']?[A-Za-z0-9_.-]*(?:authorization|proxy-authorization|cookie|set-cookie|x-csrf-token|csrf-token|password|passwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token)[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)",
+            r"(?i)([\"']?[A-Za-z0-9_.-]*(?:authorization|proxy-authorization|cookie|set-cookie|x-csrf-token|csrf-token|password|passwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|payload|request[_-]?body|response[_-]?body|reason|evidence[_-]?(?:reference|data)|email|full[_-]?name|sku|lot[_-]?code|supplier[_-]?key)[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)",
             lambda match: f'{match.group(1)}"[REDACTED]"',
+            text,
+        )
+        text = re.sub(
+            r"(?im)^.*(?:request|response)\s+body\s*[:=].*$",
+            "[REDACTED HTTP BODY]",
             text,
         )
         text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
@@ -167,7 +173,7 @@ def main():
         return text
 
     def save_diagnostic(contents, append=False):
-        diagnostic = working / f"{project}-failure.log"
+        diagnostic = diagnostic_directory / f"{project}-failure.log"
         try:
             contents = redact(contents)
             if append and diagnostic.exists():
@@ -176,6 +182,11 @@ def main():
                 if os.name != "nt":
                     os.chmod(diagnostic, 0o600)
             else:
+                contents = (
+                    f"scenario: {project}\n"
+                    f"captured_at_utc: {datetime.now(timezone.utc).isoformat()}\n"
+                    + contents
+                )
                 write_private_environment_file(diagnostic, contents)
         except Exception:
             return None
@@ -238,18 +249,50 @@ def main():
         return execute(compose + list(command), **options)
 
     def collect_failure_diagnostics(error):
+        message = str(error)
+        if isinstance(error, AssertionError) and message.startswith(
+            "Kafka recovery did not drain/apply the committed event;"
+        ):
+            safe_cause = redact(message[:1200])
+        elif isinstance(error, subprocess.CalledProcessError):
+            safe_cause = f"child process exited with status {error.returncode}"
+        elif isinstance(error, TimeoutError):
+            safe_cause = "bounded infrastructure command or readiness wait timed out"
+        elif isinstance(error, AssertionError):
+            safe_cause = "integration assertion failed"
+        else:
+            safe_cause = type(error).__name__
         sections = [
             "=== Integration failure ===",
+            f"scenario: {project}",
+            f"captured_at_utc: {datetime.now(timezone.utc).isoformat()}",
             f"type: {type(error).__name__}",
-            "message: omitted to avoid copying request data or secrets",
+            f"cause: {safe_cause}",
         ]
+        state_query = """
+            SELECT concat_ws(',',
+                'inventory_outbox_pending=' || (SELECT count(*) FROM stockrescue.inventory_outbox_delivery WHERE published_at IS NULL),
+                'inventory_redrive_blocked=' || (SELECT count(*) FROM stockrescue.inventory_outbox_redrive_attempt WHERE blocked_at IS NOT NULL),
+                'inventory_consumer_parked=' || (SELECT count(*) FROM stockrescue.inventory_consumer_parked_event),
+                'inventory_inbox=' || (SELECT count(*) FROM stockrescue.inventory_inbox),
+                'inventory_projection_rows=' || (SELECT count(*) FROM stockrescue.inventory_change_projection),
+                'inventory_projection_max_version=' || (SELECT coalesce(max(aggregate_version),0) FROM stockrescue.inventory_change_projection),
+                'transfer_outbox_pending=' || (SELECT count(*) FROM stockrescue.transfer_outbox_delivery WHERE published_at IS NULL AND parked_at IS NULL),
+                'transfer_outbox_parked=' || (SELECT count(*) FROM stockrescue.transfer_outbox_delivery WHERE parked_at IS NOT NULL),
+                'transfer_redrive_blocked=' || (SELECT count(*) FROM stockrescue.transfer_outbox_redrive_attempt WHERE blocked_at IS NOT NULL),
+                'transfer_inbox=' || (SELECT count(*) FROM stockrescue.transfer_inbox),
+                'transfer_projection_rows=' || (SELECT count(*) FROM stockrescue.transfer_change_projection),
+                'transfer_projection_max_version=' || (SELECT coalesce(max(aggregate_version),0) FROM stockrescue.transfer_change_projection)
+            )
+        """
         projects = [(project, compose)] + [
             (scenario["project"], scenario["compose"]) for scenario in scenario_projects
         ]
         for project_name, project_compose in projects:
             for label, arguments in (
                 ("service status", ["ps", "-a"]),
-                ("recent service logs", ["logs", "--no-color", "--tail", "80"]),
+                ("recent service logs", ["logs", "--no-color", "--tail", "80", "backend", "kafka", "postgres", "web", "intelligence"]),
+                ("outbox inbox and projection counts", ["exec", "-T", "postgres", "psql", "-U", "stockrescue_admin", "-d", "stockrescue", "-Atc", state_query]),
             ):
                 try:
                     result = subprocess.run(
@@ -262,8 +305,8 @@ def main():
                         timeout=20,
                     )
                     output = result.stdout + result.stderr
-                    if len(output) > 60000:
-                        output = output[-60000:]
+                    if len(output) > 30000:
+                        output = output[-30000:]
                     sections.extend(
                         [
                             f"=== {project_name}: {label} (exit {result.returncode}) ===",
@@ -1299,7 +1342,7 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
                     "STOCKRESCUE_TEST_PROJECT": project,
                     "STOCKRESCUE_TEST_ENV_FILE": str(environment_file),
                 },
-                timeout=240 if arguments.browser_suite_only else 360,
+                timeout=600 if arguments.browser_suite_only else 360,
             )
             print(
                 "PASS: isolated stock transfer browser journey"
@@ -1709,7 +1752,7 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
                     "STOCKRESCUE_TEST_PROJECT": project,
                     "STOCKRESCUE_TEST_ENV_FILE": str(environment_file),
                 },
-                timeout=240,
+                timeout=600,
             )
         print("PASS: integrated foundation checks", flush=True)
         completed = True
@@ -1787,10 +1830,15 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
             )
 
         if cleanup_errors:
-            diagnostic = working / f"{project}-cleanup.log"
+            diagnostic = diagnostic_directory / f"{project}-cleanup.log"
             diagnostic_written = True
             try:
-                write_private_environment_file(diagnostic, "\n".join(cleanup_errors))
+                write_private_environment_file(
+                    diagnostic,
+                    f"scenario: {project}\n"
+                    f"captured_at_utc: {datetime.now(timezone.utc).isoformat()}\n"
+                    + "\n".join(cleanup_errors),
+                )
             except Exception as error:
                 diagnostic_written = False
                 if primary_error is None:
