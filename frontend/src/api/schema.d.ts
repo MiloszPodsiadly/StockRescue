@@ -1228,6 +1228,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/transfer-command-intents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List this actor's pending transfer command summaries */
+        get: operations["listPendingTransferCommandIntents"];
+        put?: never;
+        /** Save the exact actor-scoped transfer command before submitting it */
+        post: operations["prepareTransferCommandIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfer-command-intents/{intentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inspect an actor-owned pending command and its committed outcome */
+        get: operations["inspectTransferCommandIntent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfer-command-intents/{intentId}/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve an intent after its transfer command receipt is visible */
+        post: operations["acknowledgeTransferCommandIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfer-command-intents/{intentId}/resolve-failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve a command only after a definite failure and no committed receipt */
+        post: operations["resolveFailedTransferCommandIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfer-command-intents/{intentId}/submitted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record that the actor is about to submit the saved command */
+        post: operations["markTransferCommandIntentSubmitted"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/transfers": {
         parameters: {
             query?: never;
@@ -1374,7 +1460,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cancel a pre-dispatch transfer and release only its exact active reservation */
+        /** Cancel a pre-dispatch transfer, document any physical put-back and release its exact active reservation */
         post: operations["cancelTransfer"];
         delete?: never;
         options?: never;
@@ -1391,7 +1477,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Close a fully documented discrepancy after every line has zero outstanding custody */
+        /** Confirm reconciliation after every line has zero outstanding custody */
         post: operations["closeTransferDiscrepancy"];
         delete?: never;
         options?: never;
@@ -2108,6 +2194,10 @@ export interface components {
             /** Format: uuid */
             requestId: string;
         };
+        FailureRequest: {
+            /** @enum {string} */
+            resolution: "REJECTED" | "CONFLICTED";
+        };
         FindingPageResponse: {
             hasMore: boolean;
             items: components["schemas"]["FindingResponse"][];
@@ -2627,13 +2717,14 @@ export interface components {
             requestId: string;
         };
         PrepareRequest: {
-            /** @enum {string} */
-            operation: "RECEIPT_DOCUMENT" | "RESERVE" | "RELEASE" | "ADJUST" | "WRITE_OFF" | "QUARANTINE" | "HOLD" | "RELEASE_HOLD" | "SALE";
+            operation: string;
             payload: {
                 [key: string]: unknown;
             };
             /** Format: uuid */
             prepareId: string;
+            /** Format: uuid */
+            transferId?: string;
         };
         ProductPage: {
             canCreate: boolean;
@@ -3101,6 +3192,49 @@ export interface components {
             version: number;
             zoneId: string;
         };
+        TransferCancelRequest: {
+            evidenceReference: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** @description Required and true after physically returning every picked line to its source shelf */
+            putBackConfirmed?: boolean;
+            /** @description Physical put-back record reference, required when any line was picked */
+            putBackDocumentReference?: string;
+            reason: string;
+            /** Format: uuid */
+            requestId: string;
+        };
+        TransferCommandIntentInspection: {
+            committedOutcome?: components["schemas"]["CommandResponse"] | null;
+            /** @enum {string} */
+            executionStatus: "PREPARED" | "SUBMITTED_AWAITING_OUTCOME" | "COMMITTED_AWAITING_ACKNOWLEDGEMENT" | "ACKNOWLEDGED" | "REJECTED" | "CONFLICTED";
+            /** Format: uuid */
+            id: string;
+            operation: string;
+            payload: string;
+            /** Format: date-time */
+            preparedAt: string;
+            /** Format: uuid */
+            requestId: string;
+            state: string;
+            /** Format: uuid */
+            transferId?: string;
+        };
+        TransferCommandIntentPage: {
+            items: components["schemas"]["TransferCommandIntentSummary"][];
+        };
+        TransferCommandIntentSummary: {
+            /** Format: uuid */
+            id: string;
+            operation: string;
+            /** Format: date-time */
+            preparedAt: string;
+            /** Format: uuid */
+            requestId: string;
+            state: string;
+            /** Format: uuid */
+            transferId?: string;
+        };
         TransferConfirmReturnLineRequest: {
             documentLineReference: string;
             /** Format: int64 */
@@ -3119,6 +3253,40 @@ export interface components {
             reason: string;
             /** Format: uuid */
             requestId: string;
+        };
+        TransferCustodyMovement: {
+            /** Format: uuid */
+            actorId: string;
+            /** Format: uuid */
+            commandId: string;
+            evidenceReference: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            lineId: string;
+            /** Format: int64 */
+            outstandingAfter: number;
+            /** Format: int64 */
+            outstandingBefore: number;
+            /** Format: int64 */
+            quantity: number;
+            reason: string;
+            /** Format: date-time */
+            recordedAt: string;
+            /** Format: uuid */
+            stockMovementId: string | null;
+            /** Format: uuid */
+            stockPositionId: string | null;
+            /** Format: uuid */
+            stockStoreId: string | null;
+            /** @enum {string} */
+            type: "DISPATCH" | "RECEIPT" | "LOSS" | "RETURN";
+            /** Format: int64 */
+            version: number;
+        };
+        TransferCustodyPage: {
+            hasMore: boolean;
+            items: components["schemas"]["TransferCustodyMovement"][];
         };
         TransferDamageLineRequest: {
             documentLineReference: string;
@@ -3145,6 +3313,25 @@ export interface components {
             reason: string;
             /** Format: uuid */
             requestId: string;
+        };
+        TransferDiscrepancyPage: {
+            hasMore: boolean;
+            items: components["schemas"]["TransferDiscrepancyRecord"][];
+        };
+        TransferDiscrepancyRecord: {
+            evidenceReference: string;
+            expectedState: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            lineId: string | null;
+            observedState: string;
+            reason: string;
+            /** Format: date-time */
+            recordedAt: string;
+            /** Format: uuid */
+            transferId: string;
+            type: string;
         };
         TransferDiscrepancyRequest: {
             evidenceReference: string;
@@ -3176,6 +3363,30 @@ export interface components {
             /** Format: uuid */
             requestId: string;
         };
+        TransferInTransitLine: {
+            /** Format: int64 */
+            ageSeconds: number;
+            /** Format: uuid */
+            destinationLocationId: string;
+            /** Format: uuid */
+            destinationStoreId: string;
+            /** Format: date-time */
+            dispatchedAt: string;
+            /** Format: uuid */
+            lineId: string;
+            /** Format: int64 */
+            outstanding: number;
+            /** Format: uuid */
+            sourcePositionId: string;
+            /** Format: uuid */
+            sourceStoreId: string;
+            /** Format: uuid */
+            transferId: string;
+        };
+        TransferInTransitPage: {
+            hasMore: boolean;
+            items: components["schemas"]["TransferInTransitLine"][];
+        };
         TransferLineResponse: {
             /** Format: uuid */
             destinationLocationId: string;
@@ -3186,9 +3397,9 @@ export interface components {
             /** Format: int32 */
             lineNumber: number;
             lotCode: string;
-            picked: boolean;
             /** Format: uuid */
             lotId: string;
+            picked: boolean;
             /** Format: uuid */
             productId: string;
             quantities: components["schemas"]["TransferQuantities"];
@@ -3290,6 +3501,29 @@ export interface components {
             /** Format: int64 */
             physicallyReturned?: number;
         };
+        TransferQueueItem: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            destinationStoreId: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            lineCount: number;
+            outstandingQuantity: number;
+            /** Format: uuid */
+            sourceStoreId: string;
+            /** @enum {string} */
+            status: "REQUESTED" | "REJECTED" | "CANCELLED" | "APPROVED" | "PICKING" | "PICKED" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECONCILIATION_REQUIRED" | "RECEIVED" | "CLOSED_WITH_DISCREPANCY";
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int64 */
+            version: number;
+        };
+        TransferQueuePage: {
+            hasMore: boolean;
+            items: components["schemas"]["TransferQueueItem"][];
+        };
         TransferReceiveLineRequest: {
             documentLineReference: string;
             /** Format: int64 */
@@ -3332,107 +3566,6 @@ export interface components {
             updatedAt: string;
             /** Format: int64 */
             version: number;
-        };
-        TransferQueueItem: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            sourceStoreId: string;
-            /** Format: uuid */
-            destinationStoreId: string;
-            /** @enum {string} */
-            status: "REQUESTED" | "REJECTED" | "CANCELLED" | "APPROVED" | "PICKING" | "PICKED" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECONCILIATION_REQUIRED" | "RECEIVED" | "CLOSED_WITH_DISCREPANCY";
-            /** Format: int64 */
-            version: number;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-            /** Format: int64 */
-            lineCount: number;
-            /** Format: int64 */
-            outstandingQuantity: number;
-        };
-        TransferQueuePage: {
-            items: components["schemas"]["TransferQueueItem"][];
-            hasMore: boolean;
-        };
-        TransferCustodyMovement: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            lineId: string;
-            /** Format: int64 */
-            version: number;
-            /** @enum {string} */
-            type: "DISPATCH" | "RECEIPT" | "LOSS" | "RETURN";
-            /** Format: uuid */
-            commandId: string;
-            /** Format: uuid */
-            actorId: string;
-            /** Format: int64 */
-            quantity: number;
-            /** Format: int64 */
-            outstandingBefore: number;
-            /** Format: int64 */
-            outstandingAfter: number;
-            /** Format: uuid */
-            stockStoreId: string | null;
-            /** Format: uuid */
-            stockMovementId: string | null;
-            /** Format: uuid */
-            stockPositionId: string | null;
-            reason: string;
-            evidenceReference: string;
-            /** Format: date-time */
-            recordedAt: string;
-        };
-        TransferCustodyPage: {
-            items: components["schemas"]["TransferCustodyMovement"][];
-            hasMore: boolean;
-        };
-        TransferInTransitLine: {
-            /** Format: uuid */
-            transferId: string;
-            /** Format: uuid */
-            lineId: string;
-            /** Format: uuid */
-            sourceStoreId: string;
-            /** Format: uuid */
-            destinationStoreId: string;
-            /** Format: uuid */
-            sourcePositionId: string;
-            /** Format: uuid */
-            destinationLocationId: string;
-            /** Format: int64 */
-            outstanding: number;
-            /** Format: date-time */
-            dispatchedAt: string;
-            /** Format: int64 */
-            ageSeconds: number;
-        };
-        TransferInTransitPage: {
-            items: components["schemas"]["TransferInTransitLine"][];
-            hasMore: boolean;
-        };
-        TransferDiscrepancyRecord: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            transferId: string;
-            /** Format: uuid */
-            lineId: string | null;
-            type: string;
-            reason: string;
-            evidenceReference: string;
-            expectedState: string;
-            observedState: string;
-            /** Format: date-time */
-            recordedAt: string;
-        };
-        TransferDiscrepancyPage: {
-            items: components["schemas"]["TransferDiscrepancyRecord"][];
-            hasMore: boolean;
         };
         TransferReturnRequest: {
             documentReference: string;
@@ -11812,6 +11945,432 @@ export interface operations {
             };
         };
     };
+    listPendingTransferCommandIntents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferCommandIntentPage"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or transfer unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    prepareTransferCommandIntent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrepareRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferCommandIntentSummary"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or transfer unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    inspectTransferCommandIntent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                intentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferCommandIntentInspection"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or transfer unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    acknowledgeTransferCommandIntent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                intentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferCommandIntentSummary"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or transfer unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    resolveFailedTransferCommandIntent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                intentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FailureRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferCommandIntentSummary"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or transfer unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    markTransferCommandIntentSubmitted: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Session-bound CSRF value from the CSRF endpoint */
+                "X-CSRF-TOKEN": string;
+            };
+            path: {
+                organizationId: string;
+                intentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferCommandIntentSummary"];
+                };
+            };
+            /** @description Invalid intent or request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Intent, organization or transfer unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Another unresolved intent exists or the intent is not in the required state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
     listTransfers: {
         parameters: {
             query: {
@@ -11837,7 +12396,7 @@ export interface operations {
                     "application/json": components["schemas"]["TransferQueuePage"];
                 };
             };
-            /** @description Invalid transfer query */
+            /** @description Invalid transfer request */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -11855,7 +12414,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Current transfer access denied */
+            /** @description Current transfer action or CSRF denied */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11864,8 +12423,26 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ApiProblem"];
                 };
             };
-            /** @description Current store context unavailable */
+            /** @description Transfer or current store context unavailable */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12051,7 +12628,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Store transfer discrepancies */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12131,7 +12708,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Current outstanding transfer custody */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12427,7 +13004,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TransferDecisionRequest"];
+                "application/json": components["schemas"]["TransferCancelRequest"];
             };
         };
         responses: {
@@ -12679,7 +13256,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Immutable custody movement history */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;

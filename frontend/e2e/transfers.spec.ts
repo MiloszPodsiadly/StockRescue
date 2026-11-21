@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import type { Browser, BrowserContext } from '@playwright/test'
+import type { Browser, BrowserContext, Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
@@ -15,7 +15,7 @@ type Location = components['schemas']['StorageLocationResponse']
 type Transfer = components['schemas']['TransferResponse']
 type StockPage = components['schemas']['StockPageResponse']
 type MemberPage = components['schemas']['MemberPage']
-type BrowserAccount = { context: BrowserContext, email: string, id: string }
+type BrowserAccount = { context: BrowserContext, email: string, password: string, id: string }
 
 test('store operators complete, recover and reconcile a physical stock transfer across Compose recovery', async ({ browser }) => {
   test.setTimeout(360000)
@@ -24,6 +24,7 @@ test('store operators complete, recover and reconcile a physical stock transfer 
 
   const owner = await account(browser)
   let recipient: BrowserAccount | undefined
+  let recoveryContext: BrowserContext | undefined
   const suffix = randomUUID().slice(0, 8).toUpperCase()
   try {
     const organization = await createOrganization(owner.context, `Transfer cooperative ${suffix}`)
@@ -42,6 +43,9 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     }, 201)
     const sourceLocation = await write<Location>(owner.context, `${organizationPath}/stores/${source.id}/storage-locations`, {
       requestId: randomUUID(), code: `SRC_${suffix}`, name: 'Transfer source shelf', zoneId: sourceZone.id,
+    }, 201)
+    const secondSourceLocation = await write<Location>(owner.context, `${organizationPath}/stores/${source.id}/storage-locations`, {
+      requestId: randomUUID(), code: `SRC2_${suffix}`, name: 'Second transfer source shelf', zoneId: sourceZone.id,
     }, 201)
     const destinationLocation = await write<Location>(owner.context, `${organizationPath}/stores/${destination.id}/storage-locations`, {
       requestId: randomUUID(), code: `DST_${suffix}`, name: 'Transfer receiving shelf', zoneId: destinationZone.id,
@@ -67,15 +71,24 @@ test('store operators complete, recover and reconcile a physical stock transfer 
       provenance: { source: 'Reviewed supplier status', reference: `safety:${suffix}` }, reason: 'Reviewed supplier status for the transfer lot',
     }, 201)
     const lotAfterSafety = safety.lot
-    const receipt = await write<{ lines: { positionId: string, version: number }[] }>(owner.context,
+    await write<{ lines: { positionId: string, version: number }[] }>(owner.context,
       `${organizationPath}/stores/${source.id}/inventory/receipt-documents`, {
         requestId: randomUUID(), supplierKey: `supplier:${suffix}`, documentType: 'DELIVERY_NOTE',
         documentReference: `DELIVERY-${suffix}`, physicallyReceivedAt: new Date().toISOString(),
         reason: 'Counted sealed source inventory before transfer release', evidenceReference: `supplier-document:${suffix}`,
-        lines: [{ documentLineReference: `line-${suffix}`, locationId: sourceLocation.id, productId: product.id,
-          lotId: lot.id, quantity: 50, expectedVersion: 0 }],
+        lines: [
+          { documentLineReference: `line-${suffix}-1`, locationId: sourceLocation.id, productId: product.id,
+            lotId: lot.id, quantity: 50, expectedVersion: 0 },
+          { documentLineReference: `line-${suffix}-2`, locationId: secondSourceLocation.id, productId: product.id,
+            lotId: lot.id, quantity: 30, expectedVersion: 0 },
+        ],
       }, 201)
-    const sourcePositionId = receipt.lines[0]!.positionId
+    const initialSourceStock = await read<StockPage>(owner.context,
+      `${organizationPath}/stores/${source.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${sourceLocation.id}&offset=0&limit=100`)
+    const initialSecondSourceStock = await read<StockPage>(owner.context,
+      `${organizationPath}/stores/${source.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${secondSourceLocation.id}&offset=0&limit=100`)
+    const sourcePositionId = initialSourceStock.items[0]!.id
+    const secondSourcePositionId = initialSecondSourceStock.items[0]!.id
     await write(owner.context, `${organizationPath}/stores/${destination.id}/inventory/receipt-documents`, {
       requestId: randomUUID(), supplierKey: `supplier:${suffix}`, documentType: 'DELIVERY_NOTE',
       documentReference: `DESTINATION-DELIVERY-${suffix}`, physicallyReceivedAt: new Date().toISOString(),
@@ -95,7 +108,7 @@ test('store operators complete, recover and reconcile a physical stock transfer 
       durationMinutes: 45, reason: 'Approve the current carrier route and duration',
     }, 201)
 
-    const page = await owner.context.newPage()
+    let page = await owner.context.newPage()
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto(`/organizations/${organization}/transfers`)
     await expect(page.getByRole('heading', { name: 'Stock transfers', exact: true })).toBeVisible()
@@ -107,6 +120,13 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await sourceChoice.selectOption(sourcePositionId)
     await page.getByLabel('Destination receiving location').selectOption(destinationLocation.id)
     await page.getByLabel('Quantity (EA)').fill('20')
+    await page.getByRole('button', { name: 'Add transfer line' }).click()
+    const secondSourceChoice = page.getByLabel('Source product and lot for line 2')
+    await expect(secondSourceChoice.locator(`option[value="${sourcePositionId}"]`)).toBeDisabled()
+    await expect(secondSourceChoice.locator(`option[value="${secondSourcePositionId}"]`)).toHaveCount(1)
+    await secondSourceChoice.selectOption(secondSourcePositionId)
+    await page.getByLabel('Destination receiving location for line 2').selectOption(destinationLocation.id)
+    await page.getByLabel('Quantity for line 2 (EA)').fill('5')
     await page.getByLabel('Reason for transfer').fill('Rebalance verified seasonal stock between stores')
     await page.getByLabel('Evidence reference').fill(`stock-plan:${suffix}`)
     await expect(page.getByText('Transport route: Configured and available')).toBeVisible()
@@ -118,8 +138,11 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     const transferPath = `${organizationPath}/transfers/${transferId}`
     let transfer = await read<Transfer>(owner.context, transferPath)
     expect(transfer.status).toBe('REQUESTED')
-    expect(transfer.lines).toHaveLength(1)
+    expect(transfer.lines).toHaveLength(2)
     const line = transfer.lines[0]!
+    expect(new Set(transfer.lines.map(item => item.sourcePositionId))).toEqual(new Set([sourcePositionId, secondSourcePositionId]))
+    const twentyUnitLine = transfer.lines.find(item => item.requestedQuantity === 20)!
+    const fiveUnitLine = transfer.lines.find(item => item.requestedQuantity === 5)!
 
     const approval = page.getByRole('form', { name: 'Review request' })
     await approval.getByLabel('Reason').fill('Verified source balance, lot evidence and configured destination route')
@@ -132,12 +155,18 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await startPicking.getByRole('checkbox').check()
     await startPicking.getByRole('button', { name: 'Start picking' }).click()
 
-    const picking = page.getByRole('form', { name: 'Pick line 1' })
-    await picking.getByLabel('Pick document reference').fill(`PICK-${suffix}`)
-    await picking.getByLabel('Reason for pick').fill('Counted and scanned the complete transfer line at source')
-    await picking.getByLabel('Evidence reference').fill(`pick-evidence:${suffix}`)
-    await picking.getByRole('checkbox').check()
-    await picking.getByRole('button', { name: 'Confirm full-line pick' }).click()
+    const firstPicking = page.getByRole('form', { name: `Pick line ${transfer.lines[0]!.lineNumber}` })
+    await firstPicking.getByLabel('Pick document reference').fill(`PICK-${suffix}-1`)
+    await firstPicking.getByLabel('Reason for pick').fill('Counted and scanned the complete first transfer line at source')
+    await firstPicking.getByLabel('Evidence reference').fill(`pick-evidence:${suffix}-1`)
+    await firstPicking.getByRole('checkbox').check()
+    await firstPicking.getByRole('button', { name: 'Confirm full-line pick' }).click()
+    const secondPicking = page.getByRole('form', { name: `Pick line ${transfer.lines[1]!.lineNumber}` })
+    await secondPicking.getByLabel('Pick document reference').fill(`PICK-${suffix}-2`)
+    await secondPicking.getByLabel('Reason for pick').fill('Counted and scanned the complete second transfer line at source')
+    await secondPicking.getByLabel('Evidence reference').fill(`pick-evidence:${suffix}-2`)
+    await secondPicking.getByRole('checkbox').check()
+    await secondPicking.getByRole('button', { name: 'Confirm full-line pick' }).click()
     await expect(page.getByRole('button', { name: 'Confirm goods left the source store' })).toBeVisible()
 
     const dispatch = page.getByRole('form', { name: 'Confirm physical dispatch' })
@@ -145,27 +174,20 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await dispatch.getByLabel('Reason for dispatch').fill('Carrier collected the verified goods from the source store')
     await dispatch.getByLabel('Evidence reference').fill(`dispatch-proof:${suffix}`)
     await dispatch.getByRole('checkbox').check()
-    let droppedDispatchResponses = 0
-    await page.route(`**${transferPath}/dispatch`, async route => {
-      const committed = await route.fetch()
-      expect(committed.status()).toBe(200)
-      droppedDispatchResponses++
-      await route.abort('connectionreset')
-    })
-    await dispatch.getByRole('button', { name: 'Confirm goods left the source store' }).click()
-    await expect.poll(() => droppedDispatchResponses, { timeout: 20000, intervals: [100, 250, 500] }).toBe(1)
-    await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toBeVisible()
-    await page.getByRole('button', { name: 'Inspect saved outcome' }).click()
-    await expect(page.getByText('Recovered In transit from the saved command record.')).toBeVisible()
-    await page.unroute(`**${transferPath}/dispatch`)
+    await recoverCommittedTransferCommand(page, `${transferPath}/dispatch`,
+      () => dispatch.getByRole('button', { name: 'Confirm goods left the source store' }).click(), 'In transit')
     transfer = await read<Transfer>(owner.context, transferPath)
     expect(transfer.status).toBe('IN_TRANSIT')
-    expect(transfer.lines[0]!.quantities.dispatched).toBe(20)
-    expect(transfer.outstandingQuantity).toBe(20)
+    expect(transfer.lines.find(item => item.sourcePositionId === sourcePositionId)?.quantities.dispatched).toBe(20)
+    expect(transfer.lines.find(item => item.sourcePositionId === secondSourcePositionId)?.quantities.dispatched).toBe(5)
+    expect(transfer.outstandingQuantity).toBe(25)
 
     recipient = await account(browser)
     const invitation = await write<{ token: string }>(owner.context, `${organizationPath}/invitations`, {
-      email: recipient.email, storeGrants: [{ storeId: destination.id, role: 'READ_ONLY_ANALYST' }],
+      email: recipient.email, storeGrants: [
+        { storeId: destination.id, role: 'READ_ONLY_ANALYST' },
+        { storeId: source.id, role: 'INVENTORY_OPERATOR' },
+      ],
       reason: 'Add an organization member for destination authorization review',
     }, 201)
     await write(recipient.context, '/api/v1/invitations/accept', { token: invitation.token }, 202)
@@ -176,47 +198,126 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     }, 200)
     await write(recipient.context, '/api/v1/auth/active-organization', { organizationId: organization }, 200)
     const recipientPage = await recipient.context.newPage()
-    await recipientPage.goto(`/organizations/${organization}/transfers/${transferId}`)
-    await expect(recipientPage.getByRole('heading', { name: /^Transfer [0-9a-f-]+$/i })).toBeVisible()
-    await expect(recipientPage.getByRole('form', { name: 'Receive line 1' })).toHaveCount(0)
-    const unauthorizedReceive = await write<{ code: string }>(recipient.context, `${transferPath}/receive`, {
-      requestId: randomUUID(), expectedVersion: transfer.version, documentReference: `UNAUTHORIZED-${suffix}`,
-      physicallyReceivedAt: new Date().toISOString(),
-      lines: [{ lineId: line.id, quantity: 1, expectedDestinationVersion: 0, documentLineReference: 'unassigned-line', observedSku: product.sku, observedLotCode: lot.lotCode }],
-      reason: 'Attempted receiving without destination authority', evidenceReference: `unauthorized:${suffix}`,
-    }, 403)
-    expect(unauthorizedReceive.code).toBe('ACCESS_DENIED')
+    await test.step('Restrict receiving and return requests by the destination grant', async () => {
+      await recipientPage.goto(`/organizations/${organization}/transfers/${transferId}`)
+      await expect(recipientPage.getByRole('heading', { name: /^Transfer [0-9a-f-]+$/i })).toBeVisible()
+      await expect(recipientPage.getByRole('form', { name: /^Receive line / })).toHaveCount(0)
+      await expect(recipientPage.getByRole('form', { name: 'Request physical return' })).toHaveCount(0)
+      const unauthorizedReturn = await write<{ code: string }>(recipient!.context, `${transferPath}/request-return`, {
+        requestId: randomUUID(), expectedVersion: transfer.version, documentReference: `UNAUTHORIZED-RETURN-${suffix}`,
+        lines: [{ lineId: line.id }], reason: 'Attempted a return request without destination authorization',
+        evidenceReference: `unauthorized-return:${suffix}`,
+      }, 403)
+      expect(unauthorizedReturn.code).toBe('ACCESS_DENIED')
+    })
 
-    const receiving = page.getByRole('form', { name: 'Receive line 1' })
+    const receiving = page.getByRole('form', { name: `Receive line ${twentyUnitLine.lineNumber}` })
     await receiving.getByLabel('Physical quantity received (EA)').fill('18')
     await receiving.getByLabel('Receiving document reference').fill(`RECEIVE-${suffix}`)
     await receiving.getByLabel('Document line reference').fill(`receive-line-${suffix}`)
     await receiving.getByLabel('Reason for receipt').fill('Counted 18 sound packages at the destination dock')
     await receiving.getByLabel('Evidence reference').fill(`receiving-proof:${suffix}`)
     await receiving.getByRole('checkbox').check()
-    await receiving.getByRole('button', { name: 'Record 18 physical units received' }).click()
+    await recoverCommittedTransferCommand(page, `${transferPath}/receive`,
+      () => receiving.getByRole('button', { name: 'Record 18 physical units received' }).click(), 'Partially received')
     await expect(page.getByText('18 EA', { exact: true })).toBeVisible()
 
-    const loss = page.getByRole('form', { name: 'Resolve loss or damage' })
-    await loss.getByLabel('Loss or damage classification').selectOption('LOST_WITH_EVIDENCE')
-    await loss.getByLabel('Quantity affected').fill('2')
-    await loss.getByLabel('Damage document reference').fill(`LOSS-${suffix}`)
-    await loss.getByLabel('Document line reference').fill(`loss-line-${suffix}`)
-    await loss.getByLabel('Reason and evidence description').fill('Carrier investigation confirmed two units lost in transit')
-    await loss.getByLabel('Evidence reference').fill(`carrier-claim:${suffix}`)
-    await loss.getByRole('checkbox').check()
-    await loss.getByRole('button', { name: 'Record documented loss or damage' }).click()
-    await expect(page.getByText(/Discrepancy review · version/)).toBeVisible()
-    const close = page.getByRole('form', { name: 'Close documented discrepancy' })
-    await close.getByLabel('Reason').fill('Reconciled 18 received units and closed the evidenced two-unit transit loss')
-    await close.getByLabel('Evidence reference').fill(`reconciliation:${suffix}`)
-    await close.getByRole('checkbox').check()
-    await close.getByRole('button', { name: 'Close discrepancy' }).click()
+    await expect.poll(async () => {
+      const current = await read<Transfer>(owner.context, transferPath)
+      return current.lines.find(item => item.id === twentyUnitLine.id)?.quantities.physicallyReceived
+    }).toBe(18)
+
+    const returnRequest = page.getByRole('form', { name: 'Request physical return' })
+    await expect(returnRequest.getByText(new RegExp(`Line ${twentyUnitLine.lineNumber}: 2 EA outstanding`))).toBeVisible()
+    await expect(returnRequest.getByText(new RegExp(`Line ${fiveUnitLine.lineNumber}: 5 EA outstanding`))).toBeVisible()
+    await returnRequest.getByLabel('Return request document reference').fill(`RETURN-${suffix}`)
+    await returnRequest.getByLabel('Reason for return request').fill('Return the two packages that remained with the carrier after partial destination receipt')
+    await returnRequest.getByLabel('Evidence reference').fill(`return-request:${suffix}`)
+    await returnRequest.getByRole('checkbox', { name: /I understand this request records intent only/ }).check()
+    await expect(returnRequest.getByRole('button', { name: 'Record return request' })).toBeEnabled()
+    await returnRequest.getByRole('button', { name: 'Record return request' }).click()
+    await expect(page.getByText(/2 EA requested for return under document RETURN-/)).toBeVisible()
+
+    await recipientPage.reload()
+    const physicalReturn = recipientPage.getByRole('form', { name: /^Confirm physical return RETURN-/ })
+    await expect(physicalReturn).toBeVisible()
+    await expect(recipientPage.getByRole('form', { name: 'Request physical return' })).toHaveCount(0)
+    await physicalReturn.getByLabel(`Return document line for line ${twentyUnitLine.lineNumber}`).fill(`return-line-${suffix}-1`)
+    await physicalReturn.getByLabel(`Return document line for line ${fiveUnitLine.lineNumber}`).fill(`return-line-${suffix}-2`)
+    await physicalReturn.getByLabel('Reason for physical return').fill('Physically counted and received two returned packages at the source store')
+    await physicalReturn.getByLabel('Evidence reference').fill(`source-return-receipt:${suffix}`)
+    await physicalReturn.getByRole('checkbox').check()
+    await expect(physicalReturn.getByRole('button', { name: 'Confirm physical return received' })).toBeEnabled()
+    await recoverCommittedTransferCommand(recipientPage, `${transferPath}/confirm-return`,
+      () => physicalReturn.getByRole('button', { name: 'Confirm physical return received' }).click(), 'Reconciliation required')
+    await expect.poll(async () => {
+      const current = await read<Transfer>(recipient!.context, transferPath)
+      return current.lines.map(item => [item.requestedQuantity, item.quantities.physicallyReturned]).sort((left, right) => left[0]! - right[0]!)
+    }).toEqual([[5, 5], [20, 2]])
+    await expect(recipientPage.getByText(/RETURN.*2 units/)).toBeVisible()
+    await expect(recipientPage.getByText(/RETURN.*5 units/)).toBeVisible()
+    await page.reload()
+    await expect(page.getByText(/Reconciliation required.*version/)).toBeVisible()
+    const reconciliation = page.getByRole('form', { name: 'Confirm final reconciliation' })
+    await reconciliation.getByLabel('Reason').fill('Reconciled the physical return and 18 units received at the destination')
+    await reconciliation.getByLabel('Evidence reference').fill(`reconciliation:${suffix}`)
+    await reconciliation.getByRole('checkbox').check()
+    await expect(reconciliation.getByRole('button', { name: 'Confirm reconciliation' })).toBeEnabled()
+    const closePayloads: unknown[] = []
+    const captureClose = (request: import('@playwright/test').Request) => {
+      if (request.method() === 'POST' && request.url().endsWith('/close-discrepancy')) closePayloads.push(request.postDataJSON())
+    }
+    const closeRequestPage = page
+    closeRequestPage.on('request', captureClose)
+    page = await recoverCommittedTransferCommand(page, `${transferPath}/close-discrepancy`,
+      () => reconciliation.getByRole('button', { name: 'Confirm reconciliation' }).click(), 'Closed with discrepancy', async () => {
+        recoveryContext = await signIn(browser, owner.email, owner.password)
+        await write(recoveryContext, '/api/v1/auth/active-organization', { organizationId: organization }, 200)
+        const reopened = await recoveryContext.newPage()
+        await reopened.goto(`/organizations/${organization}/transfers/${transferId}`)
+        return reopened
+      })
+    closeRequestPage.off('request', captureClose)
+    expect(closePayloads).toHaveLength(1)
+    const closePayload = closePayloads[0] as Record<string, unknown>
+    const closedBeforeRetry = await read<Transfer>(owner.context, transferPath)
+    expect(closedBeforeRetry.status).toBe('CLOSED_WITH_DISCREPANCY')
+    const exactRetry = await write<components['schemas']['CommandResponse']>(owner.context,
+      `${transferPath}/close-discrepancy`, closePayload, 200)
+    expect(exactRetry.version).toBe(closedBeforeRetry.version)
+    expect((await read<Transfer>(owner.context, transferPath)).version).toBe(closedBeforeRetry.version)
+
+    const isolatedPending = await write<components['schemas']['TransferCommandIntentSummary']>(owner.context,
+      `${organizationPath}/transfer-command-intents`, {
+        prepareId: randomUUID(), operation: 'CLOSE', transferId,
+        payload: { requestId: randomUUID(), expectedVersion: closedBeforeRetry.version,
+          reason: 'Keep an owner-only command draft for account boundary verification', evidenceReference: `owner-only:${suffix}` },
+      }, 200)
+    expect((await read<components['schemas']['TransferCommandIntentPage']>(recipient!.context,
+      `${organizationPath}/transfer-command-intents`)).items).toHaveLength(0)
+    if (!recoveryContext) throw new Error('Owner recovery session was not created')
+    await page.evaluate(({ organizationId, intent }) => {
+      sessionStorage.setItem(`stockrescue.transfer-command.${organizationId}`, JSON.stringify({ intent, savedAt: new Date().toISOString() }))
+    }, { organizationId: organization, intent: { operation: 'CLOSE', transferId,
+      body: { requestId: isolatedPending.requestId, expectedVersion: closedBeforeRetry.version,
+        reason: 'Legacy browser-only transfer draft', evidenceReference: `legacy:${suffix}` } } })
+    await switchSession(page, recipient!.context, `/organizations/${organization}/transfers/${transferId}`)
+    await expect(page.getByRole('heading', { name: /^Transfer [0-9a-f-]+$/i })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toHaveCount(0)
+    await expect(page.getByText(isolatedPending.requestId)).toHaveCount(0)
+    expect(await page.evaluate(() => Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+      .filter(key => key?.startsWith('stockrescue.transfer-command.')))).toHaveLength(0)
+    await switchSession(page, owner.context, `/organizations/${organization}/transfers/${transferId}`)
+    await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toBeVisible()
+    await expect(page.getByText(isolatedPending.requestId)).toBeVisible()
+
     await expect(page.getByText(/Closed with discrepancy · version/)).toBeVisible()
-    await expect(page.getByText(/Actor .* outstanding 0 → 20/)).toBeVisible()
+    await expect(page.getByText(/Actor .* outstanding 2 → 0/)).toBeVisible()
     await expect(page.getByText('DISPATCH · 20 units')).toBeVisible()
+    await expect(page.getByText('DISPATCH · 5 units')).toBeVisible()
     await expect(page.getByText('RECEIPT · 18 units')).toBeVisible()
-    await expect(page.getByText('LOSS · 2 units')).toBeVisible()
+    await expect(page.getByText('RETURN · 2 units')).toBeVisible()
+    await expect(page.getByText('RETURN · 5 units')).toBeVisible()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 
     restartBackend()
@@ -226,30 +327,40 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     transfer = await read<Transfer>(owner.context, transferPath)
     expect(transfer.status).toBe('CLOSED_WITH_DISCREPANCY')
     expect(transfer.outstandingQuantity).toBe(0)
-    expect(transfer.lines[0]!.quantities).toMatchObject({ dispatched: 20, physicallyReceived: 18, confirmedLoss: 2, outstanding: 0 })
+    expect(transfer.lines.find(item => item.id === twentyUnitLine.id)!.quantities).toMatchObject({ dispatched: 20, physicallyReceived: 18, physicallyReturned: 2, confirmedLoss: 0, outstanding: 0 })
+    expect(transfer.lines.find(item => item.id === fiveUnitLine.id)!.quantities).toMatchObject({ dispatched: 5, physicallyReceived: 0, physicallyReturned: 5, confirmedLoss: 0, outstanding: 0 })
     const sourceStock = await read<StockPage>(owner.context,
       `${organizationPath}/stores/${source.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${sourceLocation.id}&offset=0&limit=100`)
+    const secondSourceStock = await read<StockPage>(owner.context,
+      `${organizationPath}/stores/${source.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${secondSourceLocation.id}&offset=0&limit=100`)
     const destinationStock = await read<StockPage>(owner.context,
       `${organizationPath}/stores/${destination.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${destinationLocation.id}&offset=0&limit=100`)
-    expect(sourceStock.items.find(item => item.id === sourcePositionId)?.onHand).toBe(30)
+    expect(sourceStock.items.find(item => item.id === sourcePositionId)?.onHand).toBe(32)
     expect(sourceStock.items.find(item => item.id === sourcePositionId)?.reserved).toBe(0)
+    expect(secondSourceStock.items.find(item => item.id === secondSourcePositionId)?.onHand).toBe(30)
+    expect(secondSourceStock.items.find(item => item.id === secondSourcePositionId)?.reserved).toBe(0)
     expect(destinationStock.items).toHaveLength(1)
     expect(destinationStock.items[0]!.onHand).toBe(28)
     const custody = await read<{ items: { type: string, quantity: number, outstandingAfter: number, stockMovementId: string | null, actorId: string, evidenceReference: string }[] }>(owner.context, `${transferPath}/custody?offset=0&limit=50`)
-    expect(custody.items.map(item => item.type).sort()).toEqual(['DISPATCH', 'LOSS', 'RECEIPT'])
-    expect(custody.items.every(item => item.actorId === owner.id && item.evidenceReference.length > 0)).toBe(true)
+    expect(custody.items.map(item => `${item.type}:${item.quantity}`).sort()).toEqual(['DISPATCH:20', 'DISPATCH:5', 'RECEIPT:18', 'RETURN:2', 'RETURN:5'])
+    expect(custody.items.filter(item => item.type !== 'RETURN').every(item => item.actorId === owner.id && item.evidenceReference.length > 0)).toBe(true)
+    expect(custody.items.filter(item => item.type === 'RETURN').every(item => item.actorId === recipient!.id && item.evidenceReference.length > 0)).toBe(true)
     expect(custody.items.find(item => item.type === 'DISPATCH')?.stockMovementId).toBeTruthy()
     const discrepancies = await read<{ items: { transferId: string, type: string, evidenceReference: string }[] }>(owner.context,
       `${organizationPath}/transfers/discrepancies?storeId=${destination.id}&offset=0&limit=50`)
-    expect(discrepancies.items.some(item => item.transferId === transferId && item.evidenceReference === `carrier-claim:${suffix}`)).toBe(true)
+    expect(discrepancies.items.some(item => item.transferId === transferId && item.evidenceReference === `return-request:${suffix}`)).toBe(true)
 
     const inventoryTableName = 'Stock by product, lot and storage location'
     await page.goto(`/organizations/${organization}/stores/${source.id}/inventory`)
     await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
     const sourceInventoryRow = page.getByRole('table', { name: inventoryTableName }).getByRole('row')
-      .filter({ hasText: product.sku }).filter({ hasText: lot.lotCode })
-    await expect(sourceInventoryRow.getByRole('cell').nth(3)).toHaveText('30 EA')
+      .filter({ hasText: product.sku }).filter({ hasText: lot.lotCode }).filter({ hasText: sourceLocation.code })
+    const secondSourceInventoryRow = page.getByRole('table', { name: inventoryTableName }).getByRole('row')
+      .filter({ hasText: product.sku }).filter({ hasText: lot.lotCode }).filter({ hasText: secondSourceLocation.code })
+    await expect(sourceInventoryRow.getByRole('cell').nth(3)).toHaveText('32 EA')
     await expect(sourceInventoryRow.getByRole('cell').nth(4)).toHaveText('0 EA')
+    await expect(secondSourceInventoryRow.getByRole('cell').nth(3)).toHaveText('30 EA')
+    await expect(secondSourceInventoryRow.getByRole('cell').nth(4)).toHaveText('0 EA')
     await page.goto(`/organizations/${organization}/stores/${destination.id}/inventory`)
     await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
     const destinationInventoryRow = page.getByRole('table', { name: inventoryTableName }).getByRole('row')
@@ -266,8 +377,10 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await expect(recalledInventoryRow.getByRole('cell').nth(5)).toHaveText('5 EA')
     await expect(recalledInventoryRow.getByRole('cell').nth(7)).toHaveText('28 EA')
   } finally {
-    await recipient?.context.close()
-    await owner.context.close()
+    const cleanup = await Promise.allSettled([recoveryContext?.close() ?? Promise.resolve(), recipient?.context.close() ?? Promise.resolve(), owner.context.close()])
+    for (const result of cleanup) {
+      if (result.status === 'rejected') console.warn('Transfer browser context cleanup failed:', result.reason)
+    }
   }
 })
 
@@ -275,7 +388,7 @@ async function verifyRecallBlocksInTransitReceipt(context: BrowserContext, organ
   destinationLocation: Location, product: Product, lot: Lot, positionId: string, suffix: string) {
   const snapshot = await read<components['schemas']['StockSnapshotResponse']>(context,
     `${organizationPath}/stores/${source.id}/inventory/positions/${positionId}`)
-  expect(snapshot.onHand).toBe(30)
+  expect(snapshot.onHand).toBe(32)
   const created = await write<components['schemas']['CommandResponse']>(context, `${organizationPath}/transfers`, {
     requestId: randomUUID(), sourceStoreId: source.id, destinationStoreId: destination.id,
     lines: [{ sourcePositionId: positionId, destinationLocationId: destinationLocation.id, quantity: 5, expectedSourceVersion: snapshot.version }],
@@ -320,17 +433,65 @@ async function verifyRecallBlocksInTransitReceipt(context: BrowserContext, organ
   expect(afterReceipt.items[0]).toMatchObject({ onHand: 33, quarantined: 5, available: 28 })
   const sourceAfter = await read<components['schemas']['StockSnapshotResponse']>(context,
     `${organizationPath}/stores/${source.id}/inventory/positions/${positionId}`)
-  expect(sourceAfter.onHand).toBe(25)
+  expect(sourceAfter.onHand).toBe(27)
 }
 
 async function account(browser: Browser): Promise<BrowserAccount> {
   const context = await browser.newContext()
   const email = `transfer-${randomUUID()}@example.test`
-  const credentials = { email, password: 'real-transfer-owner-passphrase' }
-  await write(context, '/api/v1/auth/sign-up', credentials, 202)
-  const actor = await write<{ id: string }>(context, '/api/v1/auth/sign-in', credentials, 200)
+  const password = 'real-transfer-owner-passphrase'
+  await write(context, '/api/v1/auth/sign-up', { email, password }, 202)
+  const actor = await write<{ id: string }>(context, '/api/v1/auth/sign-in', { email, password }, 200)
   csrfTokens.delete(context)
-  return { context, email, id: actor.id }
+  return { context, email, password, id: actor.id }
+}
+
+async function signIn(browser: Browser, email: string, password: string) {
+  const context = await browser.newContext()
+  await write(context, '/api/v1/auth/sign-in', { email, password }, 200)
+  csrfTokens.delete(context)
+  return context
+}
+
+async function switchSession(page: Page, sourceContext: BrowserContext, returnPath: string) {
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+  await expect(page).toHaveURL(/\/sign-in$/)
+  const context = page.context()
+  const sessionCookie = (await sourceContext.cookies()).find(cookie => cookie.name === 'SRSESSION')
+  if (!sessionCookie) throw new Error('The target account has no authenticated session cookie')
+  await context.addCookies([sessionCookie])
+  csrfTokens.delete(context)
+  await admitted(() => context.request.get('/api/v1/auth/me'), 200)
+  await page.goto(returnPath)
+}
+
+async function recoverCommittedTransferCommand(page: Page, path: string, submit: () => Promise<void>, expectedStatus: string,
+  reopen?: () => Promise<Page>) {
+  let committedResponses = 0
+  const routePattern = `**${path}`
+  const dropResponse = async (route: import('@playwright/test').Route) => {
+    const response = await route.fetch()
+    expect(response.status()).toBe(200)
+    committedResponses++
+    await route.abort('connectionreset')
+  }
+  await page.route(routePattern, dropResponse)
+  try {
+    await submit()
+    await expect.poll(() => committedResponses, { timeout: 20000, intervals: [100, 250, 500] }).toBe(1)
+    const recovery = page.getByRole('region', { name: 'Recover saved transfer command' })
+    await expect(recovery).toBeVisible()
+    let recoveryPage = page
+    if (reopen) recoveryPage = await reopen()
+    else await page.reload()
+    const reopenedRegion = recoveryPage.getByRole('region', { name: 'Recover saved transfer command' })
+    await expect(reopenedRegion).toBeVisible()
+    await recoveryPage.getByRole('button', { name: 'Inspect saved outcome' }).click()
+    await expect(recoveryPage.getByText(`Recovered ${expectedStatus} from the saved command record.`)).toBeVisible()
+    return recoveryPage
+  } finally {
+    if (!page.isClosed()) await page.unroute(routePattern, dropResponse)
+  }
 }
 
 async function createOrganization(context: BrowserContext, name: string) {
@@ -345,8 +506,13 @@ async function write<T = unknown>(context: BrowserContext, path: string, body: u
   await expect.poll(async () => {
     const response = await context.request.fetch(path, { method: 'POST', headers: { 'X-CSRF-TOKEN': token }, data: body })
     if (response.status() === 429) return false
-    expect(response.status()).toBe(expectedStatus)
-    result = await response.json() as T
+    const responseBody = await response.json() as unknown
+    if (response.status() !== expectedStatus) {
+      const code = typeof responseBody === 'object' && responseBody !== null && 'code' in responseBody
+        ? String((responseBody as { code?: unknown }).code ?? 'unknown') : 'unknown'
+      expect(response.status(), `API problem code: ${code}`).toBe(expectedStatus)
+    }
+    result = responseBody as T
     return true
   }, { timeout: 20000, intervals: [800, 1600, 3200] }).toBe(true)
   return result!

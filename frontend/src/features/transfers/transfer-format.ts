@@ -8,7 +8,7 @@ export const transferStatusOptions: { value: TransferStatus | '', label: string 
   { value: 'PICKED', label: 'Picked, not dispatched' },
   { value: 'IN_TRANSIT', label: 'In transit' },
   { value: 'PARTIALLY_RECEIVED', label: 'Partially received' },
-  { value: 'RECONCILIATION_REQUIRED', label: 'Discrepancy review' },
+  { value: 'RECONCILIATION_REQUIRED', label: 'Reconciliation required' },
   { value: 'RECEIVED', label: 'Received' },
   { value: 'CLOSED_WITH_DISCREPANCY', label: 'Closed with discrepancy' },
   { value: 'REJECTED', label: 'Rejected' },

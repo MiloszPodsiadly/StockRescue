@@ -6,6 +6,7 @@ export type TransferQueueItem = components['schemas']['TransferQueueItem']
 export type TransferStatus = Transfer['status']
 export type CreateTransfer = components['schemas']['CreateTransferRequest']
 export type TransferDecision = components['schemas']['TransferDecisionRequest']
+export type TransferCancel = components['schemas']['TransferCancelRequest']
 export type TransferPick = components['schemas']['TransferPickRequest']
 export type TransferDispatch = components['schemas']['TransferDispatchRequest']
 export type TransferReceive = components['schemas']['TransferReceiveRequest']
@@ -15,9 +16,16 @@ export type TransferReturn = components['schemas']['TransferReturnRequest']
 export type TransferConfirmReturn = components['schemas']['TransferConfirmReturnRequest']
 export type TransferCommand = components['schemas']['CommandResponse']
 export type TransferRecovery = components['schemas']['RecoveryResponse']
+export type TransferCommandIntentSummary = components['schemas']['TransferCommandIntentSummary']
+export type TransferCommandIntentInspection = components['schemas']['TransferCommandIntentInspection']
+export const TRANSFER_COMMAND_OPERATIONS = [
+  'CREATE', 'APPROVE', 'REJECT', 'CANCEL', 'START_PICK', 'PICK', 'DISPATCH', 'RECEIVE',
+  'CONFIRM_LOSS', 'OPEN_DISCREPANCY', 'REQUEST_RETURN', 'CONFIRM_RETURN', 'CLOSE',
+] as const
 export type TransferCommandIntent =
   | { operation: 'CREATE', transferId: null, body: CreateTransfer }
-  | { operation: 'APPROVE' | 'REJECT' | 'CANCEL' | 'START_PICK' | 'CLOSE', transferId: string, body: TransferDecision }
+  | { operation: 'APPROVE' | 'REJECT' | 'START_PICK' | 'CLOSE', transferId: string, body: TransferDecision }
+  | { operation: 'CANCEL', transferId: string, body: TransferCancel }
   | { operation: 'PICK', transferId: string, body: TransferPick }
   | { operation: 'DISPATCH', transferId: string, body: TransferDispatch }
   | { operation: 'RECEIVE', transferId: string, body: TransferReceive }
@@ -35,6 +43,69 @@ export type TransferInTransitLine = JsonResponse<'listTransfersInTransit'> exten
 export type TransferDiscrepancyRecord = JsonResponse<'listTransferDiscrepancies'> extends PageOf<infer Item> ? Item : never
 
 const base = '/api/v1/organizations/{organizationId}/transfers' as const
+const intentsBase = '/api/v1/organizations/{organizationId}/transfer-command-intents' as const
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function isTransferCommandIntent(value: unknown): value is TransferCommandIntent {
+  if (!isRecord(value) || !isRecord(value.body) || typeof value.body.requestId !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.body.requestId)
+    || typeof value.operation !== 'string' || !TRANSFER_COMMAND_OPERATIONS.includes(value.operation as typeof TRANSFER_COMMAND_OPERATIONS[number])) return false
+  return value.operation === 'CREATE' ? value.transferId === null : typeof value.transferId === 'string'
+}
+
+export async function listPendingTransferCommandIntents(organizationId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.GET(intentsBase, {
+    params: { path: { organizationId } }, signal: requestSignal(signal),
+  })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function prepareTransferCommandIntent(organizationId: string, intent: TransferCommandIntent, signal: AbortSignal) {
+  const { data, error, response } = await api.POST(intentsBase, {
+    params: { path: { organizationId }, ...await csrf(signal) },
+    body: { prepareId: crypto.randomUUID(), operation: intent.operation, transferId: intent.transferId ?? undefined, payload: intent.body },
+    signal: requestSignal(signal),
+  })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function inspectTransferCommandIntent(organizationId: string, intentId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.GET(`${intentsBase}/{intentId}`, {
+    params: { path: { organizationId, intentId } }, signal: requestSignal(signal),
+  })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function markTransferCommandIntentSubmitted(organizationId: string, intentId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.POST(`${intentsBase}/{intentId}/submitted`, {
+    params: { path: { organizationId, intentId }, ...await csrf(signal) }, signal: requestSignal(signal),
+  })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function acknowledgeTransferCommandIntent(organizationId: string, intentId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.POST(`${intentsBase}/{intentId}/acknowledge`, {
+    params: { path: { organizationId, intentId }, ...await csrf(signal) }, signal: requestSignal(signal),
+  })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function resolveFailedTransferCommandIntent(organizationId: string, intentId: string,
+  resolution: 'REJECTED' | 'CONFLICTED', signal: AbortSignal) {
+  const { data, error, response } = await api.POST(`${intentsBase}/{intentId}/resolve-failure`, {
+    params: { path: { organizationId, intentId }, ...await csrf(signal) }, body: { resolution }, signal: requestSignal(signal),
+  })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
 
 export async function listTransfers(organizationId: string, storeId: string, status: TransferStatus | '', signal: AbortSignal) {
   const { data, error, response } = await api.GET(base, { params: {
@@ -82,14 +153,22 @@ export async function createTransfer(organizationId: string, body: CreateTransfe
 }
 
 export async function decideTransfer(organizationId: string, transferId: string,
-  action: 'approve' | 'reject' | 'cancel' | 'start-pick' | 'close-discrepancy', body: TransferDecision, signal: AbortSignal) {
+  action: 'approve' | 'reject' | 'start-pick' | 'close-discrepancy', body: TransferDecision, signal: AbortSignal) {
   const params = { path: { organizationId, transferId }, ...await csrf(signal) }
   const options = { params, body, signal: requestSignal(signal) }
   const result = action === 'approve' ? await api.POST(`${base}/{transferId}/approve`, options)
     : action === 'reject' ? await api.POST(`${base}/{transferId}/reject`, options)
-      : action === 'cancel' ? await api.POST(`${base}/{transferId}/cancel`, options)
-        : action === 'start-pick' ? await api.POST(`${base}/{transferId}/start-pick`, options)
-          : await api.POST(`${base}/{transferId}/close-discrepancy`, options)
+      : action === 'start-pick' ? await api.POST(`${base}/{transferId}/start-pick`, options)
+        : await api.POST(`${base}/{transferId}/close-discrepancy`, options)
+  signal.throwIfAborted()
+  if (!result.data) throw new ApiError(result.response, result.error)
+  return result.data
+}
+
+async function cancelTransfer(organizationId: string, transferId: string, body: TransferCancel, signal: AbortSignal) {
+  const result = await api.POST(`${base}/{transferId}/cancel`, {
+    params: { path: { organizationId, transferId }, ...await csrf(signal) }, body, signal: requestSignal(signal),
+  })
   signal.throwIfAborted()
   if (!result.data) throw new ApiError(result.response, result.error)
   return result.data
@@ -146,10 +225,11 @@ export async function confirmTransferReturn(organizationId: string, transferId: 
 
 export async function executeTransferCommand(organizationId: string, intent: TransferCommandIntent, signal: AbortSignal): Promise<TransferCommand> {
   if (intent.operation === 'CREATE') return createTransfer(organizationId, intent.body, signal)
-  if (intent.operation === 'APPROVE' || intent.operation === 'REJECT' || intent.operation === 'CANCEL'
+  if (intent.operation === 'CANCEL') return cancelTransfer(organizationId, intent.transferId, intent.body, signal)
+  if (intent.operation === 'APPROVE' || intent.operation === 'REJECT'
     || intent.operation === 'START_PICK' || intent.operation === 'CLOSE') {
     const action = intent.operation === 'START_PICK' ? 'start-pick' : intent.operation === 'CLOSE' ? 'close-discrepancy'
-      : intent.operation.toLowerCase() as 'approve' | 'reject' | 'cancel'
+      : intent.operation.toLowerCase() as 'approve' | 'reject'
     return decideTransfer(organizationId, intent.transferId, action, intent.body, signal)
   }
   if (intent.operation === 'PICK') return recordTransferPick(organizationId, intent.transferId, intent.body, signal)
