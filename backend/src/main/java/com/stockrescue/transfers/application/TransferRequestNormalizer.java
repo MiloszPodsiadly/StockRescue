@@ -168,12 +168,12 @@ final class TransferRequestNormalizer {
         var lineReferences = new java.util.HashSet<String>();
         var lines = new ArrayList<ConfirmReturnLine>(request.lines().size());
         for (var line : request.lines()) {
-            if (line == null || line.lineId() == null || line.expectedSourceVersion() < 0
+            if (line == null || line.lineId() == null || line.quantity() <= 0 || line.expectedSourceVersion() < 0
                     || line.expectedSourceVersion() == Long.MAX_VALUE || !ids.add(line.lineId()))
                 throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
             String reference = text(line.documentLineReference(), 64);
             if (!lineReferences.add(reference)) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-            lines.add(new ConfirmReturnLine(line.lineId(), line.expectedSourceVersion(), reference,
+            lines.add(new ConfirmReturnLine(line.lineId(), line.quantity(), line.expectedSourceVersion(), reference,
                     text(line.observedSku(), 64), text(line.observedLotCode(), 128)));
         }
         lines.sort(Comparator.comparing(ConfirmReturnLine::lineId));

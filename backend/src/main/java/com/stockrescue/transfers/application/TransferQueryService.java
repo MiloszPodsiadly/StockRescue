@@ -34,6 +34,14 @@ public class TransferQueryService {
     }
 
     @Transactional(readOnly = true)
+    public TransferCapabilities capabilities(UUID actor, UUID organizationId, UUID transferId) {
+        var detail = authorizedDetail(actor, organizationId, transferId);
+        return new TransferCapabilities(
+                access.currentStoreActions(actor, organizationId, detail.transfer().sourceStoreId()),
+                access.currentStoreActions(actor, organizationId, detail.transfer().destinationStoreId()));
+    }
+
+    @Transactional(readOnly = true)
     public boolean canReadCommandIntent(UUID actor, UUID organizationId, String operation, UUID transferId, JsonNode payload) {
         access.organization(actor, organizationId);
         try {
@@ -49,6 +57,13 @@ public class TransferQueryService {
             UUID storeId, TransferStatus status, int offset, int limit) {
         access.requireStore(actor, organizationId, storeId, StoreAction.READ_TRANSFERS, false);
         return transfers.page(organizationId, storeId, status, offset, limit);
+    }
+
+    @Transactional(readOnly = true)
+    public TransferRepository.CursorPage<TransferRepository.TransferSummary> page(UUID actor, UUID organizationId,
+            UUID storeId, TransferStatus status, String cursor, int limit) {
+        access.requireStore(actor, organizationId, storeId, StoreAction.READ_TRANSFERS, false);
+        return transfers.page(organizationId, storeId, status, cursor, limit);
     }
 
     @Transactional(readOnly = true)
@@ -71,6 +86,13 @@ public class TransferQueryService {
     }
 
     @Transactional(readOnly = true)
+    public TransferRepository.CursorPage<TransferRepository.CustodyMovement> custodyTimeline(UUID actor,UUID organizationId,
+            UUID transferId,String cursor,int limit) {
+        var detail=detail(actor,organizationId,transferId);
+        return transfers.custodyTimeline(organizationId,detail.transfer().id(),cursor,limit);
+    }
+
+    @Transactional(readOnly = true)
     public TransferRepository.Page<TransferRepository.InTransitLine> inTransitAging(UUID actor, UUID organizationId,
             UUID storeId, int offset, int limit) {
         access.requireStore(actor, organizationId, storeId, StoreAction.READ_TRANSFERS, false);
@@ -78,10 +100,38 @@ public class TransferQueryService {
     }
 
     @Transactional(readOnly = true)
+    public TransferRepository.CursorPage<TransferRepository.InTransitLine> inTransitAging(UUID actor,UUID organizationId,
+            UUID storeId,String cursor,int limit) {
+        access.requireStore(actor,organizationId,storeId,StoreAction.READ_TRANSFERS,false);
+        return transfers.inTransitAging(organizationId,storeId,cursor,limit);
+    }
+
+    @Transactional(readOnly = true)
+    public TransferRepository.CursorPage<TransferRepository.InTransitLine> transferInTransit(UUID actor,UUID organizationId,
+            UUID transferId,String cursor,int limit) {
+        var detail=detail(actor,organizationId,transferId);
+        return transfers.inTransitAging(organizationId,detail.transfer().id(),cursor,limit,true);
+    }
+
+    @Transactional(readOnly = true)
     public TransferRepository.Page<TransferRepository.Discrepancy> discrepancies(UUID actor, UUID organizationId,
             UUID storeId, int offset, int limit) {
         access.requireStore(actor, organizationId, storeId, StoreAction.READ_TRANSFERS, false);
         return transfers.discrepancies(organizationId, storeId, offset, limit);
+    }
+
+    @Transactional(readOnly = true)
+    public TransferRepository.CursorPage<TransferRepository.Discrepancy> discrepancies(UUID actor,UUID organizationId,
+            UUID storeId,String cursor,int limit) {
+        access.requireStore(actor,organizationId,storeId,StoreAction.READ_TRANSFERS,false);
+        return transfers.discrepancies(organizationId,storeId,cursor,limit);
+    }
+
+    @Transactional(readOnly = true)
+    public TransferRepository.CursorPage<TransferRepository.Discrepancy> transferDiscrepancies(UUID actor,UUID organizationId,
+            UUID transferId,String cursor,int limit) {
+        var detail=detail(actor,organizationId,transferId);
+        return transfers.discrepancies(organizationId,detail.transfer().id(),cursor,limit,true);
     }
 
     @Transactional(readOnly = true)
@@ -125,4 +175,6 @@ public class TransferQueryService {
         try { return UUID.fromString(value); }
         catch (IllegalArgumentException invalid) { throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST); }
     }
+
+    public record TransferCapabilities(List<StoreAction> sourceActions, List<StoreAction> destinationActions) { }
 }

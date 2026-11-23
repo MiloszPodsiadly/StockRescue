@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import com.stockrescue.access.application.EffectivePermissions.StoreAction;
 import com.stockrescue.platform.http.ApiProblem;
 import com.stockrescue.transfers.application.TransferService;
 import com.stockrescue.transfers.application.TransferService.CommandOutcome;
@@ -31,12 +32,14 @@ import com.stockrescue.transfers.domain.TransferStatus;
 import com.stockrescue.transfers.persistence.TransferRepository.TransferDetail;
 import com.stockrescue.transfers.persistence.TransferRepository.TransferLine;
 import com.stockrescue.transfers.persistence.TransferRepository.TransferSummary;
+import com.stockrescue.transfers.persistence.TransferRepository.CursorPage;
 import com.stockrescue.transfers.persistence.TransferRepository.Page;
 import com.stockrescue.transfers.persistence.TransferRepository.CustodyMovement;
 import com.stockrescue.transfers.persistence.TransferRepository.InTransitLine;
 import com.stockrescue.transfers.persistence.TransferRepository.Discrepancy;
 import com.stockrescue.transfers.persistence.TransferRepository.ActiveReturn;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -83,15 +86,20 @@ public class TransferController {
     }
 
     @GetMapping
-    @Operation(operationId = "listTransfers", summary = "List transfers for one currently authorized store with optional lifecycle filtering")
+    @Operation(operationId = "listTransfers", summary = "List transfers for one currently authorized store with optional lifecycle filtering",
+            description = "The optional cursor is bound to the organization, store, and status filter. It orders the current mutable queue by updatedAt descending and transfer ID descending; refresh from the first page to see records whose updatedAt changed while paging.")
     @ApiResponse(responseCode = "200", description = "Current transfer queue", content = @Content(schema = @Schema(implementation = TransferQueuePage.class)))
     public ResponseEntity<TransferQueuePage> list(Authentication actor, @PathVariable UUID organizationId,
             @RequestParam UUID storeId, @RequestParam(required = false) TransferStatus status,
             @RequestParam(defaultValue = "0") @Min(0) @Max(10000) int offset,
-            @RequestParam(defaultValue = "50") @Min(1) @Max(100) int limit) {
-        var page = transfers.page(actor(actor), organizationId, storeId, status, offset, limit);
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new TransferQueuePage(
-                page.items().stream().map(TransferQueueItem::from).toList(), page.hasMore()));
+            @RequestParam(defaultValue = "50") @Min(1) @Max(100) int limit,
+            @Parameter(description = "Opaque cursor for this organization, store, and status filter")
+            @RequestParam(required = false) @Size(max = 512) String cursor) {
+        UUID actorId = actor(actor);
+        var page = cursor != null || offset == 0
+                ? TransferQueuePage.from(transfers.page(actorId, organizationId, storeId, status, cursor, limit))
+                : TransferQueuePage.from(transfers.page(actorId, organizationId, storeId, status, offset, limit));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(page);
     }
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -212,14 +220,30 @@ public class TransferController {
                 .body(TransferResponse.from(detail, transfers.canCancel(actorId, organizationId, transferId)));
     }
 
+    @GetMapping("/{transferId}/capabilities")
+    @Operation(operationId = "getTransferCapabilities", summary = "Read current source and destination actions for an authorized transfer")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferCapabilitiesResponse.class)))
+    public ResponseEntity<TransferCapabilitiesResponse> capabilities(Authentication actor,
+            @PathVariable UUID organizationId, @PathVariable UUID transferId) {
+        var value = transfers.capabilities(actor(actor), organizationId, transferId);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new TransferCapabilitiesResponse(value.sourceActions(), value.destinationActions()));
+    }
+
     @GetMapping("/{transferId}/custody")
-    @Operation(operationId = "getTransferCustodyTimeline", summary = "Read the immutable custody movements for a transfer")
+    @Operation(operationId = "getTransferCustodyTimeline", summary = "Read the immutable custody movements for a transfer",
+            description = "Pages use a scope-bound keyset cursor ordered by recordedAt descending and movement ID descending. Continue while hasMore is true; the cursor is not an authorization token.")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferCustodyPage.class)))
     public ResponseEntity<TransferCustodyPage> custody(Authentication actor,@PathVariable UUID organizationId,
             @PathVariable UUID transferId,@RequestParam(defaultValue="0") int offset,
-            @RequestParam(defaultValue="50") int limit) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(TransferCustodyPage.from(
-                transfers.custodyTimeline(actor(actor),organizationId,transferId,offset,limit)));
+            @RequestParam(defaultValue="50") int limit,
+            @Parameter(description = "Opaque cursor for this organization and transfer")
+            @RequestParam(required=false) @Size(max=512) String cursor) {
+        UUID actorId=actor(actor);
+        var page=cursor!=null || offset==0
+                ?TransferCustodyPage.from(transfers.custodyTimeline(actorId,organizationId,transferId,cursor,limit))
+                :TransferCustodyPage.from(transfers.custodyTimeline(actorId,organizationId,transferId,offset,limit));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(page);
     }
 
     @GetMapping("/{transferId}/active-returns")
@@ -233,23 +257,61 @@ public class TransferController {
     }
 
     @GetMapping("/in-transit")
-    @Operation(operationId = "listTransfersInTransit", summary = "List line-wise in-transit quantities and age for a currently authorized store")
+    @Operation(operationId = "listTransfersInTransit", summary = "List line-wise in-transit quantities and age for a currently authorized store",
+            description = "The optional scope-bound cursor follows persisted dispatch time, transfer ID, and line ID. Outstanding lines can leave the mutable view after settlement; refresh from the first page for current state.")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferInTransitPage.class)))
     public ResponseEntity<TransferInTransitPage> inTransit(Authentication actor,@PathVariable UUID organizationId,
             @RequestParam UUID storeId,@RequestParam(defaultValue="0") int offset,
-            @RequestParam(defaultValue="50") int limit) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(TransferInTransitPage.from(
-                transfers.inTransitAging(actor(actor),organizationId,storeId,offset,limit)));
+            @RequestParam(defaultValue="50") int limit,
+            @Parameter(description = "Opaque cursor for this organization and store")
+            @RequestParam(required=false) @Size(max=512) String cursor) {
+        UUID actorId=actor(actor);
+        var page=cursor!=null || offset==0
+                ?TransferInTransitPage.from(transfers.inTransitAging(actorId,organizationId,storeId,cursor,limit))
+                :TransferInTransitPage.from(transfers.inTransitAging(actorId,organizationId,storeId,offset,limit));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(page);
     }
 
     @GetMapping("/discrepancies")
-    @Operation(operationId = "listTransferDiscrepancies", summary = "List documented discrepancies and pending return requests for a currently authorized store")
+    @Operation(operationId = "listTransferDiscrepancies", summary = "List documented discrepancies and return-request lifecycle evidence for a currently authorized store",
+            description = "Pages use a scope-bound keyset cursor ordered by recordedAt descending and evidence ID descending. Continue while hasMore is true; immutable records inserted after paging starts are visible after refreshing the first page.")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferDiscrepancyPage.class)))
     public ResponseEntity<TransferDiscrepancyPage> discrepancies(Authentication actor,@PathVariable UUID organizationId,
             @RequestParam UUID storeId,@RequestParam(defaultValue="0") int offset,
+            @RequestParam(defaultValue="50") int limit,
+            @Parameter(description = "Opaque cursor for this organization and store")
+            @RequestParam(required=false) @Size(max=512) String cursor) {
+        UUID actorId=actor(actor);
+        var page=cursor!=null || offset==0
+                ?TransferDiscrepancyPage.from(transfers.discrepancies(actorId,organizationId,storeId,cursor,limit))
+                :TransferDiscrepancyPage.from(transfers.discrepancies(actorId,organizationId,storeId,offset,limit));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(page);
+    }
+
+    @GetMapping("/{transferId}/in-transit")
+    @Operation(operationId="listTransferScopedTransit",summary="Read in-transit lines filtered to one currently authorized transfer",
+            description="The query filters by organization and transfer before pagination. Its scope-bound cursor follows persisted dispatch time, transfer ID, and line ID; current authorization for a participant store is checked on every request.")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=TransferInTransitPage.class)))
+    public ResponseEntity<TransferInTransitPage> transferInTransit(Authentication actor,@PathVariable UUID organizationId,
+            @PathVariable UUID transferId,
+            @Parameter(description = "Opaque cursor for this organization and transfer")
+            @RequestParam(required=false) @Size(max=512) String cursor,
+            @RequestParam(defaultValue="50") int limit) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(TransferInTransitPage.from(
+                transfers.inTransit(actor(actor),organizationId,transferId,cursor,limit)));
+    }
+
+    @GetMapping("/{transferId}/discrepancies")
+    @Operation(operationId="listTransferScopedDiscrepancies",summary="Read discrepancy evidence filtered to one currently authorized transfer",
+            description="The query filters by organization and transfer before pagination. Pages use immutable recordedAt-descending, evidence-ID-descending keyset order; current authorization for a participant store is checked on every request.")
+    @ApiResponse(responseCode="200",content=@Content(schema=@Schema(implementation=TransferDiscrepancyPage.class)))
+    public ResponseEntity<TransferDiscrepancyPage> transferDiscrepancies(Authentication actor,@PathVariable UUID organizationId,
+            @PathVariable UUID transferId,
+            @Parameter(description = "Opaque cursor for this organization and transfer")
+            @RequestParam(required=false) @Size(max=512) String cursor,
             @RequestParam(defaultValue="50") int limit) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(TransferDiscrepancyPage.from(
-                transfers.discrepancies(actor(actor),organizationId,storeId,offset,limit)));
+                transfers.transferDiscrepancies(actor(actor),organizationId,transferId,cursor,limit)));
     }
 
     @GetMapping("/commands/{operation}/{requestId}")
@@ -377,33 +439,46 @@ public class TransferController {
             List<@Valid TransferConfirmReturnLineRequest> lines,@NotBlank @Size(max=500) String reason,
             @NotBlank @Size(max=256) String evidenceReference) {
         ConfirmReturnRequest toService() { return new ConfirmReturnRequest(requestId,expectedVersion,requestReference,documentReference,
-                lines.stream().map(line -> new ConfirmReturnLine(line.lineId(),line.expectedSourceVersion(),
+                lines.stream().map(line -> new ConfirmReturnLine(line.lineId(),line.quantity(),line.expectedSourceVersion(),
                         line.documentLineReference(),line.observedSku(),line.observedLotCode())).toList(),reason,evidenceReference); }
     }
 
     public record TransferConfirmReturnLineRequest(@NotNull UUID lineId,
+            @NotNull @Positive Long quantity,
             @NotNull @Min(0) @Max(Long.MAX_VALUE - 1) Long expectedSourceVersion,
             @NotBlank @Size(max=64) String documentLineReference,@NotBlank @Size(max=64) String observedSku,
             @NotBlank @Size(max=128) String observedLotCode) { }
 
     public record TransferCustodyPage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferCustodyMovement> items,
-            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean hasMore) {
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED,description="Cursor for the next immutable custody page, or null when complete") String nextCursor,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED,description="True when another page exists") boolean hasMore) {
         static TransferCustodyPage from(Page<CustodyMovement> page) {
-            return new TransferCustodyPage(page.items().stream().map(TransferCustodyMovement::from).toList(), page.hasMore());
+            return new TransferCustodyPage(page.items().stream().map(TransferCustodyMovement::from).toList(),null,page.hasMore());
+        }
+        static TransferCustodyPage from(CursorPage<CustodyMovement> page) {
+            return new TransferCustodyPage(page.items().stream().map(TransferCustodyMovement::from).toList(),page.nextCursor(),page.hasMore());
         }
     }
 
     public record TransferInTransitPage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferInTransitLine> items,
-            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean hasMore) {
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED,description="Cursor for the next line page, or null when complete") String nextCursor,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED,description="True when another page exists") boolean hasMore) {
         static TransferInTransitPage from(Page<InTransitLine> page) {
-            return new TransferInTransitPage(page.items().stream().map(TransferInTransitLine::from).toList(), page.hasMore());
+            return new TransferInTransitPage(page.items().stream().map(TransferInTransitLine::from).toList(),null,page.hasMore());
+        }
+        static TransferInTransitPage from(CursorPage<InTransitLine> page) {
+            return new TransferInTransitPage(page.items().stream().map(TransferInTransitLine::from).toList(),page.nextCursor(),page.hasMore());
         }
     }
 
     public record TransferDiscrepancyPage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferDiscrepancyRecord> items,
-            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean hasMore) {
+            @Schema(types={"string","null"},requiredMode=Schema.RequiredMode.REQUIRED,description="Cursor for the next immutable evidence page, or null when complete") String nextCursor,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED,description="True when another page exists") boolean hasMore) {
         static TransferDiscrepancyPage from(Page<Discrepancy> page) {
-            return new TransferDiscrepancyPage(page.items().stream().map(TransferDiscrepancyRecord::from).toList(), page.hasMore());
+            return new TransferDiscrepancyPage(page.items().stream().map(TransferDiscrepancyRecord::from).toList(),null,page.hasMore());
+        }
+        static TransferDiscrepancyPage from(CursorPage<Discrepancy> page) {
+            return new TransferDiscrepancyPage(page.items().stream().map(TransferDiscrepancyRecord::from).toList(),page.nextCursor(),page.hasMore());
         }
     }
 
@@ -456,11 +531,14 @@ public class TransferController {
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String expectedState,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String observedState,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID actorId,
-            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean resolved,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED, allowableValues = {"OPEN", "LINE_SETTLED", "TRANSFER_CLOSED", "PENDING", "PARTIALLY_FULFILLED", "FULFILLED", "SUPERSEDED"}) String resolutionScope,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean lineSettled,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean transferClosed,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) Instant recordedAt) {
         static TransferDiscrepancyRecord from(Discrepancy value) {
             return new TransferDiscrepancyRecord(value.id(), value.transferId(), value.lineId(), value.type(), value.reason(),
-                    value.evidenceReference(), value.expectedState(), value.observedState(), value.actorId(), value.resolved(), value.recordedAt());
+                    value.evidenceReference(), value.expectedState(), value.observedState(), value.actorId(),
+                    value.resolutionScope(),value.lineSettled(),value.transferClosed(),value.recordedAt());
         }
     }
 
@@ -486,7 +564,20 @@ public class TransferController {
     }
 
     public record TransferQueuePage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferQueueItem> items,
-            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean hasMore) { }
+            @Schema(types = {"string", "null"}, requiredMode = Schema.RequiredMode.REQUIRED,
+                    description = "Cursor for the next current queue page, or null when complete") String nextCursor,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED,description = "True when another page exists") boolean hasMore) {
+        static TransferQueuePage from(Page<TransferSummary> page) {
+            return new TransferQueuePage(page.items().stream().map(TransferQueueItem::from).toList(), null, page.hasMore());
+        }
+        static TransferQueuePage from(com.stockrescue.transfers.persistence.TransferRepository.CursorPage<TransferSummary> page) {
+            return new TransferQueuePage(page.items().stream().map(TransferQueueItem::from).toList(), page.nextCursor(), page.hasMore());
+        }
+    }
+
+    public record TransferCapabilitiesResponse(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreAction> sourceActions,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreAction> destinationActions) { }
 
     public record TransferQueueItem(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID id,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID sourceStoreId,

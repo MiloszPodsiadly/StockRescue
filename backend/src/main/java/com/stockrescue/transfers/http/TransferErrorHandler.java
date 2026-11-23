@@ -7,6 +7,7 @@ import com.stockrescue.platform.http.ApiProblems;
 import com.stockrescue.platform.http.ProblemCode;
 import com.stockrescue.stores.domain.ConfigurationFailure;
 import com.stockrescue.transfers.domain.TransferWriteConflict;
+import com.stockrescue.transfers.domain.TransferCursorInvalid;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -33,6 +34,11 @@ public class TransferErrorHandler {
     @ExceptionHandler(TransferWriteConflict.class)
     public ResponseEntity<ApiProblem> transferConflict() {
         return response(HttpStatus.CONFLICT, ProblemCode.INVENTORY_CONFLICT, "Transfer state changed. Reload and review the current request.");
+    }
+
+    @ExceptionHandler(TransferCursorInvalid.class)
+    public ResponseEntity<ApiProblem> invalidCursor() {
+        return response(HttpStatus.BAD_REQUEST, ProblemCode.INVALID_REQUEST, "The pagination cursor is invalid for this transfer query.");
     }
 
     @ExceptionHandler(InventoryFailure.class)

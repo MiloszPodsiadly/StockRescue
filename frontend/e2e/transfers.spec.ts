@@ -113,8 +113,8 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await page.goto(`/organizations/${organization}/transfers`)
     await expect(page.getByRole('heading', { name: 'Stock transfers', exact: true })).toBeVisible()
     await page.getByRole('button', { name: 'New transfer request' }).click()
-    await page.getByLabel('Source store').selectOption(source.id)
-    await page.getByLabel('Destination store').selectOption(destination.id)
+    await page.getByLabel('Source store', { exact: true }).selectOption(source.id)
+    await page.getByLabel('Destination store', { exact: true }).selectOption(destination.id)
     const sourceChoice = page.getByLabel('Source product and lot')
     await expect(sourceChoice.locator(`option[value="${sourcePositionId}"]`)).toHaveCount(1)
     await sourceChoice.selectOption(sourcePositionId)
@@ -212,23 +212,26 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     })
 
     const receiving = page.getByRole('form', { name: `Receive line ${twentyUnitLine.lineNumber}` })
-    await receiving.getByLabel('Physical quantity received (EA)').fill('18')
+    await receiving.getByLabel('Physical quantity received (EA)').fill('10')
     await receiving.getByLabel('Receiving document reference').fill(`RECEIVE-${suffix}`)
     await receiving.getByLabel('Document line reference').fill(`receive-line-${suffix}`)
-    await receiving.getByLabel('Reason for receipt').fill('Counted 18 sound packages at the destination dock')
+    await receiving.getByLabel('Reason for receipt').fill('Counted ten sound packages at the destination dock')
     await receiving.getByLabel('Evidence reference').fill(`receiving-proof:${suffix}`)
     await receiving.getByRole('checkbox').check()
     await recoverCommittedTransferCommand(page, `${transferPath}/receive`,
-      () => receiving.getByRole('button', { name: 'Record 18 physical units received' }).click(), 'Partially received')
-    await expect(page.getByText('18 EA', { exact: true })).toBeVisible()
+      () => receiving.getByRole('button', { name: 'Record 10 physical units received' }).click(), 'Partially received')
+    const twentyUnitLineView = page.getByRole('listitem').filter({
+      hasText: `Line ${twentyUnitLine.lineNumber} · ${twentyUnitLine.sku} · lot ${twentyUnitLine.lotCode}`,
+    })
+    await expect(twentyUnitLineView.getByText('Received', { exact: true }).locator('..')).toContainText('10 EA')
 
     await expect.poll(async () => {
       const current = await read<Transfer>(owner.context, transferPath)
       return current.lines.find(item => item.id === twentyUnitLine.id)?.quantities.physicallyReceived
-    }).toBe(18)
+    }).toBe(10)
 
     const returnRequest = page.getByRole('form', { name: 'Request physical return' })
-    await expect(returnRequest.getByText(new RegExp(`Line ${twentyUnitLine.lineNumber}: 2 EA outstanding`))).toBeVisible()
+    await expect(returnRequest.getByText(new RegExp(`Line ${twentyUnitLine.lineNumber}: 10 EA outstanding`))).toBeVisible()
     await expect(returnRequest.getByText(new RegExp(`Line ${fiveUnitLine.lineNumber}: 5 EA outstanding`))).toBeVisible()
     await returnRequest.getByLabel('Return request reference').fill(`RETURN-${suffix}`)
     await returnRequest.getByLabel('Reason for return request').fill('Return the two packages that remained with the carrier after partial destination receipt')
@@ -236,25 +239,56 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await returnRequest.getByRole('checkbox', { name: /I understand this request records intent only/ }).check()
     await expect(returnRequest.getByRole('button', { name: 'Record return request' })).toBeEnabled()
     await returnRequest.getByRole('button', { name: 'Record return request' }).click()
-    await expect(page.getByText(/2 EA remain unsettled under return request RETURN-/)).toBeVisible()
+    await expect(page.getByText(/10 EA remain unsettled under return request RETURN-/)).toBeVisible()
     const activeAfterRequest = await read<{ items: { lineId: string, requestReference: string, requestedQuantity: number, unsettledQuantity: number }[] }>(
       recipient!.context, `${transferPath}/active-returns`)
     expect(activeAfterRequest.items).toHaveLength(2)
     expect(activeAfterRequest.items.map(item => [item.lineId, item.requestReference, item.requestedQuantity, item.unsettledQuantity]))
       .toEqual(expect.arrayContaining([
-        [twentyUnitLine.id, `RETURN-${suffix}`, 2, 2],
+        [twentyUnitLine.id, `RETURN-${suffix}`, 10, 10],
         [fiveUnitLine.id, `RETURN-${suffix}`, 5, 5],
       ]))
 
+    transfer = await read<Transfer>(owner.context, transferPath)
+    const destinationBeforeLateReceipt = await read<StockPage>(owner.context,
+      `${organizationPath}/stores/${destination.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${destinationLocation.id}&offset=0&limit=100`)
+    const lateReceipt = await write<components['schemas']['CommandResponse']>(owner.context, `${transferPath}/receive`, {
+      requestId: randomUUID(), expectedVersion: transfer.version, documentReference: `LATE-RECEIVE-${suffix}`,
+      physicallyReceivedAt: new Date().toISOString(),
+      lines: [{ lineId: fiveUnitLine.id, quantity: 1, expectedDestinationVersion: destinationBeforeLateReceipt.items[0]!.version,
+        documentLineReference: `late-receive-line-${suffix}`, observedSku: fiveUnitLine.sku, observedLotCode: fiveUnitLine.lotCode }],
+      reason: 'A package from the original request arrived after the return request was recorded',
+      evidenceReference: `late-receipt:${suffix}`,
+    }, 200)
+    expect(lateReceipt.status).toBe('RECONCILIATION_REQUIRED')
+    const supersededHistory = await read<{ items: { lineId: string | null, evidenceReference: string, resolutionScope: string }[] }>(
+      owner.context, `${transferPath}/discrepancies?limit=50`)
+    expect(supersededHistory.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ lineId: fiveUnitLine.id, evidenceReference: `return-request:${suffix}`, resolutionScope: 'SUPERSEDED' }),
+    ]))
+    expect((await read<{ items: { lineId: string }[] }>(recipient!.context, `${transferPath}/active-returns`)).items)
+      .toEqual([expect.objectContaining({ lineId: twentyUnitLine.id })])
+
+    await page.reload()
+    const replacementRequest = page.getByRole('form', { name: 'Request physical return' })
+    await expect(replacementRequest.getByText(new RegExp(`Line ${fiveUnitLine.lineNumber}: 4 EA outstanding`))).toBeVisible()
+    await replacementRequest.getByLabel('Return request reference').fill(`RETURN-${suffix}-REMAINDER`)
+    await replacementRequest.getByLabel('Reason for return request').fill('Request the four packages still in transit after one late physical receipt')
+    await replacementRequest.getByLabel('Evidence reference').fill(`return-request-remainder:${suffix}`)
+    await replacementRequest.getByRole('checkbox', { name: /I understand this request records intent only/ }).check()
+    await replacementRequest.getByRole('button', { name: 'Record return request' }).click()
+    await expect.poll(async () => (await read<{ items: unknown[] }>(recipient!.context, `${transferPath}/active-returns`)).items)
+      .toHaveLength(2)
+
     await recipientPage.reload()
-    const firstPhysicalReturn = recipientPage.getByRole('form', { name: `Confirm physical return request RETURN-${suffix}` })
+    const firstPhysicalReturn = recipientPage.getByRole('form', { name: `Confirm physical return request RETURN-${suffix}`, exact: true })
     await expect(firstPhysicalReturn).toBeVisible()
     await expect(recipientPage.getByRole('form', { name: 'Request physical return' })).toHaveCount(0)
-    await firstPhysicalReturn.getByLabel('Physical receipt reference').fill(`RETURN-${suffix}-A`)
-    await firstPhysicalReturn.getByLabel(`Include line ${fiveUnitLine.lineNumber} in this physical receipt`).uncheck()
+    await firstPhysicalReturn.getByLabel('Physical receipt reference').fill(`RETURN-${suffix}-A1`)
+    await firstPhysicalReturn.getByLabel(`Quantity physically returned for line ${twentyUnitLine.lineNumber}`).fill('4')
     await firstPhysicalReturn.getByLabel(`Return document line for line ${twentyUnitLine.lineNumber}`).fill(`return-line-${suffix}-A`)
-    await firstPhysicalReturn.getByLabel('Reason for physical return').fill('Physically counted the two returned packages for line A at the source store')
-    await firstPhysicalReturn.getByLabel('Evidence reference').fill(`source-return-receipt:${suffix}:A`)
+    await firstPhysicalReturn.getByLabel('Reason for physical return').fill('Physically counted four returned packages for line A at the source store')
+    await firstPhysicalReturn.getByLabel('Evidence reference').fill(`source-return-receipt:${suffix}:A1`)
     await firstPhysicalReturn.getByRole('checkbox', { name: /I physically received and verified every selected/ }).check()
     await expect(firstPhysicalReturn.getByRole('button', { name: 'Confirm physical return received' })).toBeEnabled()
     await recoverCommittedTransferCommand(recipientPage, `${transferPath}/confirm-return`,
@@ -262,17 +296,24 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await expect.poll(async () => {
       const current = await read<Transfer>(recipient!.context, transferPath)
       return current.lines.map(item => [item.requestedQuantity, item.quantities.physicallyReturned, item.quantities.outstanding]).sort((left, right) => left[0]! - right[0]!)
-    }).toEqual([[5, 0, 5], [20, 2, 0]])
-    const activeAfterFirstReceipt = await read<{ items: { lineId: string, unsettledQuantity: number }[] }>(
+    }).toEqual([[5, 0, 4], [20, 4, 6]])
+    const activeAfterFirstReceipt = await read<{ items: { lineId: string, requestedQuantity: number,
+      requestReference: string, settledQuantity: number, unsettledQuantity: number, state: string }[] }>(
       recipient!.context, `${transferPath}/active-returns`)
-    expect(activeAfterFirstReceipt.items).toEqual([{ lineId: fiveUnitLine.id, unsettledQuantity: 5 }])
+    expect(activeAfterFirstReceipt.items).toHaveLength(2)
+    expect(activeAfterFirstReceipt.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ lineId: twentyUnitLine.id, requestedQuantity: 10, settledQuantity: 4, unsettledQuantity: 6, state: 'PARTIALLY_FULFILLED' }),
+      expect.objectContaining({ lineId: fiveUnitLine.id, requestReference: `RETURN-${suffix}-REMAINDER`,
+        requestedQuantity: 4, settledQuantity: 0, unsettledQuantity: 4, state: 'PENDING' }),
+    ]))
     await recipientPage.reload()
-    const secondPhysicalReturn = recipientPage.getByRole('form', { name: `Confirm physical return request RETURN-${suffix}` })
+    const secondPhysicalReturn = recipientPage.getByRole('form', { name: `Confirm physical return request RETURN-${suffix}`, exact: true })
     await expect(secondPhysicalReturn).toBeVisible()
-    await secondPhysicalReturn.getByLabel('Physical receipt reference').fill(`RETURN-${suffix}-B`)
-    await secondPhysicalReturn.getByLabel(`Return document line for line ${fiveUnitLine.lineNumber}`).fill(`return-line-${suffix}-B`)
-    await secondPhysicalReturn.getByLabel('Reason for physical return').fill('Physically counted the five returned packages for line B the following day')
-    await secondPhysicalReturn.getByLabel('Evidence reference').fill(`source-return-receipt:${suffix}:B`)
+    await secondPhysicalReturn.getByLabel('Physical receipt reference').fill(`RETURN-${suffix}-A2`)
+    await secondPhysicalReturn.getByLabel(`Quantity physically returned for line ${twentyUnitLine.lineNumber}`).fill('6')
+    await secondPhysicalReturn.getByLabel(`Return document line for line ${twentyUnitLine.lineNumber}`).fill(`return-line-${suffix}-A2`)
+    await secondPhysicalReturn.getByLabel('Reason for physical return').fill('Physically counted the remaining six packages for line A on a later receipt')
+    await secondPhysicalReturn.getByLabel('Evidence reference').fill(`source-return-receipt:${suffix}:A2`)
     await secondPhysicalReturn.getByRole('checkbox', { name: /I physically received and verified every selected/ }).check()
     await expect(secondPhysicalReturn.getByRole('button', { name: 'Confirm physical return received' })).toBeEnabled()
     await recoverCommittedTransferCommand(recipientPage, `${transferPath}/confirm-return`,
@@ -280,14 +321,32 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await expect.poll(async () => {
       const current = await read<Transfer>(recipient!.context, transferPath)
       return current.lines.map(item => [item.requestedQuantity, item.quantities.physicallyReturned, item.quantities.outstanding]).sort((left, right) => left[0]! - right[0]!)
-    }).toEqual([[5, 5, 0], [20, 2, 0]])
+    }).toEqual([[5, 0, 4], [20, 10, 0]])
+    expect((await read<{ items: { lineId: string }[] }>(recipient!.context, `${transferPath}/active-returns`)).items)
+      .toEqual([expect.objectContaining({ lineId: fiveUnitLine.id })])
+    await recipientPage.reload()
+    const finalPhysicalReturn = recipientPage.getByRole('form', { name: `Confirm physical return request RETURN-${suffix}-REMAINDER`, exact: true })
+    await expect(finalPhysicalReturn).toBeVisible()
+    await finalPhysicalReturn.getByLabel('Physical receipt reference').fill(`RETURN-${suffix}-B`)
+    await finalPhysicalReturn.getByLabel(`Quantity physically returned for line ${fiveUnitLine.lineNumber}`).fill('4')
+    await finalPhysicalReturn.getByLabel(`Return document line for line ${fiveUnitLine.lineNumber}`).fill(`return-line-${suffix}-B`)
+    await finalPhysicalReturn.getByLabel('Reason for physical return').fill('Physically counted the four remaining packages for line B at the source store')
+    await finalPhysicalReturn.getByLabel('Evidence reference').fill(`source-return-receipt:${suffix}:B`)
+    await finalPhysicalReturn.getByRole('checkbox', { name: /I physically received and verified every selected/ }).check()
+    await recoverCommittedTransferCommand(recipientPage, `${transferPath}/confirm-return`,
+      () => finalPhysicalReturn.getByRole('button', { name: 'Confirm physical return received' }).click(), 'Reconciliation required')
+    await expect.poll(async () => {
+      const current = await read<Transfer>(recipient!.context, transferPath)
+      return current.lines.map(item => [item.requestedQuantity, item.quantities.physicallyReceived,
+        item.quantities.physicallyReturned, item.quantities.outstanding]).sort((left, right) => left[0]! - right[0]!)
+    }).toEqual([[5, 1, 4, 0], [20, 10, 10, 0]])
     expect((await read<{ items: unknown[] }>(recipient!.context, `${transferPath}/active-returns`)).items).toHaveLength(0)
-    await expect(recipientPage.getByText(/RETURN.*2 units/)).toBeVisible()
-    await expect(recipientPage.getByText(/RETURN.*5 units/)).toBeVisible()
+    await expect(recipientPage.getByText(/RETURN.*4 units/)).toHaveCount(2)
+    await expect(recipientPage.getByText(/RETURN.*6 units/)).toBeVisible()
     await page.reload()
     await expect(page.getByText(/Reconciliation required.*version/)).toBeVisible()
     const reconciliation = page.getByRole('form', { name: 'Confirm final reconciliation' })
-    await reconciliation.getByLabel('Reason').fill('Reconciled the physical return and 18 units received at the destination')
+    await reconciliation.getByLabel('Reason').fill('Reconciled the staged physical returns and eleven units received at the destination')
     await reconciliation.getByLabel('Evidence reference').fill(`reconciliation:${suffix}`)
     await reconciliation.getByRole('checkbox').check()
     await expect(reconciliation.getByRole('button', { name: 'Confirm reconciliation' })).toBeEnabled()
@@ -342,12 +401,14 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await expect(page.getByText(isolatedRequestId)).toBeVisible()
 
     await expect(page.getByText(/Closed with discrepancy · version/)).toBeVisible()
-    await expect(page.getByText(/Actor .* outstanding 2 → 0/)).toBeVisible()
+    await expect(page.getByText(/Actor .* outstanding 4 → 0/)).toBeVisible()
+    await expect(page.getByText(/Actor .* outstanding 6 → 0/)).toBeVisible()
     await expect(page.getByText('DISPATCH · 20 units')).toBeVisible()
     await expect(page.getByText('DISPATCH · 5 units')).toBeVisible()
-    await expect(page.getByText('RECEIPT · 18 units')).toBeVisible()
-    await expect(page.getByText('RETURN · 2 units')).toBeVisible()
-    await expect(page.getByText('RETURN · 5 units')).toBeVisible()
+    await expect(page.getByText('RECEIPT · 10 units')).toBeVisible()
+    await expect(page.getByText('RECEIPT · 1 units')).toBeVisible()
+    await expect(page.getByText('RETURN · 4 units')).toHaveCount(2)
+    await expect(page.getByText('RETURN · 6 units')).toBeVisible()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 
     restartBackend()
@@ -357,22 +418,23 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     transfer = await read<Transfer>(owner.context, transferPath)
     expect(transfer.status).toBe('CLOSED_WITH_DISCREPANCY')
     expect(transfer.outstandingQuantity).toBe(0)
-    expect(transfer.lines.find(item => item.id === twentyUnitLine.id)!.quantities).toMatchObject({ dispatched: 20, physicallyReceived: 18, physicallyReturned: 2, confirmedLoss: 0, outstanding: 0 })
-    expect(transfer.lines.find(item => item.id === fiveUnitLine.id)!.quantities).toMatchObject({ dispatched: 5, physicallyReceived: 0, physicallyReturned: 5, confirmedLoss: 0, outstanding: 0 })
+    expect(transfer.lines.find(item => item.id === twentyUnitLine.id)!.quantities).toMatchObject({ dispatched: 20, physicallyReceived: 10, physicallyReturned: 10, confirmedLoss: 0, outstanding: 0 })
+    expect(transfer.lines.find(item => item.id === fiveUnitLine.id)!.quantities).toMatchObject({ dispatched: 5, physicallyReceived: 1, physicallyReturned: 4, confirmedLoss: 0, outstanding: 0 })
     const sourceStock = await read<StockPage>(owner.context,
       `${organizationPath}/stores/${source.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${sourceLocation.id}&offset=0&limit=100`)
     const secondSourceStock = await read<StockPage>(owner.context,
       `${organizationPath}/stores/${source.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${secondSourceLocation.id}&offset=0&limit=100`)
     const destinationStock = await read<StockPage>(owner.context,
       `${organizationPath}/stores/${destination.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${destinationLocation.id}&offset=0&limit=100`)
-    expect(sourceStock.items.find(item => item.id === sourcePositionId)?.onHand).toBe(32)
+    expect(sourceStock.items.find(item => item.id === sourcePositionId)?.onHand).toBe(40)
     expect(sourceStock.items.find(item => item.id === sourcePositionId)?.reserved).toBe(0)
-    expect(secondSourceStock.items.find(item => item.id === secondSourcePositionId)?.onHand).toBe(30)
+    expect(secondSourceStock.items.find(item => item.id === secondSourcePositionId)?.onHand).toBe(29)
     expect(secondSourceStock.items.find(item => item.id === secondSourcePositionId)?.reserved).toBe(0)
     expect(destinationStock.items).toHaveLength(1)
-    expect(destinationStock.items[0]!.onHand).toBe(28)
+    expect(destinationStock.items[0]!.onHand).toBe(21)
     const custody = await read<{ items: { type: string, quantity: number, outstandingAfter: number, stockMovementId: string | null, actorId: string, evidenceReference: string }[] }>(owner.context, `${transferPath}/custody?offset=0&limit=50`)
-    expect(custody.items.map(item => `${item.type}:${item.quantity}`).sort()).toEqual(['DISPATCH:20', 'DISPATCH:5', 'RECEIPT:18', 'RETURN:2', 'RETURN:5'])
+    expect(custody.items.map(item => `${item.type}:${item.quantity}`).sort()).toEqual(
+      ['DISPATCH:20', 'DISPATCH:5', 'RECEIPT:1', 'RECEIPT:10', 'RETURN:4', 'RETURN:4', 'RETURN:6'])
     expect(custody.items.filter(item => item.type !== 'RETURN').every(item => item.actorId === owner.id && item.evidenceReference.length > 0)).toBe(true)
     expect(custody.items.filter(item => item.type === 'RETURN').every(item => item.actorId === recipient!.id && item.evidenceReference.length > 0)).toBe(true)
     expect(custody.items.find(item => item.type === 'DISPATCH')?.stockMovementId).toBeTruthy()
@@ -387,25 +449,25 @@ test('store operators complete, recover and reconcile a physical stock transfer 
       .filter({ hasText: product.sku }).filter({ hasText: lot.lotCode }).filter({ hasText: sourceLocation.code })
     const secondSourceInventoryRow = page.getByRole('table', { name: inventoryTableName }).getByRole('row')
       .filter({ hasText: product.sku }).filter({ hasText: lot.lotCode }).filter({ hasText: secondSourceLocation.code })
-    await expect(sourceInventoryRow.getByRole('cell').nth(3)).toHaveText('32 EA')
+    await expect(sourceInventoryRow.getByRole('cell').nth(3)).toHaveText('40 EA')
     await expect(sourceInventoryRow.getByRole('cell').nth(4)).toHaveText('0 EA')
-    await expect(secondSourceInventoryRow.getByRole('cell').nth(3)).toHaveText('30 EA')
+    await expect(secondSourceInventoryRow.getByRole('cell').nth(3)).toHaveText('29 EA')
     await expect(secondSourceInventoryRow.getByRole('cell').nth(4)).toHaveText('0 EA')
     await page.goto(`/organizations/${organization}/stores/${destination.id}/inventory`)
     await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
     const destinationInventoryRow = page.getByRole('table', { name: inventoryTableName }).getByRole('row')
       .filter({ hasText: product.sku }).filter({ hasText: lot.lotCode })
-    await expect(destinationInventoryRow.getByRole('cell').nth(3)).toHaveText('28 EA')
-    await expect(destinationInventoryRow.getByRole('cell').nth(7)).toHaveText('28 EA')
+    await expect(destinationInventoryRow.getByRole('cell').nth(3)).toHaveText('21 EA')
+    await expect(destinationInventoryRow.getByRole('cell').nth(7)).toHaveText('21 EA')
 
     await verifyRecallBlocksInTransitReceipt(owner.context, organizationPath, source, destination, destinationLocation, product, lotAfterSafety, sourcePositionId, suffix)
     await page.goto(`/organizations/${organization}/stores/${destination.id}/inventory`)
     await expect(page.getByRole('heading', { name: 'Inventory', exact: true })).toBeVisible()
     const recalledInventoryRow = page.getByRole('table', { name: inventoryTableName }).getByRole('row')
       .filter({ hasText: product.sku }).filter({ hasText: lot.lotCode })
-    await expect(recalledInventoryRow.getByRole('cell').nth(3)).toHaveText('33 EA')
+    await expect(recalledInventoryRow.getByRole('cell').nth(3)).toHaveText('26 EA')
     await expect(recalledInventoryRow.getByRole('cell').nth(5)).toHaveText('5 EA')
-    await expect(recalledInventoryRow.getByRole('cell').nth(7)).toHaveText('28 EA')
+    await expect(recalledInventoryRow.getByRole('cell').nth(7)).toHaveText('21 EA')
   } finally {
     const cleanup = await Promise.allSettled([recoveryContext?.close() ?? Promise.resolve(), recipient?.context.close() ?? Promise.resolve(), owner.context.close()])
     for (const result of cleanup) {
@@ -418,7 +480,7 @@ async function verifyRecallBlocksInTransitReceipt(context: BrowserContext, organ
   destinationLocation: Location, product: Product, lot: Lot, positionId: string, suffix: string) {
   const snapshot = await read<components['schemas']['StockSnapshotResponse']>(context,
     `${organizationPath}/stores/${source.id}/inventory/positions/${positionId}`)
-  expect(snapshot.onHand).toBe(32)
+  expect(snapshot.onHand).toBe(40)
   const created = await write<components['schemas']['CommandResponse']>(context, `${organizationPath}/transfers`, {
     requestId: randomUUID(), sourceStoreId: source.id, destinationStoreId: destination.id,
     lines: [{ sourcePositionId: positionId, destinationLocationId: destinationLocation.id, quantity: 5, expectedSourceVersion: snapshot.version }],
@@ -460,10 +522,10 @@ async function verifyRecallBlocksInTransitReceipt(context: BrowserContext, organ
   const afterReceipt = await read<StockPage>(context,
     `${organizationPath}/stores/${destination.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${destinationLocation.id}&offset=0&limit=100`)
   expect(afterReceipt.items).toHaveLength(1)
-  expect(afterReceipt.items[0]).toMatchObject({ onHand: 33, quarantined: 5, available: 28 })
+  expect(afterReceipt.items[0]).toMatchObject({ onHand: 26, quarantined: 5, available: 21 })
   const sourceAfter = await read<components['schemas']['StockSnapshotResponse']>(context,
     `${organizationPath}/stores/${source.id}/inventory/positions/${positionId}`)
-  expect(sourceAfter.onHand).toBe(27)
+  expect(sourceAfter.onHand).toBe(35)
 }
 
 async function account(browser: Browser): Promise<BrowserAccount> {

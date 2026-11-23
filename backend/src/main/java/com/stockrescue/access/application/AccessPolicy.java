@@ -41,6 +41,16 @@ public class AccessPolicy {
                 admin ? Arrays.asList(StoreAction.values()) : List.of(), grants);
     }
 
+    public List<StoreAction> currentStoreActions(UUID actor, UUID organization, UUID store) {
+        var permissions = permissions(actor, organization);
+        if (!access.store(organization, store, false)) return List.of();
+        try {
+            return storeActions(permissions, store, true);
+        } catch (OrganizationUnavailableException unavailable) {
+            return List.of();
+        }
+    }
+
     public OrganizationAccess requireAdmin(UUID actor, UUID organization, boolean write) {
         var membership = write ? lock(actor, organization, true) : organization(actor, organization);
         if (membership.role() != OrganizationRole.ORG_ADMIN) throw new AccessDeniedException("Action unavailable");

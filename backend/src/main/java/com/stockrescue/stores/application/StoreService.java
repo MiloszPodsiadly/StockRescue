@@ -9,6 +9,7 @@ import com.stockrescue.access.application.EffectivePermissions;
 import com.stockrescue.access.application.EffectivePermissions.OrganizationAction;
 import com.stockrescue.access.application.EffectivePermissions.StoreAction;
 import com.stockrescue.access.application.OrganizationUnavailableException;
+import com.stockrescue.inventory.persistence.InventoryRepository;
 import com.stockrescue.platform.audit.AuditWriter;
 import com.stockrescue.stores.domain.StoreData;
 import com.stockrescue.stores.domain.StoreFailure;
@@ -21,8 +22,17 @@ import org.springframework.transaction.annotation.Transactional;
 public class StoreService {
     private final AccessPolicy access;
     private final StoreRepository stores;
+    private final InventoryRepository inventory;
+    private final StoreArchiveGuard archiveGuard;
     private final AuditWriter audit;
-    public StoreService(AccessPolicy access, StoreRepository stores, AuditWriter audit) { this.access = access; this.stores = stores; this.audit = audit; }
+    public StoreService(AccessPolicy access, StoreRepository stores, InventoryRepository inventory,
+            StoreArchiveGuard archiveGuard, AuditWriter audit) {
+        this.access = access;
+        this.stores = stores;
+        this.inventory = inventory;
+        this.archiveGuard = archiveGuard;
+        this.audit = audit;
+    }
     public enum State { ACTIVE, ARCHIVED, ALL }
 
     @Transactional
@@ -75,8 +85,10 @@ public class StoreService {
     @Transactional
     public View archive(UUID actor, UUID org, UUID id, long version, String reason) {
         access.requireStoreIncludingArchived(actor, org, id, StoreAction.ARCHIVE_STORE, true);
+        inventory.lockStoreForReconciliation(org, id);
         var before = existing(org, id);
         editable(before, version, reason);
+        if (archiveGuard.hasOpenTransfer(org, id)) conflict();
         var after = stores.archive(org, id, version).orElseThrow(() -> new StoreFailure(StoreFailure.Kind.CONFLICT));
         audit.securityChange(actor, org, "store", id, "STORE_ARCHIVED", Map.of("outcome", "SUCCEEDED", "before", before, "after", after), reason);
         return view(actor, org, after);

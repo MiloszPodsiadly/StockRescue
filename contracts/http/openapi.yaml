@@ -7957,6 +7957,10 @@ paths:
       - transfer-command-intent-controller
   /api/v1/organizations/{organizationId}/transfers:
     get:
+      description: "The optional cursor is bound to the organization, store, and status\
+        \ filter. It orders the current mutable queue by updatedAt descending and\
+        \ transfer ID descending; refresh from the first page to see records whose\
+        \ updatedAt changed while paging."
       operationId: listTransfers
       parameters:
       - in: path
@@ -8006,6 +8010,14 @@ paths:
           default: 50
           maximum: 100
           minimum: 1
+      - description: "Opaque cursor for this organization, store, and status filter"
+        in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+          minLength: 0
       responses:
         "200":
           content:
@@ -8195,6 +8207,9 @@ paths:
       - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/discrepancies:
     get:
+      description: Pages use a scope-bound keyset cursor ordered by recordedAt descending
+        and evidence ID descending. Continue while hasMore is true; immutable records
+        inserted after paging starts are visible after refreshing the first page.
       operationId: listTransferDiscrepancies
       parameters:
       - in: path
@@ -8223,6 +8238,14 @@ paths:
           type: integer
           format: int32
           default: 50
+      - description: Opaque cursor for this organization and store
+        in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+          minLength: 0
       responses:
         "200":
           content:
@@ -8268,12 +8291,15 @@ paths:
           description: "Invalid evidence, stock safety or transfer context"
       security:
       - session: []
-      summary: List documented discrepancies and pending return requests for a currently
-        authorized store
+      summary: List documented discrepancies and return-request lifecycle evidence
+        for a currently authorized store
       tags:
       - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/in-transit:
     get:
+      description: "The optional scope-bound cursor follows persisted dispatch time,\
+        \ transfer ID, and line ID. Outstanding lines can leave the mutable view after\
+        \ settlement; refresh from the first page for current state."
       operationId: listTransfersInTransit
       parameters:
       - in: path
@@ -8302,6 +8328,14 @@ paths:
           type: integer
           format: int32
           default: 50
+      - description: Opaque cursor for this organization and store
+        in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+          minLength: 0
       responses:
         "200":
           content:
@@ -8715,6 +8749,70 @@ paths:
         \ release its exact active reservation"
       tags:
       - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/capabilities:
+    get:
+      operationId: getTransferCapabilities
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferCapabilitiesResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Read current source and destination actions for an authorized transfer
+      tags:
+      - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/{transferId}/close-discrepancy:
     post:
       operationId: closeTransferDiscrepancy
@@ -8870,6 +8968,9 @@ paths:
       - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/{transferId}/custody:
     get:
+      description: Pages use a scope-bound keyset cursor ordered by recordedAt descending
+        and movement ID descending. Continue while hasMore is true; the cursor is
+        not an authorization token.
       operationId: getTransferCustodyTimeline
       parameters:
       - in: path
@@ -8898,6 +8999,14 @@ paths:
           type: integer
           format: int32
           default: 50
+      - description: Opaque cursor for this organization and transfer
+        in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+          minLength: 0
       responses:
         "200":
           content:
@@ -9023,6 +9132,89 @@ paths:
         receipt
       tags:
       - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/discrepancies:
+    get:
+      description: "The query filters by organization and transfer before pagination.\
+        \ Pages use immutable recordedAt-descending, evidence-ID-descending keyset\
+        \ order; current authorization for a participant store is checked on every\
+        \ request."
+      operationId: listTransferScopedDiscrepancies
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Opaque cursor for this organization and transfer
+        in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+          minLength: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 50
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferDiscrepancyPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Read discrepancy evidence filtered to one currently authorized transfer
+      tags:
+      - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/{transferId}/dispatch:
     post:
       operationId: dispatchTransfer
@@ -9098,6 +9290,89 @@ paths:
       - session: []
       summary: Atomically dispatch every picked line from source stock into transfer
         custody
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/in-transit:
+    get:
+      description: "The query filters by organization and transfer before pagination.\
+        \ Its scope-bound cursor follows persisted dispatch time, transfer ID, and\
+        \ line ID; current authorization for a participant store is checked on every\
+        \ request."
+      operationId: listTransferScopedTransit
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - description: Opaque cursor for this organization and transfer
+        in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+          minLength: 0
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 50
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferInTransitPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Read in-transit lines filtered to one currently authorized transfer
       tags:
       - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/{transferId}/open-discrepancy:
@@ -14406,6 +14681,74 @@ components:
       - expectedVersion
       - reason
       - requestId
+    TransferCapabilitiesResponse:
+      type: object
+      properties:
+        destinationActions:
+          type: array
+          items:
+            type: string
+            enum:
+            - READ_STORE
+            - EDIT_STORE
+            - ARCHIVE_STORE
+            - MANAGE_STORAGE_ZONES
+            - REGISTER_SOURCE_EVIDENCE
+            - MANAGE_STORAGE_LOCATIONS
+            - REGISTER_STORE_LOT
+            - READ_INVENTORY
+            - RECEIVE_STOCK
+            - RESERVE_STOCK
+            - RELEASE_RESERVATION
+            - ADJUST_STOCK
+            - WRITE_OFF_STOCK
+            - QUARANTINE_STOCK
+            - RECORD_SALE
+            - READ_TRANSFERS
+            - REQUEST_TRANSFER
+            - APPROVE_TRANSFER
+            - PICK_TRANSFER
+            - DISPATCH_TRANSFER
+            - CANCEL_TRANSFER
+            - REQUEST_TRANSFER_RETURN
+            - MANAGE_TRANSFER_DISCREPANCIES
+            - MANAGE_INVENTORY_ALLOCATIONS
+            - RECONCILE_INVENTORY
+            - REMEDIATE_INVENTORY
+        sourceActions:
+          type: array
+          items:
+            type: string
+            enum:
+            - READ_STORE
+            - EDIT_STORE
+            - ARCHIVE_STORE
+            - MANAGE_STORAGE_ZONES
+            - REGISTER_SOURCE_EVIDENCE
+            - MANAGE_STORAGE_LOCATIONS
+            - REGISTER_STORE_LOT
+            - READ_INVENTORY
+            - RECEIVE_STOCK
+            - RESERVE_STOCK
+            - RELEASE_RESERVATION
+            - ADJUST_STOCK
+            - WRITE_OFF_STOCK
+            - QUARANTINE_STOCK
+            - RECORD_SALE
+            - READ_TRANSFERS
+            - REQUEST_TRANSFER
+            - APPROVE_TRANSFER
+            - PICK_TRANSFER
+            - DISPATCH_TRANSFER
+            - CANCEL_TRANSFER
+            - REQUEST_TRANSFER_RETURN
+            - MANAGE_TRANSFER_DISCREPANCIES
+            - MANAGE_INVENTORY_ALLOCATIONS
+            - RECONCILE_INVENTORY
+            - REMEDIATE_INVENTORY
+      required:
+      - destinationActions
+      - sourceActions
     TransferCommandIntentInspection:
       type: object
       properties:
@@ -14522,12 +14865,17 @@ components:
           type: string
           maxLength: 64
           minLength: 0
+        quantity:
+          type: integer
+          format: int64
+          exclusiveMinimum: 0
       required:
       - documentLineReference
       - expectedSourceVersion
       - lineId
       - observedLotCode
       - observedSku
+      - quantity
     TransferConfirmReturnRequest:
       type: object
       properties:
@@ -14646,13 +14994,20 @@ components:
       properties:
         hasMore:
           type: boolean
+          description: True when another page exists
         items:
           type: array
           items:
             $ref: "#/components/schemas/TransferCustodyMovement"
+        nextCursor:
+          type:
+          - string
+          - "null"
+          description: "Cursor for the next immutable custody page, or null when complete"
       required:
       - hasMore
       - items
+      - nextCursor
     TransferDamageLineRequest:
       type: object
       properties:
@@ -14741,13 +15096,21 @@ components:
       properties:
         hasMore:
           type: boolean
+          description: True when another page exists
         items:
           type: array
           items:
             $ref: "#/components/schemas/TransferDiscrepancyRecord"
+        nextCursor:
+          type:
+          - string
+          - "null"
+          description: "Cursor for the next immutable evidence page, or null when\
+            \ complete"
       required:
       - hasMore
       - items
+      - nextCursor
     TransferDiscrepancyRecord:
       type: object
       properties:
@@ -14766,6 +15129,8 @@ components:
           - string
           - "null"
           format: uuid
+        lineSettled:
+          type: boolean
         observedState:
           type: string
         reason:
@@ -14773,7 +15138,17 @@ components:
         recordedAt:
           type: string
           format: date-time
-        resolved:
+        resolutionScope:
+          type: string
+          enum:
+          - OPEN
+          - LINE_SETTLED
+          - TRANSFER_CLOSED
+          - PENDING
+          - PARTIALLY_FULFILLED
+          - FULFILLED
+          - SUPERSEDED
+        transferClosed:
           type: boolean
         transferId:
           type: string
@@ -14786,10 +15161,12 @@ components:
       - expectedState
       - id
       - lineId
+      - lineSettled
       - observedState
       - reason
       - recordedAt
-      - resolved
+      - resolutionScope
+      - transferClosed
       - transferId
       - type
     TransferDiscrepancyRequest:
@@ -14933,13 +15310,20 @@ components:
       properties:
         hasMore:
           type: boolean
+          description: True when another page exists
         items:
           type: array
           items:
             $ref: "#/components/schemas/TransferInTransitLine"
+        nextCursor:
+          type:
+          - string
+          - "null"
+          description: "Cursor for the next line page, or null when complete"
       required:
       - hasMore
       - items
+      - nextCursor
     TransferLineResponse:
       type: object
       properties:
@@ -15234,13 +15618,20 @@ components:
       properties:
         hasMore:
           type: boolean
+          description: True when another page exists
         items:
           type: array
           items:
             $ref: "#/components/schemas/TransferQueueItem"
+        nextCursor:
+          type:
+          - string
+          - "null"
+          description: "Cursor for the next current queue page, or null when complete"
       required:
       - hasMore
       - items
+      - nextCursor
     TransferReceiveLineRequest:
       type: object
       properties:

@@ -3,6 +3,7 @@ package com.stockrescue.transfers.persistence;
 import java.math.BigInteger;
 import java.sql.Types;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -12,6 +13,8 @@ import com.stockrescue.transfers.domain.TransferMovementType;
 import com.stockrescue.transfers.domain.TransferQuantities;
 import com.stockrescue.transfers.domain.TransferStatus;
 import com.stockrescue.transfers.domain.TransferWriteConflict;
+import com.stockrescue.transfers.domain.TransferCursor;
+import com.stockrescue.transfers.domain.TransferCursorInvalid;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -21,6 +24,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public class TransferRepository {
     public record Page<T>(List<T> items, boolean hasMore) {
         public Page { items = List.copyOf(items); }
+    }
+    public record CursorPage<T>(List<T> items, String nextCursor, boolean hasMore) {
+        public CursorPage { items = List.copyOf(items); }
     }
 
     public record TransferCommandReceipt(UUID id, UUID organizationId, UUID transferId, UUID actorId,
@@ -56,7 +62,7 @@ public class TransferRepository {
 
     public record Discrepancy(UUID id, UUID transferId, UUID lineId, String type, String reason,
             String evidenceReference, String expectedState, String observedState, UUID actorId,
-            boolean resolved, Instant recordedAt) { }
+            String resolutionScope, boolean lineSettled, boolean transferClosed, Instant recordedAt) { }
 
     public record ActiveReturn(UUID transferId, UUID lineId, UUID evidenceId, UUID requestId,
             String requestReference, long requestedQuantity, long settledQuantity, long unsettledQuantity,
@@ -66,7 +72,8 @@ public class TransferRepository {
             UUID commandId, UUID actorId, UUID membershipId, String type, String expectedState,
             String observedState, String reason, String evidenceReference) { }
 
-    public record PendingReturn(UUID evidenceId, UUID commandId, UUID lineId, long quantity, String requestReference) { }
+    public record PendingReturn(UUID evidenceId, UUID commandId, UUID lineId, long requestedQuantity,
+            long settledQuantity, long quantity, String requestReference, String state) { }
 
     public record CustodyAppend(UUID id, UUID organizationId, UUID transferId, UUID lineId, long expectedVersion,
             TransferMovementType type, UUID commandId, UUID actorId, UUID membershipId, long quantity,
@@ -116,6 +123,17 @@ public class TransferRepository {
                     AND m.line_id=a.line_id AND m.movement_type='DISPATCH' AND m.version=1
                 WHERE a.outstanding>0
                 """).query(Double.class).single();
+    }
+
+    public boolean hasOpenTransfer(UUID organizationId, UUID storeId) {
+        return jdbc.sql("""
+                SELECT EXISTS (
+                    SELECT 1 FROM stockrescue.transfer_order
+                    WHERE org_id=:org AND (source_store_id=:store OR destination_store_id=:store)
+                      AND status IN ('REQUESTED','APPROVED','PICKING','PICKED','IN_TRANSIT',
+                                     'PARTIALLY_RECEIVED','RECONCILIATION_REQUIRED')
+                )
+                """).param("org", organizationId).param("store", storeId).query(Boolean.class).single();
     }
 
     public long custodyLedgerMismatchCount() {
@@ -364,25 +382,45 @@ public class TransferRepository {
 
     public Optional<PendingReturn> pendingReturn(UUID organizationId, UUID transferId, UUID lineId) {
         return jdbc.sql("""
-                SELECT e.id AS evidence_id,e.command_id,e.line_id,(e.expected_state->>'outstanding')::bigint AS quantity,
-                    e.observed_state->>'requestReference' AS request_reference
+                SELECT e.id AS evidence_id,e.command_id,e.line_id,
+                    (e.expected_state->>'outstanding')::bigint AS requested_quantity,
+                    settled.quantity AS settled_quantity,
+                    ((e.expected_state->>'outstanding')::bigint-settled.quantity)::bigint AS quantity,
+                    e.observed_state->>'requestReference' AS request_reference,
+                    coalesce(lifecycle.state,CASE WHEN settled.quantity=0 THEN 'PENDING' ELSE 'PARTIALLY_FULFILLED' END) AS state
                 FROM stockrescue.transfer_reconciliation_evidence e
+                JOIN stockrescue.transfer_custody_account a
+                  ON a.org_id=e.org_id AND a.transfer_id=e.transfer_id AND a.line_id=e.line_id
+                LEFT JOIN stockrescue.transfer_command_receipt cr
+                  ON cr.org_id=e.org_id AND cr.transfer_id=e.transfer_id AND cr.id=e.command_id
+                CROSS JOIN LATERAL (
+                    SELECT coalesce(sum(l.quantity),0)::bigint AS quantity
+                    FROM stockrescue.transfer_physical_document_line l
+                    WHERE l.org_id=e.org_id AND l.transfer_id=e.transfer_id AND l.line_id=e.line_id
+                      AND l.document_type='RETURN' AND l.return_request_evidence_id=e.id
+                ) settled
+                LEFT JOIN LATERAL (
+                    SELECT state.observed_state->>'state' AS state
+                    FROM stockrescue.transfer_reconciliation_evidence state
+                    WHERE e.evidence_type='RETURN_REQUEST'
+                      AND state.org_id=e.org_id AND state.transfer_id=e.transfer_id AND state.line_id=e.line_id
+                      AND state.expected_state->>'returnRequestEvidenceId'=e.id::text
+                      AND state.evidence_type IN ('RETURN_PARTIAL','RETURN_FULFILLED','RETURN_SUPERSEDED')
+                    ORDER BY state.recorded_at DESC,state.id DESC LIMIT 1
+                ) lifecycle ON true
                 WHERE e.org_id=:org AND e.transfer_id=:transfer AND e.line_id=:line
                     AND e.evidence_type='RETURN_REQUEST'
-                    AND NOT EXISTS (
-                        SELECT 1 FROM stockrescue.transfer_physical_document_line l
-                        WHERE l.org_id=e.org_id AND l.transfer_id=e.transfer_id AND l.document_type='RETURN'
-                            AND l.return_request_evidence_id=e.id)
-                    AND e.expected_state->'outstanding' = (
-                        SELECT to_jsonb(a.outstanding)
-                        FROM stockrescue.transfer_custody_account a
-                        WHERE a.org_id=e.org_id AND a.transfer_id=e.transfer_id AND a.line_id=e.line_id)
+                    AND coalesce(lifecycle.state,CASE WHEN settled.quantity=0 THEN 'PENDING' ELSE 'PARTIALLY_FULFILLED' END)
+                        IN ('PENDING','PARTIALLY_FULFILLED')
+                    AND settled.quantity<(e.expected_state->>'outstanding')::bigint
+                    AND a.outstanding=(e.expected_state->>'outstanding')::bigint-settled.quantity
                 ORDER BY e.recorded_at DESC,e.id DESC LIMIT 1
                 """)
                 .param("org", organizationId).param("transfer", transferId).param("line", lineId)
                 .query((row, index) -> new PendingReturn(row.getObject("evidence_id", UUID.class),
                         row.getObject("command_id", UUID.class), row.getObject("line_id", UUID.class),
-                        row.getLong("quantity"), row.getString("request_reference")))
+                        row.getLong("requested_quantity"), row.getLong("settled_quantity"),
+                        row.getLong("quantity"), row.getString("request_reference"),row.getString("state")))
                 .optional();
     }
 
@@ -679,6 +717,35 @@ public class TransferRepository {
         return page(rows, limit);
     }
 
+    public CursorPage<TransferSummary> page(UUID organizationId, UUID storeId, TransferStatus status, String cursor, int limit) {
+        validateCursorPage(limit);
+        String scope = "transfer-queue:" + organizationId + ":" + storeId + ":" + (status == null ? "ALL" : status.name());
+        var position = cursor == null ? null : TransferCursor.timestampId(scope, cursor);
+        var rows = jdbc.sql("""
+                SELECT t.id,t.org_id,t.source_store_id,t.destination_store_id,t.status,t.version,t.created_at,t.updated_at,
+                    count(l.id) AS line_count,coalesce(sum(a.outstanding),0) AS outstanding
+                FROM stockrescue.transfer_order t
+                LEFT JOIN stockrescue.transfer_line l ON l.org_id=t.org_id AND l.transfer_id=t.id
+                LEFT JOIN stockrescue.transfer_custody_account a
+                  ON a.org_id=l.org_id AND a.transfer_id=l.transfer_id AND a.line_id=l.id
+                WHERE t.org_id=:org AND (t.source_store_id=:store OR t.destination_store_id=:store)
+                    AND (CAST(:status AS varchar) IS NULL OR t.status=:status)
+                    AND (CAST(:cursorAt AS timestamptz) IS NULL OR (t.updated_at,t.id)<(:cursorAt,:cursorId))
+                GROUP BY t.id
+                ORDER BY t.updated_at DESC,t.id DESC LIMIT :limit
+                """)
+                .param("org", organizationId).param("store", storeId)
+                .param("status", status == null ? null : status.name(), Types.VARCHAR)
+                .param("cursorAt", position == null ? null : position.recordedAt().atOffset(ZoneOffset.UTC), Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("cursorId", position == null ? null : position.id(), Types.OTHER)
+                .param("limit", limit + 1)
+                .query((row, index) -> summary(row)).list();
+        boolean more = rows.size() > limit;
+        var items = rows.stream().limit(limit).toList();
+        String next = more ? TransferCursor.timestampId(scope, items.getLast().updatedAt(), items.getLast().id()) : null;
+        return new CursorPage<>(items, next, more);
+    }
+
     public Page<CustodyMovement> custodyTimeline(UUID organizationId, UUID transferId, int offset, int limit) {
         validatePage(offset, limit);
         var rows = jdbc.sql("""
@@ -700,6 +767,33 @@ public class TransferRepository {
                         row.getString("evidence_reference"), row.getTimestamp("recorded_at").toInstant()))
                 .list();
         return page(rows, limit);
+    }
+
+    public CursorPage<CustodyMovement> custodyTimeline(UUID organizationId, UUID transferId,String cursor,int limit) {
+        validateCursorPage(limit);
+        String scope="custody:"+organizationId+":"+transferId;
+        var position=cursor==null?null:TransferCursor.timestampId(scope,cursor);
+        var rows=jdbc.sql("""
+                SELECT id,line_id,version,movement_type,command_id,actor_user_id,quantity,outstanding_before,outstanding_after,
+                    stock_store_id,stock_movement_id,stock_position_id,reason,evidence_reference,recorded_at
+                FROM stockrescue.transfer_custody_movement
+                WHERE org_id=:org AND transfer_id=:transfer
+                  AND (CAST(:cursorAt AS timestamptz) IS NULL OR (recorded_at,id)<(:cursorAt,:cursorId))
+                ORDER BY recorded_at DESC,id DESC LIMIT :limit
+                """)
+                .param("org",organizationId).param("transfer",transferId)
+                .param("cursorAt",position==null?null:position.recordedAt().atOffset(ZoneOffset.UTC),Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("cursorId",position==null?null:position.id(),Types.OTHER).param("limit",limit+1)
+                .query((row,index)->new CustodyMovement(row.getObject("id",UUID.class),row.getObject("line_id",UUID.class),
+                        row.getLong("version"),TransferMovementType.valueOf(row.getString("movement_type")),
+                        row.getObject("command_id",UUID.class),row.getObject("actor_user_id",UUID.class),row.getLong("quantity"),
+                        row.getLong("outstanding_before"),row.getLong("outstanding_after"),row.getObject("stock_store_id",UUID.class),
+                        row.getObject("stock_movement_id",UUID.class),row.getObject("stock_position_id",UUID.class),row.getString("reason"),
+                        row.getString("evidence_reference"),row.getTimestamp("recorded_at").toInstant())).list();
+        boolean more=rows.size()>limit;
+        var items=rows.stream().limit(limit).toList();
+        String next=more?TransferCursor.timestampId(scope,items.getLast().recordedAt(),items.getLast().id()):null;
+        return new CursorPage<>(items,next,more);
     }
 
     public Page<InTransitLine> inTransitAging(UUID organizationId, UUID storeId, int offset, int limit) {
@@ -731,16 +825,117 @@ public class TransferRepository {
         return page(rows, limit);
     }
 
+    public CursorPage<InTransitLine> inTransitAging(UUID organizationId,UUID storeId,String cursor,int limit) {
+        validateCursorPage(limit);
+        String scope="in-transit:"+organizationId+":"+storeId;
+        var position=cursor==null?null:TransferCursor.transit(scope,cursor);
+        var rows=jdbc.sql("""
+                WITH transit AS (
+                    SELECT l.transfer_id,l.id AS line_id,l.source_store_id,l.destination_store_id,l.source_position_id,
+                        l.destination_location_id,a.outstanding,
+                        min(m.recorded_at) FILTER (WHERE m.movement_type='DISPATCH') AS dispatched_at,
+                        greatest(floor(extract(epoch FROM clock_timestamp()-min(m.recorded_at)
+                            FILTER (WHERE m.movement_type='DISPATCH'))),0)::bigint AS age_seconds
+                    FROM stockrescue.transfer_line l
+                    JOIN stockrescue.transfer_custody_account a
+                      ON a.org_id=l.org_id AND a.transfer_id=l.transfer_id AND a.line_id=l.id
+                    JOIN stockrescue.transfer_custody_movement m
+                      ON m.org_id=l.org_id AND m.transfer_id=l.transfer_id AND m.line_id=l.id
+                    WHERE l.org_id=:org AND (:store=l.source_store_id OR :store=l.destination_store_id)
+                    GROUP BY l.transfer_id,l.id,l.source_store_id,l.destination_store_id,l.source_position_id,
+                        l.destination_location_id,a.outstanding
+                    HAVING a.outstanding>0
+                )
+                SELECT * FROM transit
+                WHERE (CAST(:cursorAt AS timestamptz) IS NULL OR (dispatched_at,transfer_id,line_id)>(:cursorAt,:cursorTransfer,:cursorLine))
+                ORDER BY dispatched_at,transfer_id,line_id LIMIT :limit
+                """)
+                .param("org",organizationId).param("store",storeId)
+                .param("cursorAt",position==null?null:position.dispatchedAt().atOffset(ZoneOffset.UTC),Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("cursorTransfer",position==null?null:position.transferId(),Types.OTHER)
+                .param("cursorLine",position==null?null:position.lineId(),Types.OTHER).param("limit",limit+1)
+                .query((row,index)->new InTransitLine(row.getObject("transfer_id",UUID.class),row.getObject("line_id",UUID.class),
+                        row.getObject("source_store_id",UUID.class),row.getObject("destination_store_id",UUID.class),
+                        row.getObject("source_position_id",UUID.class),row.getObject("destination_location_id",UUID.class),
+                        row.getLong("outstanding"),row.getTimestamp("dispatched_at").toInstant(),row.getLong("age_seconds"))).list();
+        boolean more=rows.size()>limit;
+        var items=rows.stream().limit(limit).toList();
+        String next=more?TransferCursor.transit(scope,items.getLast().dispatchedAt(),items.getLast().transferId(),items.getLast().lineId()):null;
+        return new CursorPage<>(items,next,more);
+    }
+
+    public CursorPage<InTransitLine> inTransitAging(UUID organizationId,UUID transferId,String cursor,int limit,boolean transferScoped) {
+        validateCursorPage(limit);
+        String scope="transfer-in-transit:"+organizationId+":"+transferId;
+        var position=cursor==null?null:TransferCursor.transit(scope,cursor);
+        var rows=jdbc.sql("""
+                WITH transit AS (
+                    SELECT l.transfer_id,l.id AS line_id,l.source_store_id,l.destination_store_id,l.source_position_id,
+                        l.destination_location_id,a.outstanding,
+                        min(m.recorded_at) FILTER (WHERE m.movement_type='DISPATCH') AS dispatched_at,
+                        greatest(floor(extract(epoch FROM clock_timestamp()-min(m.recorded_at)
+                            FILTER (WHERE m.movement_type='DISPATCH'))),0)::bigint AS age_seconds
+                    FROM stockrescue.transfer_line l
+                    JOIN stockrescue.transfer_custody_account a
+                      ON a.org_id=l.org_id AND a.transfer_id=l.transfer_id AND a.line_id=l.id
+                    JOIN stockrescue.transfer_custody_movement m
+                      ON m.org_id=l.org_id AND m.transfer_id=l.transfer_id AND m.line_id=l.id
+                    WHERE l.org_id=:org AND l.transfer_id=:transfer
+                    GROUP BY l.transfer_id,l.id,l.source_store_id,l.destination_store_id,l.source_position_id,
+                        l.destination_location_id,a.outstanding
+                    HAVING a.outstanding>0
+                )
+                SELECT * FROM transit
+                WHERE (CAST(:cursorAt AS timestamptz) IS NULL OR (dispatched_at,transfer_id,line_id)>(:cursorAt,:cursorTransfer,:cursorLine))
+                ORDER BY dispatched_at,transfer_id,line_id LIMIT :limit
+                """)
+                .param("org",organizationId).param("transfer",transferId)
+                .param("cursorAt",position==null?null:position.dispatchedAt().atOffset(ZoneOffset.UTC),Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("cursorTransfer",position==null?null:position.transferId(),Types.OTHER)
+                .param("cursorLine",position==null?null:position.lineId(),Types.OTHER).param("limit",limit+1)
+                .query((row,index)->new InTransitLine(row.getObject("transfer_id",UUID.class),row.getObject("line_id",UUID.class),
+                        row.getObject("source_store_id",UUID.class),row.getObject("destination_store_id",UUID.class),
+                        row.getObject("source_position_id",UUID.class),row.getObject("destination_location_id",UUID.class),
+                        row.getLong("outstanding"),row.getTimestamp("dispatched_at").toInstant(),row.getLong("age_seconds"))).list();
+        boolean more=rows.size()>limit;
+        var items=rows.stream().limit(limit).toList();
+        String next=more?TransferCursor.transit(scope,items.getLast().dispatchedAt(),items.getLast().transferId(),items.getLast().lineId()):null;
+        return new CursorPage<>(items,next,more);
+    }
+
     public Page<Discrepancy> discrepancies(UUID organizationId, UUID storeId, int offset, int limit) {
         validatePage(offset, limit);
         var rows = jdbc.sql("""
                 SELECT e.id,e.transfer_id,e.line_id,e.evidence_type,e.reason,e.evidence_reference,
                     e.expected_state::text AS expected_state,e.observed_state::text AS observed_state,
-                    e.actor_user_id,(e.evidence_type='CUSTODY_RECONCILIATION'
-                        OR t.status IN ('RECEIVED','CLOSED_WITH_DISCREPANCY')) AS resolved,e.recorded_at
+                    e.actor_user_id,
+                    CASE WHEN e.evidence_type='RETURN_REQUEST' THEN coalesce(lifecycle.state,'PENDING')
+                         WHEN e.evidence_type='RETURN_PARTIAL' THEN 'PARTIALLY_FULFILLED'
+                         WHEN e.evidence_type='RETURN_FULFILLED' THEN 'FULFILLED'
+                         WHEN e.evidence_type='RETURN_SUPERSEDED' THEN 'SUPERSEDED'
+                         WHEN t.status IN ('RECEIVED','CLOSED_WITH_DISCREPANCY','CANCELLED','REJECTED') THEN 'TRANSFER_CLOSED'
+                         WHEN coalesce(a.outstanding,0)=0 THEN 'LINE_SETTLED'
+                         ELSE 'OPEN' END AS resolution_scope,
+                    (e.line_id IS NOT NULL AND coalesce(a.outstanding,0)=0) AS line_settled,
+                    (t.status IN ('RECEIVED','CLOSED_WITH_DISCREPANCY','CANCELLED','REJECTED')) AS transfer_closed,
+                    e.recorded_at
                 FROM stockrescue.transfer_reconciliation_evidence e
                 JOIN stockrescue.transfer_order t ON t.org_id=e.org_id AND t.id=e.transfer_id
-                WHERE e.org_id=:org AND e.evidence_type IN ('DISCREPANCY','RETURN_REQUEST','CUSTODY_RECONCILIATION')
+                LEFT JOIN stockrescue.transfer_custody_account a
+                  ON a.org_id=e.org_id AND a.transfer_id=e.transfer_id AND a.line_id=e.line_id
+                LEFT JOIN LATERAL (
+                    SELECT state.observed_state->>'state' AS state
+                    FROM stockrescue.transfer_reconciliation_evidence state
+                    WHERE e.evidence_type='RETURN_REQUEST'
+                      AND state.org_id=e.org_id AND state.transfer_id=e.transfer_id AND state.line_id=e.line_id
+                      AND state.expected_state->>'returnRequestEvidenceId'=
+                          CASE WHEN e.evidence_type='RETURN_REQUEST' THEN e.id::text
+                               ELSE e.expected_state->>'returnRequestEvidenceId' END
+                      AND state.evidence_type IN ('RETURN_PARTIAL','RETURN_FULFILLED','RETURN_SUPERSEDED')
+                    ORDER BY state.recorded_at DESC,state.id DESC LIMIT 1
+                ) lifecycle ON true
+                WHERE e.org_id=:org AND e.evidence_type IN ('DISCREPANCY','RETURN_REQUEST','CUSTODY_RECONCILIATION',
+                    'RETURN_PARTIAL','RETURN_FULFILLED','RETURN_SUPERSEDED')
                     AND (CAST(:store AS uuid) IS NULL OR t.source_store_id=:store OR t.destination_store_id=:store)
                 ORDER BY e.recorded_at DESC,e.id DESC LIMIT :limit OFFSET :offset
                 """)
@@ -750,10 +945,74 @@ public class TransferRepository {
                         row.getObject("transfer_id", UUID.class), row.getObject("line_id", UUID.class),
                         row.getString("evidence_type"), row.getString("reason"), row.getString("evidence_reference"),
                         row.getString("expected_state"), row.getString("observed_state"),
-                        row.getObject("actor_user_id", UUID.class), row.getBoolean("resolved"),
+                        row.getObject("actor_user_id", UUID.class),row.getString("resolution_scope"),
+                        row.getBoolean("line_settled"),row.getBoolean("transfer_closed"),
                         row.getTimestamp("recorded_at").toInstant()))
                 .list();
         return page(rows, limit);
+    }
+
+    public CursorPage<Discrepancy> discrepancies(UUID organizationId,UUID storeId,String cursor,int limit) {
+        String scope="discrepancies:"+organizationId+":"+storeId;
+        return discrepanciesCursor(organizationId,storeId,null,scope,cursor,limit);
+    }
+
+    public CursorPage<Discrepancy> discrepancies(UUID organizationId,UUID transferId,String cursor,int limit,boolean transferScoped) {
+        String scope="transfer-discrepancies:"+organizationId+":"+transferId;
+        return discrepanciesCursor(organizationId,null,transferId,scope,cursor,limit);
+    }
+
+    private CursorPage<Discrepancy> discrepanciesCursor(UUID organizationId,UUID storeId,UUID transferId,String scope,
+            String cursor,int limit) {
+        validateCursorPage(limit);
+        var position=cursor==null?null:TransferCursor.timestampId(scope,cursor);
+        var rows=jdbc.sql("""
+                SELECT e.id,e.transfer_id,e.line_id,e.evidence_type,e.reason,e.evidence_reference,
+                    e.expected_state::text AS expected_state,e.observed_state::text AS observed_state,
+                    e.actor_user_id,
+                    CASE WHEN e.evidence_type='RETURN_REQUEST' THEN coalesce(lifecycle.state,'PENDING')
+                         WHEN e.evidence_type='RETURN_PARTIAL' THEN 'PARTIALLY_FULFILLED'
+                         WHEN e.evidence_type='RETURN_FULFILLED' THEN 'FULFILLED'
+                         WHEN e.evidence_type='RETURN_SUPERSEDED' THEN 'SUPERSEDED'
+                         WHEN t.status IN ('RECEIVED','CLOSED_WITH_DISCREPANCY','CANCELLED','REJECTED') THEN 'TRANSFER_CLOSED'
+                         WHEN coalesce(a.outstanding,0)=0 THEN 'LINE_SETTLED'
+                         ELSE 'OPEN' END AS resolution_scope,
+                    (e.line_id IS NOT NULL AND coalesce(a.outstanding,0)=0) AS line_settled,
+                    (t.status IN ('RECEIVED','CLOSED_WITH_DISCREPANCY','CANCELLED','REJECTED')) AS transfer_closed,
+                    e.recorded_at
+                FROM stockrescue.transfer_reconciliation_evidence e
+                JOIN stockrescue.transfer_order t ON t.org_id=e.org_id AND t.id=e.transfer_id
+                LEFT JOIN stockrescue.transfer_custody_account a
+                  ON a.org_id=e.org_id AND a.transfer_id=e.transfer_id AND a.line_id=e.line_id
+                LEFT JOIN LATERAL (
+                    SELECT state.observed_state->>'state' AS state
+                    FROM stockrescue.transfer_reconciliation_evidence state
+                    WHERE state.org_id=e.org_id AND state.transfer_id=e.transfer_id AND state.line_id=e.line_id
+                      AND state.expected_state->>'returnRequestEvidenceId'=
+                          CASE WHEN e.evidence_type='RETURN_REQUEST' THEN e.id::text
+                               ELSE e.expected_state->>'returnRequestEvidenceId' END
+                      AND state.evidence_type IN ('RETURN_PARTIAL','RETURN_FULFILLED','RETURN_SUPERSEDED')
+                    ORDER BY state.recorded_at DESC,state.id DESC LIMIT 1
+                ) lifecycle ON true
+                WHERE e.org_id=:org AND e.evidence_type IN ('DISCREPANCY','RETURN_REQUEST','CUSTODY_RECONCILIATION',
+                    'RETURN_PARTIAL','RETURN_FULFILLED','RETURN_SUPERSEDED')
+                  AND (CAST(:store AS uuid) IS NULL OR t.source_store_id=:store OR t.destination_store_id=:store)
+                  AND (CAST(:transfer AS uuid) IS NULL OR e.transfer_id=:transfer)
+                  AND (CAST(:cursorAt AS timestamptz) IS NULL OR (e.recorded_at,e.id)<(:cursorAt,:cursorId))
+                ORDER BY e.recorded_at DESC,e.id DESC LIMIT :limit
+                """)
+                .param("org",organizationId).param("store",storeId,Types.OTHER).param("transfer",transferId,Types.OTHER)
+                .param("cursorAt",position==null?null:position.recordedAt().atOffset(ZoneOffset.UTC),Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("cursorId",position==null?null:position.id(),Types.OTHER).param("limit",limit+1)
+                .query((row,index)->new Discrepancy(row.getObject("id",UUID.class),row.getObject("transfer_id",UUID.class),
+                        row.getObject("line_id",UUID.class),row.getString("evidence_type"),row.getString("reason"),
+                        row.getString("evidence_reference"),row.getString("expected_state"),row.getString("observed_state"),
+                        row.getObject("actor_user_id",UUID.class),row.getString("resolution_scope"),
+                        row.getBoolean("line_settled"),row.getBoolean("transfer_closed"),row.getTimestamp("recorded_at").toInstant())).list();
+        boolean more=rows.size()>limit;
+        var items=rows.stream().limit(limit).toList();
+        String next=more?TransferCursor.timestampId(scope,items.getLast().recordedAt(),items.getLast().id()):null;
+        return new CursorPage<>(items,next,more);
     }
 
     public List<ActiveReturn> activeReturns(UUID organizationId, UUID transferId) {
@@ -761,9 +1020,9 @@ public class TransferRepository {
                 SELECT e.transfer_id,e.line_id,e.id AS evidence_id,cr.request_id,
                     e.observed_state->>'requestReference' AS request_reference,
                     (e.expected_state->>'outstanding')::bigint AS requested_quantity,
-                    coalesce(sum(dl.quantity),0)::bigint AS settled_quantity,
-                    ((e.expected_state->>'outstanding')::bigint-coalesce(sum(dl.quantity),0))::bigint AS unsettled_quantity,
-                    CASE WHEN coalesce(sum(dl.quantity),0)=0 THEN 'PENDING' ELSE 'PARTIALLY_FULFILLED' END AS state,
+                    settled.quantity AS settled_quantity,
+                    ((e.expected_state->>'outstanding')::bigint-settled.quantity)::bigint AS unsettled_quantity,
+                    coalesce(lifecycle.state,CASE WHEN settled.quantity=0 THEN 'PENDING' ELSE 'PARTIALLY_FULFILLED' END) AS state,
                     t.version AS transfer_version,e.recorded_at
                 FROM stockrescue.transfer_reconciliation_evidence e
                 JOIN stockrescue.transfer_order t ON t.org_id=e.org_id AND t.id=e.transfer_id
@@ -771,15 +1030,26 @@ public class TransferRepository {
                   ON a.org_id=e.org_id AND a.transfer_id=e.transfer_id AND a.line_id=e.line_id
                 JOIN stockrescue.transfer_command_receipt cr
                   ON cr.org_id=e.org_id AND cr.transfer_id=e.transfer_id AND cr.id=e.command_id
-                LEFT JOIN stockrescue.transfer_physical_document_line dl
-                  ON dl.org_id=e.org_id AND dl.transfer_id=e.transfer_id AND dl.line_id=e.line_id
-                    AND dl.document_type='RETURN' AND dl.return_request_evidence_id=e.id
+                CROSS JOIN LATERAL (
+                    SELECT coalesce(sum(dl.quantity),0)::bigint AS quantity
+                    FROM stockrescue.transfer_physical_document_line dl
+                    WHERE dl.org_id=e.org_id AND dl.transfer_id=e.transfer_id AND dl.line_id=e.line_id
+                      AND dl.document_type='RETURN' AND dl.return_request_evidence_id=e.id
+                ) settled
+                LEFT JOIN LATERAL (
+                    SELECT state.observed_state->>'state' AS state
+                    FROM stockrescue.transfer_reconciliation_evidence state
+                    WHERE state.org_id=e.org_id AND state.transfer_id=e.transfer_id AND state.line_id=e.line_id
+                      AND state.expected_state->>'returnRequestEvidenceId'=e.id::text
+                      AND state.evidence_type IN ('RETURN_PARTIAL','RETURN_FULFILLED','RETURN_SUPERSEDED')
+                    ORDER BY state.recorded_at DESC,state.id DESC LIMIT 1
+                ) lifecycle ON true
                 WHERE e.org_id=:org AND e.transfer_id=:transfer AND e.evidence_type='RETURN_REQUEST'
                     AND t.status IN ('IN_TRANSIT','PARTIALLY_RECEIVED','RECONCILIATION_REQUIRED')
-                GROUP BY e.org_id,e.transfer_id,e.line_id,e.id,cr.request_id,e.observed_state,
-                    e.expected_state,e.recorded_at,t.version,a.outstanding
-                HAVING (e.expected_state->>'outstanding')::bigint > coalesce(sum(dl.quantity),0)
-                    AND a.outstanding=((e.expected_state->>'outstanding')::bigint-coalesce(sum(dl.quantity),0))
+                    AND coalesce(lifecycle.state,CASE WHEN settled.quantity=0 THEN 'PENDING' ELSE 'PARTIALLY_FULFILLED' END)
+                        IN ('PENDING','PARTIALLY_FULFILLED')
+                    AND (e.expected_state->>'outstanding')::bigint>settled.quantity
+                    AND a.outstanding=(e.expected_state->>'outstanding')::bigint-settled.quantity
                 ORDER BY e.recorded_at,e.id
                 """)
                 .param("org",organizationId).param("transfer",transferId)
@@ -818,6 +1088,10 @@ public class TransferRepository {
 
     private static void validatePage(int offset, int limit) {
         if (offset < 0 || offset > 10000 || limit < 1 || limit > 100) throw new IllegalArgumentException("Invalid page bounds");
+    }
+
+    private static void validateCursorPage(int limit) {
+        if(limit<1 || limit>100) throw new TransferCursorInvalid();
     }
 
     private static String text(String value, int maximum) {

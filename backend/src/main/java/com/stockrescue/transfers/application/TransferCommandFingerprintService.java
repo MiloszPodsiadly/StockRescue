@@ -136,7 +136,7 @@ public class TransferCommandFingerprintService {
                 values.add(value.expectedVersion());
                 values.add(value.requestReference());
                 values.add(value.documentReference());
-                values.add(value.lines().stream().map(line -> List.of(line.lineId(), line.expectedSourceVersion(),
+                values.add(value.lines().stream().map(line -> List.of(line.lineId(), line.quantity(), line.expectedSourceVersion(),
                         line.documentLineReference(), line.observedSku(), line.observedLotCode())).toList());
                 values.add(value.reason());
                 values.add(value.evidenceReference());

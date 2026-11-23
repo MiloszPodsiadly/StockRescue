@@ -84,7 +84,7 @@ class TransferWorkflowTest extends InfrastructureTestBase {
     @Autowired private InventoryOutboxRepository inventoryOutbox;
     @Autowired private InventoryEventCodec inventoryEventCodec;
     @Autowired private FoodSafetyProductClassificationConfirmationService classification;
-    @Autowired private LaneService laneService;
+    @MockitoSpyBean private LaneService laneService;
     @Autowired private TransferOutboxRepository transferOutbox;
     @Autowired private TransferOutboxRedriveRepository transferRedrives;
     @Autowired private TransferRepository transfers;
@@ -1276,6 +1276,12 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         var visibleTransit = receiver.get(base() + "/in-transit?storeId=" + fixture.destinationStore);
         assertThat(visibleTransit.statusCode()).isEqualTo(200);
         assertThat(tree(visibleTransit).path("items")).hasSize(1);
+        var transferScopedTransit = receiver.get(base() + "/" + prepared.transferId() + "/in-transit?limit=10");
+        assertThat(transferScopedTransit.statusCode()).isEqualTo(200);
+        assertThat(tree(transferScopedTransit).path("items")).hasSize(1);
+        var transferScopedEvidence = receiver.get(base() + "/" + prepared.transferId() + "/discrepancies?limit=10");
+        assertThat(transferScopedEvidence.statusCode()).isEqualTo(200);
+        assertThat(tree(transferScopedEvidence).path("items")).isEmpty();
 
         var response = receiver.write("POST", base() + "/" + prepared.transferId() + "/receive",
                 receiveRequest(prepared, 4, 0, 2, "receipt-destination-operator"));
@@ -1284,6 +1290,23 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(tree(response).path("status").asString()).isEqualTo("RECEIVED");
         assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(2);
         assertThat(custody(prepared.transferId(), prepared.lineId())).isEqualTo("2:2:0:0:0");
+    }
+
+    @Test
+    void transferCapabilitiesReturnActionsOnlyForTheGrantedParticipantStore() throws Exception {
+        var owner = fixture.owner();
+        var prepared = preparePickedTransfer(owner, 2);
+
+        var sourceOperator = fixture.operator();
+        var source = tree(sourceOperator.get(base() + "/" + prepared.transferId() + "/capabilities"));
+        assertThat(source.path("sourceActions").toString()).contains("READ_TRANSFERS", "PICK_TRANSFER", "DISPATCH_TRANSFER");
+        assertThat(source.path("destinationActions")).isEmpty();
+
+        var destinationOperator = fixture.destinationOperator();
+        var destination = tree(destinationOperator.get(base() + "/" + prepared.transferId() + "/capabilities"));
+        assertThat(destination.path("sourceActions")).isEmpty();
+        assertThat(destination.path("destinationActions").toString()).contains("READ_TRANSFERS", "RECEIVE_STOCK");
+        assertThat(destination.path("destinationActions").toString()).doesNotContain("APPROVE_TRANSFER");
     }
 
     @Test
@@ -1487,13 +1510,15 @@ class TransferWorkflowTest extends InfrastructureTestBase {
     }
 
     @Test
-    void archivedSourceDoesNotBlockPhysicalReceiptByAnAuthorizedDestinationOperator() throws Exception {
+    void sourceWithAnOpenTransferCannotBeArchivedAndPhysicalReceiptCanComplete() throws Exception {
         var owner = fixture.owner();
         var prepared = preparePickedTransfer(owner, 2);
         dispatch(owner, prepared, 3, "dispatch-after-source-archive");
         var archived = owner.write("POST", "/api/v1/organizations/" + fixture.organization + "/stores/"
                 + fixture.sourceStore + "/archive", Map.of("version", 0, "reason", "Close the source store after dispatch"));
-        assertThat(archived.statusCode()).as(archived.body()).isEqualTo(200);
+        problem(archived, 409, "STORE_CONFLICT");
+        assertThat(jdbc.sql("SELECT active FROM stockrescue.store WHERE org_id=:org AND id=:store")
+                .param("org",fixture.organization).param("store",fixture.sourceStore).query(Boolean.class).single()).isTrue();
 
         var receiver = fixture.destinationOperator();
         var received = receiver.write("POST", base() + "/" + prepared.transferId() + "/receive",
@@ -1506,27 +1531,163 @@ class TransferWorkflowTest extends InfrastructureTestBase {
     }
 
     @Test
-    void archivedDestinationBlocksReceiptAndPreservesTransitForDiscrepancyReview() throws Exception {
+    void destinationWithAnOpenTransferCannotBeArchivedAndRemainsReceivable() throws Exception {
         var owner = fixture.owner();
         var prepared = preparePickedTransfer(owner, 2);
         dispatch(owner, prepared, 3, "dispatch-before-destination-archive");
         var archived = owner.write("POST", "/api/v1/organizations/" + fixture.organization + "/stores/"
                 + fixture.destinationStore + "/archive", Map.of("version", 0, "reason", "Close the destination store during transit"));
-        assertThat(archived.statusCode()).as(archived.body()).isEqualTo(200);
+        problem(archived, 409, "STORE_CONFLICT");
 
-        problem(owner.write("POST", base() + "/" + prepared.transferId() + "/receive",
-                receiveRequest(prepared, 4, 0, 2, "receipt-to-archived-destination")), 404, "RESOURCE_NOT_FOUND");
-        assertThat(custody(prepared.transferId(), prepared.lineId())).isEqualTo("2:0:0:0:2");
-        assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isZero();
+        var received=owner.write("POST", base() + "/" + prepared.transferId() + "/receive",
+                receiveRequest(prepared, 4, 0, 2, "receipt-to-active-destination"));
+        assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
+        assertThat(custody(prepared.transferId(), prepared.lineId())).isEqualTo("2:2:0:0:0");
+        assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(2);
+    }
 
-        var discrepancy = owner.write("POST", base() + "/" + prepared.transferId() + "/open-discrepancy",
-                Map.of("requestId", UUID.randomUUID(), "expectedVersion", 4, "lineId", prepared.lineId(),
-                        "expectedState", "Destination remains active for physical receiving", "observedState", "Destination is archived",
-                        "reason", "Preserve custody while the destination is unavailable", "evidenceReference", "store-closure:destination"));
-        assertThat(discrepancy.statusCode()).as(discrepancy.body()).isEqualTo(200);
-        assertThat(tree(discrepancy).path("status").asString()).isEqualTo("RECONCILIATION_REQUIRED");
-        assertThat(tree(owner.get(base() + "/in-transit?storeId=" + fixture.sourceStore)).path("items").get(0)
-                .path("outstanding").asLong()).isEqualTo(2);
+    @Test
+    void destinationArchiveWinsBeforeTransferCreationWithoutInvertingStoreLocks() throws Exception {
+        long sourceVersion=fixture.seedSource(5);
+        var owner=fixture.owner();
+        var archiver=fixture.owner();
+        var reachedStoreRowLocks=new CountDownLatch(1);
+        var continueTransfer=new CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(call -> {
+            reachedStoreRowLocks.countDown();
+            if(!continueTransfer.await(15,TimeUnit.SECONDS))
+                throw new IllegalStateException("Transfer store-lock barrier timed out");
+            return call.callRealMethod();
+        }).when(laneService).lockTransferStoresForRequest(
+                org.mockito.ArgumentMatchers.eq(fixture.organization),
+                org.mockito.ArgumentMatchers.eq(fixture.sourceStore),
+                org.mockito.ArgumentMatchers.eq(fixture.destinationStore));
+
+        try(var workers=Executors.newFixedThreadPool(1)) {
+            var creation=workers.submit(() -> owner.write("POST",base(),createRequest(UUID.randomUUID(),
+                    fixture.sourceStore,fixture.destinationStore,fixture.position,fixture.destinationLocation,
+                    1,sourceVersion,"Request stock while destination archival races")));
+            assertThat(reachedStoreRowLocks.await(10,TimeUnit.SECONDS)).isTrue();
+            var archived=archiver.write("POST","/api/v1/organizations/"+fixture.organization+"/stores/"
+                    +fixture.destinationStore+"/archive",Map.of("version",0,"reason","Close the destination store"));
+            assertThat(archived.statusCode()).as(archived.body()).isEqualTo(200);
+            continueTransfer.countDown();
+            problem(creation.get(15,TimeUnit.SECONDS),409,"CONFIGURATION_INACTIVE");
+        } finally {
+            continueTransfer.countDown();
+        }
+
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_order WHERE org_id=:org")
+                .param("org",fixture.organization).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT active FROM stockrescue.store WHERE org_id=:org AND id=:store")
+                .param("org",fixture.organization).param("store",fixture.destinationStore)
+                .query(Boolean.class).single()).isFalse();
+        assertThat(stockOnHand(fixture.sourceStore,fixture.sourceLocation)).isEqualTo(5);
+    }
+
+    @Test
+    void openTransferArchiveConflictsWhilePickingStartsWithoutInvertingStoreLocks() throws Exception {
+        long sourceVersion=fixture.seedSource(5);
+        var owner=fixture.owner();
+        var archiver=fixture.owner();
+        var created=owner.write("POST",base(),createRequest(UUID.randomUUID(),fixture.sourceStore,
+                fixture.destinationStore,fixture.position,fixture.destinationLocation,1,sourceVersion,
+                "Request stock before archive and pick race"));
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(200);
+        UUID transferId=UUID.fromString(tree(created).path("transferId").asString());
+        var approved=owner.write("POST",base()+"/"+transferId+"/approve",
+                decision(UUID.randomUUID(),0,"Approve before the source begins picking"));
+        assertThat(approved.statusCode()).as(approved.body()).isEqualTo(200);
+
+        var reachedStoreRowLocks=new CountDownLatch(1);
+        var continueTransfer=new CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(call -> {
+            reachedStoreRowLocks.countDown();
+            if(!continueTransfer.await(15,TimeUnit.SECONDS))
+                throw new IllegalStateException("Transfer store-lock barrier timed out");
+            return call.callRealMethod();
+        }).when(laneService).lockTransferStoreRows(
+                org.mockito.ArgumentMatchers.eq(fixture.organization),
+                org.mockito.ArgumentMatchers.eq(fixture.sourceStore),
+                org.mockito.ArgumentMatchers.eq(fixture.destinationStore));
+
+        try(var workers=Executors.newFixedThreadPool(1)) {
+            var picking=workers.submit(() -> owner.write("POST",base()+"/"+transferId+"/start-pick",
+                    decision(UUID.randomUUID(),1,"Begin picking while destination archival races")));
+            assertThat(reachedStoreRowLocks.await(10,TimeUnit.SECONDS)).isTrue();
+            var archived=archiver.write("POST","/api/v1/organizations/"+fixture.organization+"/stores/"
+                    +fixture.destinationStore+"/archive",Map.of("version",0,"reason","Close the destination store"));
+            problem(archived,409,"STORE_CONFLICT");
+            continueTransfer.countDown();
+            var outcome=picking.get(15,TimeUnit.SECONDS);
+            assertThat(outcome.statusCode()).as(outcome.body()).isEqualTo(200);
+            assertThat(tree(outcome).path("status").asString()).isEqualTo("PICKING");
+        } finally {
+            continueTransfer.countDown();
+        }
+
+        assertThat(jdbc.sql("SELECT status FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org",fixture.organization).param("transfer",transferId).query(String.class).single())
+                .isEqualTo("PICKING");
+    }
+
+    @Test
+    void administratorCanSettleLegacyArchivedDestinationAndStockIsQuarantined() throws Exception {
+        var owner=fixture.owner();
+        var prepared=preparePickedTransfer(owner,2);
+        dispatch(owner,prepared,3,"dispatch-to-legacy-archived-store");
+        jdbc.sql("UPDATE stockrescue.store SET active=FALSE,version=version+1,updated_at=clock_timestamp() WHERE org_id=:org AND id=:store")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).update();
+
+        problem(fixture.destinationOperator().write("POST",base()+"/"+prepared.transferId()+"/receive",
+                receiveRequest(prepared,4,0,2,"unauthorized-archived-store-receipt")),404,"RESOURCE_NOT_FOUND");
+        var received=owner.write("POST",base()+"/"+prepared.transferId()+"/receive",
+                receiveRequest(prepared,4,0,2,"admin-legacy-archived-store-receipt"));
+
+        assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("2:2:0:0:0");
+        assertThat(jdbc.sql("SELECT on_hand || ':' || quarantined || ':' || available FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location AND lot_id=:lot")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).param("location",fixture.destinationLocation)
+                .param("lot",fixture.lot).query(String.class).single()).isEqualTo("2:2:0");
+    }
+
+    @Test
+    void archivedLotCanBePhysicallyReceivedAndReturnedOnlyIntoQuarantine() throws Exception {
+        var owner=fixture.owner();
+        var prepared=preparePickedTransfer(owner,20);
+        dispatch(owner,prepared,3,"dispatch-before-lot-archive");
+        var archived=owner.write("POST","/api/v1/organizations/"+fixture.organization+"/lots/"+fixture.lot+"/archive",
+                Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,"reason","Recall lot metadata after physical dispatch"));
+        assertThat(archived.statusCode()).as(archived.body()).isEqualTo(201);
+        String[] sourceBefore=jdbc.sql("SELECT on_hand || ':' || quarantined || ':' || available FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location AND lot_id=:lot")
+                .param("org",fixture.organization).param("store",fixture.sourceStore).param("location",fixture.sourceLocation)
+                .param("lot",fixture.lot).query(String.class).single().split(":");
+
+        var received=owner.write("POST",base()+"/"+prepared.transferId()+"/receive",
+                receiveRequest(prepared,4,0,18,"receipt-after-lot-archive"));
+        assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
+        assertThat(jdbc.sql("SELECT on_hand || ':' || quarantined || ':' || available FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location AND lot_id=:lot")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).param("location",fixture.destinationLocation)
+                .param("lot",fixture.lot).query(String.class).single()).isEqualTo("18:18:0");
+
+        var request=owner.write("POST",base()+"/"+prepared.transferId()+"/request-return",Map.of(
+                "requestId",UUID.randomUUID(),"expectedVersion",5,"requestReference","archived-lot-return-"+UUID.randomUUID(),
+                "lines",java.util.List.of(Map.of("lineId",prepared.lineId())),
+                "reason","Return the two packages left with the carrier","evidenceReference","carrier:archived-lot-return"));
+        assertThat(request.statusCode()).as(request.body()).isEqualTo(200);
+        var storedReference=jdbc.sql("SELECT observed_state->>'requestReference' FROM stockrescue.transfer_reconciliation_evidence WHERE org_id=:org AND command_id=:command AND evidence_type='RETURN_REQUEST'")
+                .param("org",fixture.organization).param("command",UUID.fromString(tree(request).path("commandId").asString()))
+                .query(String.class).single();
+        var returned=owner.write("POST",base()+"/"+prepared.transferId()+"/confirm-return",
+                confirmReturnRequest(UUID.randomUUID(),6,storedReference,"return-after-lot-archive-"+UUID.randomUUID(),
+                        prepared.lineId(),stockVersion(fixture.sourceStore,fixture.position),"archived-lot-return-line",
+                        prepared.sku(),prepared.lotCode()));
+        assertThat(returned.statusCode()).as(returned.body()).isEqualTo(200);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("20:18:0:2:0");
+        assertThat(jdbc.sql("SELECT on_hand || ':' || quarantined || ':' || available FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location AND lot_id=:lot")
+                .param("org",fixture.organization).param("store",fixture.sourceStore).param("location",fixture.sourceLocation)
+                .param("lot",fixture.lot).query(String.class).single()).isEqualTo((Long.parseLong(sourceBefore[0])+2)+":"+
+                        (Long.parseLong(sourceBefore[1])+2)+":"+sourceBefore[2]);
     }
 
     @Test
@@ -1597,9 +1758,17 @@ class TransferWorkflowTest extends InfrastructureTestBase {
             assertThat(response.statusCode()).as("receipt %s: %s", index, response.body()).isEqualTo(200);
         }
 
-        var first = tree(browser.get(base() + "/" + prepared.transferId() + "/custody?offset=0&limit=50"));
-        var second = tree(browser.get(base() + "/" + prepared.transferId() + "/custody?offset=50&limit=50"));
-        var third = tree(browser.get(base() + "/" + prepared.transferId() + "/custody?offset=100&limit=50"));
+        var firstResponse = browser.get(base() + "/" + prepared.transferId() + "/custody?limit=50");
+        assertThat(firstResponse.statusCode()).as(firstResponse.body()).isEqualTo(200);
+        var first = tree(firstResponse);
+        assertThat(first.path("nextCursor").asString()).isNotBlank();
+        var secondResponse = browser.get(base() + "/" + prepared.transferId() + "/custody?limit=50&cursor=" + first.path("nextCursor").asString());
+        assertThat(secondResponse.statusCode()).as(secondResponse.body()).isEqualTo(200);
+        var second = tree(secondResponse);
+        assertThat(second.path("nextCursor").asString()).isNotBlank();
+        var thirdResponse = browser.get(base() + "/" + prepared.transferId() + "/custody?limit=50&cursor=" + second.path("nextCursor").asString());
+        assertThat(thirdResponse.statusCode()).as(thirdResponse.body()).isEqualTo(200);
+        var third = tree(thirdResponse);
         assertThat(first.path("items")).hasSize(50);
         assertThat(first.path("hasMore").asBoolean()).isTrue();
         assertThat(second.path("items")).hasSize(50);
@@ -1613,6 +1782,58 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(java.util.stream.Stream.of(first, second, third)
                 .flatMap(page -> java.util.stream.StreamSupport.stream(page.path("items").spliterator(), false))
                 .filter(item -> item.path("type").asString().equals("RECEIPT")).count()).isEqualTo(101);
+    }
+
+    @Test
+    void transferEvidenceCursorReachesMoreThanTenThousandRowsAndRejectsCrossQueryReuse() throws Exception {
+        var browser = fixture.owner();
+        var prepared = preparePickedTransfer(browser, 2);
+        dispatch(browser, prepared, 3, "dispatch-evidence-cursor-pagination");
+        var opened = browser.write("POST", base() + "/" + prepared.transferId() + "/open-discrepancy",
+                Map.of("requestId", UUID.randomUUID(), "expectedVersion", 4, "lineId", prepared.lineId(),
+                        "expectedState", "Two units remain in transit", "observedState", "Carrier has not confirmed delivery",
+                        "reason", "Create a large deterministic evidence history for cursor pagination",
+                        "evidenceReference", "cursor-pagination:initial"));
+        assertThat(opened.statusCode()).as(opened.body()).isEqualTo(200);
+        UUID commandId = UUID.fromString(tree(opened).path("commandId").asString());
+        UUID actorId = jdbc.sql("SELECT actor_user_id FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND id=:command")
+                .param("org", fixture.organization).param("command", commandId).query(UUID.class).single();
+        UUID membershipId = jdbc.sql("SELECT membership_id FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND id=:command")
+                .param("org", fixture.organization).param("command", commandId).query(UUID.class).single();
+        jdbc.sql("""
+                INSERT INTO stockrescue.transfer_reconciliation_evidence
+                    (id,org_id,transfer_id,line_id,command_id,actor_user_id,membership_id,evidence_type,
+                     expected_state,observed_state,reason,evidence_reference)
+                SELECT gen_random_uuid(),:org,:transfer,:line,:command,:actor,:membership,'DISCREPANCY',
+                       jsonb_build_object('sequence',entry),jsonb_build_object('observedSequence',entry),
+                       'Cursor pagination fixture evidence','cursor-pagination:' || entry
+                FROM generate_series(1,10050) AS series(entry)
+                """)
+                .param("org", fixture.organization).param("transfer", prepared.transferId()).param("line", prepared.lineId())
+                .param("command", commandId).param("actor", actorId).param("membership", membershipId).update();
+
+        String scopedPath = base() + "/" + prepared.transferId() + "/discrepancies?limit=100";
+        var pageResponse = browser.get(scopedPath);
+        assertThat(pageResponse.statusCode()).as(pageResponse.body()).isEqualTo(200);
+        var page = tree(pageResponse);
+        var evidenceIds = new java.util.HashSet<String>();
+        int pageCount = 0;
+        do {
+            pageCount++;
+            for (JsonNode item : page.path("items")) evidenceIds.add(item.path("id").asString());
+            if (!page.path("hasMore").asBoolean()) break;
+            String cursor = page.path("nextCursor").asString();
+            assertThat(cursor).isNotBlank();
+            pageResponse = browser.get(scopedPath + "&cursor=" + cursor);
+            assertThat(pageResponse.statusCode()).as(pageResponse.body()).isEqualTo(200);
+            page = tree(pageResponse);
+        } while (pageCount < 110);
+        assertThat(pageCount).isEqualTo(101);
+        assertThat(evidenceIds).hasSize(10051);
+        var reused = browser.get(base() + "/discrepancies?storeId=" + fixture.destinationStore + "&limit=100&cursor="
+                + tree(browser.get(scopedPath)).path("nextCursor").asString());
+        assertThat(reused.statusCode()).isEqualTo(400);
+        assertThat(tree(reused).path("code").asString()).isEqualTo("INVALID_REQUEST");
     }
 
     @Test
@@ -1689,7 +1910,7 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         var returned = manager.write("POST", base() + "/" + prepared.transferId() + "/confirm-return",
                 Map.of("requestId", UUID.randomUUID(), "expectedVersion", 5, "requestReference", returnReference,
                         "documentReference", physicalReceiptReference,
-                        "lines", java.util.List.of(Map.of("lineId", prepared.lineId(), "expectedSourceVersion", sourceVersion,
+                        "lines", java.util.List.of(Map.of("lineId", prepared.lineId(), "quantity", 5, "expectedSourceVersion", sourceVersion,
                                 "documentLineReference", "returned-line-1", "observedSku", prepared.sku(),
                                 "observedLotCode", prepared.lotCode())),
                         "reason", "Counted the returned goods at source", "evidenceReference", "source:return-receipt"));
@@ -1724,7 +1945,61 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(reconciliation.path("expectedState").asString()).isNotBlank();
         assertThat(reconciliation.path("observedState").asString()).isNotBlank();
         assertThat(reconciliation.path("evidenceReference").asString()).isNotBlank();
-        assertThat(reconciliation.path("resolved").asBoolean()).isTrue();
+        assertThat(reconciliation.path("lineId").isNull()).isTrue();
+        assertThat(reconciliation.path("resolutionScope").asString()).isEqualTo("TRANSFER_CLOSED");
+        assertThat(reconciliation.path("lineSettled").asBoolean()).isFalse();
+        assertThat(reconciliation.path("transferClosed").asBoolean()).isTrue();
+    }
+
+    @Test
+    void oneLinePhysicalReturnCanBeSettledInSeparateFourAndSixUnitDocuments() throws Exception {
+        var manager=fixture.storeManager();
+        var prepared=preparePickedTransfer(manager,10);
+        dispatch(manager,prepared,3,"dispatch-single-line-staged-return");
+        String requestReference="single-line-return-"+UUID.randomUUID();
+        var request=manager.write("POST",base()+"/"+prepared.transferId()+"/request-return",Map.of(
+                "requestId",UUID.randomUUID(),"expectedVersion",4,"requestReference",requestReference,
+                "lines",java.util.List.of(Map.of("lineId",prepared.lineId())),
+                "reason","Request a staged return for one transfer line","evidenceReference","carrier:staged-single-line"));
+        assertThat(request.statusCode()).as(request.body()).isEqualTo(200);
+
+        UUID firstRequestId=UUID.randomUUID();
+        var firstCommand=confirmReturnRequest(firstRequestId,5,requestReference,"single-line-return-R-01",
+                prepared.lineId(),4,stockVersion(fixture.sourceStore,fixture.position),"return-line-R-01",prepared.sku(),prepared.lotCode());
+        var first=manager.write("POST",base()+"/"+prepared.transferId()+"/confirm-return",firstCommand);
+        assertThat(first.statusCode()).as(first.body()).isEqualTo(200);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("10:0:0:4:6");
+        var partial=tree(manager.get(base()+"/"+prepared.transferId()+"/active-returns")).path("items").get(0);
+        assertThat(partial.path("requestedQuantity").asLong()).isEqualTo(10);
+        assertThat(partial.path("settledQuantity").asLong()).isEqualTo(4);
+        assertThat(partial.path("unsettledQuantity").asLong()).isEqualTo(6);
+        assertThat(partial.path("state").asString()).isEqualTo("PARTIALLY_FULFILLED");
+
+        problem(manager.write("POST",base()+"/"+prepared.transferId()+"/confirm-return",
+                confirmReturnRequest(UUID.randomUUID(),6,requestReference,"single-line-return-overage",
+                        prepared.lineId(),7,stockVersion(fixture.sourceStore,fixture.position),"return-line-overage",
+                        prepared.sku(),prepared.lotCode())),409,"INVENTORY_CONFLICT");
+        var second=manager.write("POST",base()+"/"+prepared.transferId()+"/confirm-return",
+                confirmReturnRequest(UUID.randomUUID(),6,requestReference,"single-line-return-R-02",
+                        prepared.lineId(),6,stockVersion(fixture.sourceStore,fixture.position),"return-line-R-02",
+                        prepared.sku(),prepared.lotCode()));
+        assertThat(second.statusCode()).as(second.body()).isEqualTo(200);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("10:0:0:10:0");
+        assertThat(stockOnHand(fixture.sourceStore,fixture.sourceLocation)).isEqualTo(13);
+        assertThat(tree(manager.get(base()+"/"+prepared.transferId()+"/active-returns")).path("items")).isEmpty();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document_line WHERE org_id=:org AND transfer_id=:transfer AND document_type='RETURN'")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single()).isEqualTo(2);
+
+        var replay=manager.write("POST",base()+"/"+prepared.transferId()+"/confirm-return",firstCommand);
+        assertThat(replay.statusCode()).as(replay.body()).isEqualTo(200);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("10:0:0:10:0");
+        var duplicateDocument=manager.write("POST",base()+"/"+prepared.transferId()+"/confirm-return",
+                confirmReturnRequest(UUID.randomUUID(),7,requestReference,"single-line-return-R-01",
+                        prepared.lineId(),1,stockVersion(fixture.sourceStore,fixture.position),"return-line-duplicate",
+                        prepared.sku(),prepared.lotCode()));
+        assertThat(duplicateDocument.statusCode()).isEqualTo(409);
+        assertThat(jdbc.sql("SELECT observed_state->>'state' FROM stockrescue.transfer_reconciliation_evidence WHERE org_id=:org AND transfer_id=:transfer AND evidence_type='RETURN_FULFILLED' ORDER BY recorded_at DESC LIMIT 1")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(String.class).single()).isEqualTo("FULFILLED");
     }
 
     @Test
@@ -1952,6 +2227,9 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                 damageRequest(prepared, 5, 1, "loss-during-return-" + UUID.randomUUID()));
         assertThat(loss.statusCode()).as(loss.body()).isEqualTo(200);
         assertThat(custody(prepared.transferId(), prepared.lineId())).isEqualTo("2:0:1:0:1");
+        assertThat(jdbc.sql("SELECT observed_state->>'state' FROM stockrescue.transfer_reconciliation_evidence WHERE org_id=:org AND transfer_id=:transfer AND evidence_type='RETURN_SUPERSEDED'")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(String.class).single()).isEqualTo("SUPERSEDED");
+        assertThat(tree(manager.get(base()+"/"+prepared.transferId()+"/active-returns")).path("items")).isEmpty();
 
         var returnReference = "return-request-after-loss-" + UUID.randomUUID();
         var updatedRequest = manager.write("POST", base() + "/" + prepared.transferId() + "/request-return",
@@ -1964,7 +2242,7 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         var returned = manager.write("POST", base() + "/" + prepared.transferId() + "/confirm-return",
                 Map.of("requestId", UUID.randomUUID(), "expectedVersion", 7, "requestReference", returnReference,
                         "documentReference", "return-receipt-after-loss-" + UUID.randomUUID(),
-                        "lines", java.util.List.of(Map.of("lineId", prepared.lineId(),
+                        "lines", java.util.List.of(Map.of("lineId", prepared.lineId(), "quantity", 1,
                                 "expectedSourceVersion", stockVersion(fixture.sourceStore, fixture.position),
                                 "documentLineReference", "returned-after-loss", "observedSku", prepared.sku(),
                                 "observedLotCode", prepared.lotCode())),
@@ -2585,8 +2863,17 @@ class TransferWorkflowTest extends InfrastructureTestBase {
 
     private Map<String,Object> confirmReturnRequest(UUID requestId,long expectedTransferVersion,String requestReference,
             String documentReference,UUID lineId,long expectedSourceVersion,String documentLineReference,String sku,String lotCode) {
+        UUID transferId=jdbc.sql("SELECT transfer_id FROM stockrescue.transfer_line WHERE org_id=:org AND id=:line")
+                .param("org",fixture.organization).param("line",lineId).query(UUID.class).single();
+        long quantity=transfers.pendingReturn(fixture.organization,transferId,lineId).orElseThrow().quantity();
+        return confirmReturnRequest(requestId,expectedTransferVersion,requestReference,documentReference,lineId,quantity,
+                expectedSourceVersion,documentLineReference,sku,lotCode);
+    }
+
+    private Map<String,Object> confirmReturnRequest(UUID requestId,long expectedTransferVersion,String requestReference,
+            String documentReference,UUID lineId,long quantity,long expectedSourceVersion,String documentLineReference,String sku,String lotCode) {
         return Map.of("requestId",requestId,"expectedVersion",expectedTransferVersion,"requestReference",requestReference,
-                "documentReference",documentReference,"lines",java.util.List.of(Map.of("lineId",lineId,
+                "documentReference",documentReference,"lines",java.util.List.of(Map.of("lineId",lineId,"quantity",quantity,
                         "expectedSourceVersion",expectedSourceVersion,"documentLineReference",documentLineReference,
                         "observedSku",sku,"observedLotCode",lotCode)),
                 "reason","Counted the exact physical line returned to the source","evidenceReference","return-receipt:"+documentReference);

@@ -1321,7 +1321,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List transfers for one currently authorized store with optional lifecycle filtering */
+        /**
+         * List transfers for one currently authorized store with optional lifecycle filtering
+         * @description The optional cursor is bound to the organization, store, and status filter. It orders the current mutable queue by updatedAt descending and transfer ID descending; refresh from the first page to see records whose updatedAt changed while paging.
+         */
         get: operations["listTransfers"];
         put?: never;
         /** Create an auditable stock transfer request without changing stock */
@@ -1356,7 +1359,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List documented discrepancies and pending return requests for a currently authorized store */
+        /**
+         * List documented discrepancies and return-request lifecycle evidence for a currently authorized store
+         * @description Pages use a scope-bound keyset cursor ordered by recordedAt descending and evidence ID descending. Continue while hasMore is true; immutable records inserted after paging starts are visible after refreshing the first page.
+         */
         get: operations["listTransferDiscrepancies"];
         put?: never;
         post?: never;
@@ -1373,7 +1379,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List line-wise in-transit quantities and age for a currently authorized store */
+        /**
+         * List line-wise in-transit quantities and age for a currently authorized store
+         * @description The optional scope-bound cursor follows persisted dispatch time, transfer ID, and line ID. Outstanding lines can leave the mutable view after settlement; refresh from the first page for current state.
+         */
         get: operations["listTransfersInTransit"];
         put?: never;
         post?: never;
@@ -1485,6 +1494,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read current source and destination actions for an authorized transfer */
+        get: operations["getTransferCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/transfers/{transferId}/close-discrepancy": {
         parameters: {
             query?: never;
@@ -1526,7 +1552,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read the immutable custody movements for a transfer */
+        /**
+         * Read the immutable custody movements for a transfer
+         * @description Pages use a scope-bound keyset cursor ordered by recordedAt descending and movement ID descending. Continue while hasMore is true; the cursor is not an authorization token.
+         */
         get: operations["getTransferCustodyTimeline"];
         put?: never;
         post?: never;
@@ -1553,6 +1582,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/discrepancies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read discrepancy evidence filtered to one currently authorized transfer
+         * @description The query filters by organization and transfer before pagination. Pages use immutable recordedAt-descending, evidence-ID-descending keyset order; current authorization for a participant store is checked on every request.
+         */
+        get: operations["listTransferScopedDiscrepancies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/transfers/{transferId}/dispatch": {
         parameters: {
             query?: never;
@@ -1564,6 +1613,26 @@ export interface paths {
         put?: never;
         /** Atomically dispatch every picked line from source stock into transfer custody */
         post: operations["dispatchTransfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/in-transit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read in-transit lines filtered to one currently authorized transfer
+         * @description The query filters by organization and transfer before pagination. Its scope-bound cursor follows persisted dispatch time, transfer ID, and line ID; current authorization for a participant store is checked on every request.
+         */
+        get: operations["listTransferScopedTransit"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3274,6 +3343,10 @@ export interface components {
             /** Format: uuid */
             requestId: string;
         };
+        TransferCapabilitiesResponse: {
+            destinationActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "READ_TRANSFERS" | "REQUEST_TRANSFER" | "APPROVE_TRANSFER" | "PICK_TRANSFER" | "DISPATCH_TRANSFER" | "CANCEL_TRANSFER" | "REQUEST_TRANSFER_RETURN" | "MANAGE_TRANSFER_DISCREPANCIES" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
+            sourceActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "READ_TRANSFERS" | "REQUEST_TRANSFER" | "APPROVE_TRANSFER" | "PICK_TRANSFER" | "DISPATCH_TRANSFER" | "CANCEL_TRANSFER" | "REQUEST_TRANSFER_RETURN" | "MANAGE_TRANSFER_DISCREPANCIES" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
+        };
         TransferCommandIntentInspection: {
             committedOutcome?: components["schemas"]["CommandResponse"] | null;
             /** @enum {string} */
@@ -3315,6 +3388,8 @@ export interface components {
             lineId: string;
             observedLotCode: string;
             observedSku: string;
+            /** Format: int64 */
+            quantity: number;
         };
         TransferConfirmReturnRequest: {
             documentReference: string;
@@ -3358,8 +3433,11 @@ export interface components {
             version: number;
         };
         TransferCustodyPage: {
+            /** @description True when another page exists */
             hasMore: boolean;
             items: components["schemas"]["TransferCustodyMovement"][];
+            /** @description Cursor for the next immutable custody page, or null when complete */
+            nextCursor: string | null;
         };
         TransferDamageLineRequest: {
             documentLineReference: string;
@@ -3388,8 +3466,11 @@ export interface components {
             requestId: string;
         };
         TransferDiscrepancyPage: {
+            /** @description True when another page exists */
             hasMore: boolean;
             items: components["schemas"]["TransferDiscrepancyRecord"][];
+            /** @description Cursor for the next immutable evidence page, or null when complete */
+            nextCursor: string | null;
         };
         TransferDiscrepancyRecord: {
             /** Format: uuid */
@@ -3400,11 +3481,14 @@ export interface components {
             id: string;
             /** Format: uuid */
             lineId: string | null;
+            lineSettled: boolean;
             observedState: string;
             reason: string;
             /** Format: date-time */
             recordedAt: string;
-            resolved: boolean;
+            /** @enum {string} */
+            resolutionScope: "OPEN" | "LINE_SETTLED" | "TRANSFER_CLOSED" | "PENDING" | "PARTIALLY_FULFILLED" | "FULFILLED" | "SUPERSEDED";
+            transferClosed: boolean;
             /** Format: uuid */
             transferId: string;
             type: string;
@@ -3460,8 +3544,11 @@ export interface components {
             transferId: string;
         };
         TransferInTransitPage: {
+            /** @description True when another page exists */
             hasMore: boolean;
             items: components["schemas"]["TransferInTransitLine"][];
+            /** @description Cursor for the next line page, or null when complete */
+            nextCursor: string | null;
         };
         TransferLineResponse: {
             /** Format: uuid */
@@ -3597,8 +3684,11 @@ export interface components {
             version: number;
         };
         TransferQueuePage: {
+            /** @description True when another page exists */
             hasMore: boolean;
             items: components["schemas"]["TransferQueueItem"][];
+            /** @description Cursor for the next current queue page, or null when complete */
+            nextCursor: string | null;
         };
         TransferReceiveLineRequest: {
             documentLineReference: string;
@@ -12455,6 +12545,8 @@ export interface operations {
                 status?: "REQUESTED" | "REJECTED" | "CANCELLED" | "APPROVED" | "PICKING" | "PICKED" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECONCILIATION_REQUIRED" | "RECEIVED" | "CLOSED_WITH_DISCREPANCY";
                 offset?: number;
                 limit?: number;
+                /** @description Opaque cursor for this organization, store, and status filter */
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -12696,6 +12788,8 @@ export interface operations {
                 storeId: string;
                 offset?: number;
                 limit?: number;
+                /** @description Opaque cursor for this organization and store */
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -12776,6 +12870,8 @@ export interface operations {
                 storeId: string;
                 offset?: number;
                 limit?: number;
+                /** @description Opaque cursor for this organization and store */
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -13227,6 +13323,83 @@ export interface operations {
             };
         };
     };
+    getTransferCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferCapabilitiesResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
     closeTransferDiscrepancy: {
         parameters: {
             query?: never;
@@ -13400,6 +13573,8 @@ export interface operations {
             query?: {
                 offset?: number;
                 limit?: number;
+                /** @description Opaque cursor for this organization and transfer */
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -13559,6 +13734,87 @@ export interface operations {
             };
         };
     };
+    listTransferScopedDiscrepancies: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor for this organization and transfer */
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferDiscrepancyPage"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
     dispatchTransfer: {
         parameters: {
             query?: never;
@@ -13585,6 +13841,87 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listTransferScopedTransit: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor for this organization and transfer */
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferInTransitPage"];
                 };
             };
             /** @description Invalid transfer request */

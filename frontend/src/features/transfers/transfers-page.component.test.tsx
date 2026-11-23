@@ -9,8 +9,9 @@ import { TenantScope } from '../organizations/tenant-requests'
 import { CreateTransferPanel, TransferDetailView } from './transfers-page'
 
 const apiMocks = vi.hoisted(() => ({
-  available: vi.fn(), locations: vi.fn(), products: vi.fn(), lots: vi.fn(), lane: vi.fn(), positions: vi.fn(), sourcePosition: vi.fn(),
+  available: vi.fn(), locations: vi.fn(), stores: vi.fn(), product: vi.fn(), lot: vi.fn(), sourceLocation: vi.fn(), lane: vi.fn(), positions: vi.fn(), sourcePosition: vi.fn(),
   custody: vi.fn(), transit: vi.fn(), discrepancies: vi.fn(), activeReturns: vi.fn(), command: vi.fn(),
+  capabilities: vi.fn(),
 }))
 
 vi.mock('@/api/inventory', () => ({
@@ -18,19 +19,23 @@ vi.mock('@/api/inventory', () => ({
   listInventoryAvailableByLot: apiMocks.available,
   listInventoryPositions: apiMocks.positions,
 }))
-vi.mock('@/api/storage-locations', () => ({ listStorageLocations: apiMocks.locations }))
-vi.mock('@/api/products', () => ({ listProducts: apiMocks.products }))
-vi.mock('@/api/lots', () => ({ listLots: apiMocks.lots }))
+vi.mock('@/api/storage-locations', () => ({ getStorageLocation: apiMocks.sourceLocation, listStorageLocations: apiMocks.locations }))
+vi.mock('@/api/products', () => ({ getProduct: apiMocks.product }))
+vi.mock('@/api/lots', () => ({ getLot: apiMocks.lot }))
+vi.mock('@/api/stores', () => ({ getStore: vi.fn(), listStores: apiMocks.stores }))
 vi.mock('@/api/configuration', () => ({ lookupLane: apiMocks.lane }))
 vi.mock('@/components/app-link', () => ({ AppLink: ({ href, children, ...props }: React.ComponentProps<'a'>) => <a href={href} {...props}>{children}</a> }))
 vi.mock('@/api/transfers', () => ({
   executeTransferCommand: apiMocks.command,
   getTransfer: vi.fn(),
+  getTransferCapabilities: apiMocks.capabilities,
   listTransferCustody: apiMocks.custody,
   listTransferDiscrepancies: apiMocks.discrepancies,
+  listTransferScopedDiscrepancies: apiMocks.discrepancies,
   listActiveTransferReturns: apiMocks.activeReturns,
   listTransfers: vi.fn(),
   listTransfersInTransit: apiMocks.transit,
+  listTransferInTransit: apiMocks.transit,
   recoverTransferCommand: vi.fn(),
 }))
 
@@ -64,12 +69,12 @@ function renderWithTenant(element: React.ReactNode) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['REQUEST_TRANSFER', 'READ_INVENTORY']), store('destination', ['READ_STORE'])], hasMore: false })
   apiMocks.available.mockResolvedValue({ items: [sourcePositionA, sourcePositionB], hasMore: false })
-  apiMocks.locations.mockImplementation(async (_org: string, storeId: string) => ({
-    items: storeId === 'source' ? [sourceLocationA, sourceLocationB] : [destinationLocation], hasMore: false,
-  }))
-  apiMocks.products.mockResolvedValue({ items: [{ id: 'product-1', sku: 'SKU-1', name: 'Product one' }, { id: 'product-2', sku: 'SKU-2', name: 'Product two' }] })
-  apiMocks.lots.mockImplementation(async (_org: string, productId: string) => ({ items: [{ id: productId === 'product-1' ? 'lot-1' : 'lot-2', lotCode: productId === 'product-1' ? 'LOT-1' : 'LOT-2' }] }))
+  apiMocks.locations.mockImplementation(async (_org: string, storeId: string) => ({ items: storeId === 'destination' ? [destinationLocation] : [], hasMore: false }))
+  apiMocks.sourceLocation.mockImplementation(async (_org: string, _store: string, locationId: string) => locationId === 'source-location-a' ? sourceLocationA : sourceLocationB)
+  apiMocks.product.mockImplementation(async (_org: string, productId: string) => ({ id: productId, sku: productId === 'product-1' ? 'SKU-1' : 'SKU-2', name: productId === 'product-1' ? 'Product one' : 'Product two' }))
+  apiMocks.lot.mockImplementation(async (_org: string, lotId: string) => ({ id: lotId, lotCode: lotId === 'lot-1' ? 'LOT-1' : 'LOT-2' }))
   apiMocks.lane.mockResolvedValue({ status: 'CONFIGURED', lane: { originZoneId: 'source-zone', destinationZoneId: 'destination-zone' } })
   apiMocks.positions.mockResolvedValue({ items: [{ id: 'destination-position', productId: 'product-1', lotId: 'lot-1', locationId: 'destination-location', version: 2 }] })
   apiMocks.sourcePosition.mockResolvedValue({ version: 9, onHand: 12, reserved: 0, available: 12 })
@@ -77,15 +82,15 @@ beforeEach(() => {
   apiMocks.transit.mockResolvedValue({ items: [], hasMore: false })
   apiMocks.discrepancies.mockResolvedValue({ items: [], hasMore: false })
   apiMocks.activeReturns.mockResolvedValue({ items: [] })
+  apiMocks.capabilities.mockResolvedValue({ sourceActions: ['READ_STORE', 'READ_TRANSFERS', 'READ_INVENTORY', 'RECEIVE_STOCK', 'REQUEST_TRANSFER'],
+    destinationActions: ['READ_STORE', 'READ_TRANSFERS', 'READ_INVENTORY', 'RECEIVE_STOCK', 'REQUEST_TRANSFER_RETURN'] })
   apiMocks.command.mockResolvedValue({ transferId: 'transfer-1', status: 'REQUESTED', version: 1 })
 })
 
 it('edits two transfer lines, blocks a duplicate source position and submits each observed version', async () => {
   const user = userEvent.setup()
   const onCommand = vi.fn().mockResolvedValue(undefined)
-  const source = store('source', ['REQUEST_TRANSFER', 'READ_INVENTORY'])
-  const destination = store('destination', ['READ_STORE'])
-  renderWithTenant(<CreateTransferPanel organizationId={orgId} stores={[source, destination]} administrator onCommand={onCommand} busy={false} />)
+  renderWithTenant(<CreateTransferPanel organizationId={orgId} administrator onCommand={onCommand} busy={false} />)
 
   await user.click(screen.getByRole('button', { name: 'New transfer request' }))
   await user.selectOptions(screen.getByLabelText('Destination store'), 'destination')
@@ -115,12 +120,57 @@ it('edits two transfer lines, blocks a duplicate source position and submits eac
   } })
 })
 
+it('finds a later store, source position and destination location through server pages', async () => {
+  const user = userEvent.setup()
+  const onCommand = vi.fn().mockResolvedValue(undefined)
+  const sourceStore = store('source-26', ['REQUEST_TRANSFER', 'READ_INVENTORY'])
+  const destinationStore = store('destination-26', ['READ_STORE'])
+  apiMocks.stores.mockImplementation(async (_org: string, _state: string, query: string) => ({
+    items: query === '26' ? [sourceStore, destinationStore] : [], hasMore: false,
+  }))
+  const pageOne = Array.from({ length: 100 }, (_, index) => ({ ...sourcePositionA, positionId: `position-${index + 1}`, productId: `product-${index + 1}`, lotId: `lot-${index + 1}`, locationId: `source-location-${index + 1}` }))
+  apiMocks.available.mockImplementation(async (_org: string, _store: string, filters: { offset: number }) => filters.offset === 0
+    ? { items: pageOne, hasMore: true }
+    : { items: [{ ...sourcePositionA, positionId: 'position-101', productId: 'product-101', lotId: 'lot-101', locationId: 'source-location-101', positionVersion: 101 }], hasMore: false })
+  const firstLocations = Array.from({ length: 25 }, (_, index) => ({ ...destinationLocation, id: `destination-location-${index + 1}`, code: `DST-${index + 1}` }))
+  apiMocks.locations.mockImplementation(async (_org: string, _store: string, _includeArchived: boolean, _query: string, offset: number) => offset === 0
+    ? { items: firstLocations, hasMore: true }
+    : { items: [{ ...destinationLocation, id: 'destination-location-26', code: 'DST-26' }], hasMore: false })
+  apiMocks.sourceLocation.mockImplementation(async (_org: string, _store: string, locationId: string) => ({
+    ...sourceLocationA, id: locationId, zoneId: 'source-zone',
+  }))
+  apiMocks.product.mockImplementation(async (_org: string, productId: string) => ({ id: productId, sku: `SKU-${productId.split('-').at(-1)}`, name: `Product ${productId}` }))
+  apiMocks.lot.mockImplementation(async (_org: string, lotId: string) => ({ id: lotId, lotCode: `LOT-${lotId.split('-').at(-1)}` }))
+
+  renderWithTenant(<CreateTransferPanel organizationId={orgId} administrator onCommand={onCommand} busy={false} />)
+  await user.click(screen.getByRole('button', { name: 'New transfer request' }))
+  await user.type(screen.getByLabelText('Find a source or destination store'), '26')
+  await user.selectOptions(await screen.findByLabelText('Source store'), 'source-26')
+  await user.selectOptions(screen.getByLabelText('Destination store'), 'destination-26')
+  await user.click(await screen.findByRole('button', { name: 'Load more available source positions' }))
+  await user.selectOptions(screen.getByLabelText('Source product and lot'), 'position-101')
+  await user.click(await screen.findByRole('button', { name: 'Load more destination locations' }))
+  await user.selectOptions(screen.getByLabelText('Destination receiving location'), 'destination-location-26')
+  await user.type(screen.getByLabelText('Quantity (EA)'), '1')
+  await user.type(screen.getByLabelText('Reason for transfer'), 'Reach stock outside the first page')
+  await user.type(screen.getByLabelText('Evidence reference'), 'selection:page-26')
+
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Create transfer request' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: 'Create transfer request' }))
+  await waitFor(() => expect(onCommand).toHaveBeenCalledTimes(1))
+  expect(onCommand.mock.calls[0]![0]).toMatchObject({ operation: 'CREATE', body: {
+    sourceStoreId: 'source-26', destinationStoreId: 'destination-26',
+    lines: [{ sourcePositionId: 'position-101', destinationLocationId: 'destination-location-26', quantity: 1, expectedSourceVersion: 101 }],
+  } })
+})
+
 it('surfaces a stale destination position and requires a fresh version before receipt', async () => {
   apiMocks.positions.mockRejectedValueOnce(new ApiError(new Response(null, { status: 409 }), { code: 'INVENTORY_CONFLICT' } as never))
   const transfer = transferFixture()
   const source = store('source', ['READ_TRANSFERS'])
   const destination = store('destination', ['READ_TRANSFERS', 'READ_INVENTORY', 'RECEIVE_STOCK'])
-  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} queueStores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
+  apiMocks.capabilities.mockResolvedValueOnce({ sourceActions: ['READ_STORE', 'READ_TRANSFERS'], destinationActions: ['READ_STORE', 'READ_TRANSFERS', 'READ_INVENTORY', 'RECEIVE_STOCK'] })
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
 
   expect(await screen.findByRole('alert')).toHaveTextContent('stock position changed since it was reviewed')
   expect(screen.getByRole('button', { name: 'Record 2 physical units received' })).toBeDisabled()
@@ -131,13 +181,15 @@ it('hides return actions from an unauthorized destination and disables an author
   const transfer = transferFixture()
   const source = store('source', ['READ_TRANSFERS'])
   const unauthorizedDestination = store('destination', ['READ_TRANSFERS'])
-  const { unmount } = renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, unauthorizedDestination]} queueStores={[source, unauthorizedDestination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
+  apiMocks.capabilities.mockResolvedValueOnce({ sourceActions: ['READ_STORE', 'READ_TRANSFERS'], destinationActions: ['READ_STORE', 'READ_TRANSFERS'] })
+  const { unmount } = renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, unauthorizedDestination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
   await waitFor(() => expect(apiMocks.activeReturns).toHaveBeenCalled())
   expect(screen.queryByRole('form', { name: 'Request physical return' })).not.toBeInTheDocument()
   unmount()
 
   const destination = store('destination', ['READ_TRANSFERS', 'REQUEST_TRANSFER_RETURN'])
-  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} queueStores={[source, destination]} onCommand={vi.fn()} busy={true} onRefresh={async () => undefined} />)
+  apiMocks.capabilities.mockResolvedValueOnce({ sourceActions: ['READ_STORE', 'READ_TRANSFERS'], destinationActions: ['READ_STORE', 'READ_TRANSFERS', 'REQUEST_TRANSFER_RETURN'] })
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} onCommand={vi.fn()} busy={true} onRefresh={async () => undefined} />)
   const request = await screen.findByRole('form', { name: 'Request physical return' })
   expect(within(request).getByText(/2 EA outstanding/)).toBeInTheDocument()
   expect(within(request).getByRole('button', { name: 'Saving return request…' })).toBeDisabled()
@@ -147,7 +199,7 @@ it('shows cancellation only when the backend authorizes the current transfer sta
   const transfer = { ...transferFixture('REQUESTED'), canCancel: true }
   const source = store('source', ['READ_TRANSFERS', 'REQUEST_TRANSFER'])
   const destination = store('destination', ['READ_TRANSFERS'])
-  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} queueStores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
   expect(await screen.findByRole('form', { name: 'Cancel transfer before dispatch' })).toBeInTheDocument()
 })
 
@@ -156,7 +208,8 @@ it('shows the current active return to the source receiver and blocks changes wh
   const source = store('source', ['READ_TRANSFERS', 'READ_INVENTORY', 'RECEIVE_STOCK'])
   const destination = store('destination', ['READ_TRANSFERS'])
   apiMocks.activeReturns.mockResolvedValue({ items: [{ transferId: transfer.id, lineId: 'line-1', evidenceId: 'return-evidence-1', requestId: 'return-command-1', requestReference: 'RETURN-1', requestedQuantity: 2, settledQuantity: 0, unsettledQuantity: 2, state: 'PENDING', transferVersion: transfer.version, requestedAt: '2026-11-20T10:00:00Z' }] })
-  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} queueStores={[source, destination]} onCommand={vi.fn()} busy={true} onRefresh={async () => undefined} />)
+  apiMocks.capabilities.mockResolvedValueOnce({ sourceActions: ['READ_STORE', 'READ_TRANSFERS', 'READ_INVENTORY', 'RECEIVE_STOCK'], destinationActions: ['READ_STORE', 'READ_TRANSFERS'] })
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} onCommand={vi.fn()} busy={true} onRefresh={async () => undefined} />)
 
   const physicalReturn = await screen.findByRole('form', { name: 'Confirm physical return request RETURN-1' })
   expect(screen.queryByRole('form', { name: 'Request physical return' })).not.toBeInTheDocument()
@@ -170,7 +223,8 @@ it('disables transfer stock actions when the authoritative active-return read fa
   const source = store('source', ['READ_TRANSFERS', 'READ_INVENTORY', 'RECEIVE_STOCK'])
   const destination = store('destination', ['READ_TRANSFERS', 'REQUEST_TRANSFER_RETURN'])
   apiMocks.activeReturns.mockRejectedValue(new ApiError(new Response(null, { status: 503 }), { code: 'SERVICE_UNAVAILABLE' } as never))
-  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} queueStores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
+  apiMocks.capabilities.mockResolvedValueOnce({ sourceActions: ['READ_STORE', 'READ_TRANSFERS'], destinationActions: ['READ_STORE', 'READ_TRANSFERS', 'RECEIVE_STOCK', 'READ_INVENTORY', 'REQUEST_TRANSFER_RETURN'] })
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
 
   expect(await screen.findByRole('alert')).toHaveTextContent('Current physical return state could not be verified')
   expect(screen.queryByRole('form', { name: 'Receive line 1' })).not.toBeInTheDocument()
@@ -183,14 +237,14 @@ it('shows custody reconciliation evidence with its actor, state, reference and r
   const destination = store('destination', ['READ_TRANSFERS'])
   apiMocks.discrepancies.mockResolvedValue({ items: [{ id: 'reconciliation-1', transferId: transfer.id, lineId: 'line-1',
     type: 'CUSTODY_RECONCILIATION', reason: 'Manager reviewed the completed return', evidenceReference: 'close:case-1',
-    expectedState: '{"outstanding":0}', observedState: '{"closed":true}', actorId: 'manager-1', resolved: true,
+    expectedState: '{"outstanding":0}', observedState: '{"closed":true}', actorId: 'manager-1', resolutionScope: 'TRANSFER_CLOSED', lineSettled: true, transferClosed: true,
     recordedAt: '2026-11-20T12:00:00Z' }], hasMore: false })
-  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} queueStores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
 
   const evidence = await screen.findByText(/CUSTODY_RECONCILIATION/)
   expect(evidence).toBeInTheDocument()
   expect(screen.getByText(/Actor manager-1/)).toBeInTheDocument()
-  expect(screen.getByText(/Resolved/)).toBeInTheDocument()
+  expect(screen.getByText(/Transfer closed/)).toBeInTheDocument()
   expect(screen.getByText(/close:case-1/)).toBeInTheDocument()
 })
 
@@ -204,18 +258,18 @@ it('appends the next custody and reconciliation pages without replacing the firs
     stockMovementId: 'stock-1', stockPositionId: 'position-1', reason: 'First custody entry',
     evidenceReference: 'dispatch:one', recordedAt: '2026-11-20T10:00:00Z' }
   const secondMovement = { ...firstMovement, id: 'movement-2', version: 2, type: 'RECEIPT', reason: 'Second custody entry', recordedAt: '2026-11-20T11:00:00Z' }
-  apiMocks.custody.mockImplementation(async (_org: string, _transfer: string, _signal: AbortSignal, offset = 0) => ({
-    items: [offset === 0 ? firstMovement : secondMovement], hasMore: offset === 0,
+  apiMocks.custody.mockImplementation(async (_org: string, _transfer: string, _signal: AbortSignal, cursor: string | null) => ({
+    items: [cursor === null ? firstMovement : secondMovement], nextCursor: cursor === null ? 'movement-cursor' : null, hasMore: cursor === null,
   }))
   const firstEvidence = { id: 'evidence-1', transferId: transfer.id, lineId: 'line-1', type: 'DISCREPANCY',
     reason: 'First evidence entry', evidenceReference: 'case:first', expectedState: '{}', observedState: '{}',
-    actorId: 'actor-1', resolved: false, recordedAt: '2026-11-20T10:00:00Z' }
+    actorId: 'actor-1', resolutionScope: 'OPEN', lineSettled: false, transferClosed: false, recordedAt: '2026-11-20T10:00:00Z' }
   const secondEvidence = { ...firstEvidence, id: 'evidence-2', type: 'CUSTODY_RECONCILIATION', reason: 'Second evidence entry',
-    evidenceReference: 'case:second', resolved: true, recordedAt: '2026-11-20T11:00:00Z' }
-  apiMocks.discrepancies.mockImplementation(async (_org: string, _store: string, _signal: AbortSignal, offset = 0) => ({
-    items: [offset === 0 ? firstEvidence : secondEvidence], hasMore: offset === 0,
+    evidenceReference: 'case:second', resolutionScope: 'LINE_SETTLED', lineSettled: true, recordedAt: '2026-11-20T11:00:00Z' }
+  apiMocks.discrepancies.mockImplementation(async (_org: string, _transfer: string, _signal: AbortSignal, cursor: string | null) => ({
+    items: [cursor === null ? firstEvidence : secondEvidence], nextCursor: cursor === null ? 'evidence-cursor' : null, hasMore: cursor === null,
   }))
-  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} queueStores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
 
   expect(await screen.findByText(/First custody entry/)).toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Load more custody entries' }))

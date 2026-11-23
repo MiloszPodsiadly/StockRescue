@@ -414,7 +414,7 @@ public class InventoryService {
         if(requestId==null || transferId==null || physicallyReceivedAt==null
                 || physicallyReceivedAt.isAfter(clock.instant())
                 || physicallyReceivedAt.isBefore(Instant.parse("0001-01-01T00:00:00Z"))) throw failure(Kind.INVALID_REQUEST);
-        var member=access.requireTransferStore(actor,org,store,StoreAction.RECEIVE_STOCK,true);
+        var member=access.requireStoreIncludingArchived(actor,org,store,StoreAction.RECEIVE_STOCK,true);
         var lines=normalizeTransferReceipts(requestedLines);
         var received=physicallyReceivedAt.truncatedTo(ChronoUnit.MICROS);
         reason=text(reason,500);evidenceReference=text(evidenceReference,256);
@@ -431,7 +431,7 @@ public class InventoryService {
         for(var line:lines) grouped.computeIfAbsent(new PositionIdentity(line.locationId(),line.productId(),line.lotId()),
                 ignored -> new ArrayList<>()).add(line);
         var identities=List.copyOf(grouped.keySet());
-        inventory.lockActiveContexts(org,store,identities);
+        inventory.lockTransferSettlementContexts(org,store,identities);
         var candidatesByIdentity=new LinkedHashMap<PositionIdentity,StockPosition>();
         for(var identity:identities) {
             var candidate=inventory.positionByIdentity(org,store,identity.locationId(),identity.lotId())
@@ -491,7 +491,7 @@ public class InventoryService {
     public TransferStockResult returnForTransfer(UUID actor,UUID org,UUID store,UUID requestId,UUID transferId,
             String reason,String evidenceReference,List<TransferReturnLine> requestedLines) {
         if(requestId==null || transferId==null) throw failure(Kind.INVALID_REQUEST);
-        var member=access.requireTransferStore(actor,org,store,StoreAction.RECEIVE_STOCK,true);
+        var member=access.requireStoreIncludingArchived(actor,org,store,StoreAction.RECEIVE_STOCK,true);
         var lines=normalizeTransferReturns(requestedLines);
         reason=text(reason,500);evidenceReference=text(evidenceReference,256);
         byte[] digest=transferSettlementFingerprint(store,InventoryOperation.TRANSFER_RETURN,transferId,lines,reason,evidenceReference);
@@ -502,7 +502,7 @@ public class InventoryService {
         inventory.lockStoreForWrite(org,store);
         var observed=lines.stream().map(line -> inventory.position(org,store,line.positionId(),false)
                 .orElseThrow(OrganizationUnavailableException::new)).toList();
-        inventory.lockActiveContexts(org,store,observed.stream().map(position ->
+        inventory.lockTransferSettlementContexts(org,store,observed.stream().map(position ->
                 new PositionIdentity(position.locationId(),position.productId(),position.lotId())).toList());
         var locked=inventory.lockPositions(org,store,lines.stream().map(TransferReturnLine::positionId).toList());
         var byId=locked.stream().collect(java.util.stream.Collectors.toMap(StockPosition::id,position -> position));

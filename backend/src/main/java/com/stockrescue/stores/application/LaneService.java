@@ -75,10 +75,17 @@ public class LaneService {
 
     @Transactional
     public void lockTransferStoresForRequest(UUID org,UUID originStore,UUID destinationStore) {
+        var active=lockTransferStoreRows(org,originStore,destinationStore);
+        if(active.stream().anyMatch(value->!value)) throw inactive();
+    }
+
+    /** Lock both participant stores in ID order before transfer advisory locks are acquired. */
+    @Transactional
+    public List<Boolean> lockTransferStoreRows(UUID org,UUID originStore,UUID destinationStore) {
         pair(originStore,destinationStore);
         var active=lanes.lockTransferStores(org,originStore,destinationStore);
         if(active.size()!=2) throw new OrganizationUnavailableException();
-        if(active.stream().anyMatch(value->!value)) throw inactive();
+        return active;
     }
 
     @Transactional

@@ -2364,6 +2364,14 @@ CREATE INDEX transfer_order_source_queue_idx
     ON stockrescue.transfer_order(org_id,source_store_id,status,updated_at DESC,id DESC);
 CREATE INDEX transfer_order_destination_queue_idx
     ON stockrescue.transfer_order(org_id,destination_store_id,status,updated_at DESC,id DESC);
+CREATE INDEX transfer_order_source_read_idx
+    ON stockrescue.transfer_order(org_id,source_store_id,id);
+CREATE INDEX transfer_order_destination_read_idx
+    ON stockrescue.transfer_order(org_id,destination_store_id,id);
+CREATE INDEX transfer_order_source_updated_queue_idx
+    ON stockrescue.transfer_order(org_id,source_store_id,updated_at DESC,id DESC);
+CREATE INDEX transfer_order_destination_updated_queue_idx
+    ON stockrescue.transfer_order(org_id,destination_store_id,updated_at DESC,id DESC);
 
 CREATE TABLE stockrescue.transfer_command_receipt (
     id UUID PRIMARY KEY,
@@ -2734,13 +2742,14 @@ CREATE UNIQUE INDEX transfer_put_back_line_once_idx
     ON stockrescue.transfer_physical_document_line(org_id,transfer_id,line_id) WHERE document_type='PUT_BACK';
 CREATE UNIQUE INDEX transfer_dispatch_document_once_idx
     ON stockrescue.transfer_physical_document(org_id,transfer_id) WHERE document_type='DISPATCH';
-CREATE UNIQUE INDEX transfer_return_request_line_once_idx
-    ON stockrescue.transfer_physical_document_line(org_id,transfer_id,return_request_evidence_id)
+CREATE UNIQUE INDEX transfer_return_document_line_once_idx
+    ON stockrescue.transfer_physical_document_line(org_id,document_id,line_id)
     WHERE document_type='RETURN';
 
 CREATE FUNCTION stockrescue.validate_transfer_document_line() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 DECLARE document_row RECORD; transfer_line_row RECORD; source_row RECORD; expected_source_version BIGINT;
+        return_request_quantity BIGINT; previously_returned NUMERIC;
 BEGIN
     SELECT document_type,source_store_id INTO document_row FROM stockrescue.transfer_physical_document
      WHERE org_id=NEW.org_id AND transfer_id=NEW.transfer_id AND id=NEW.document_id;
@@ -2793,15 +2802,32 @@ BEGIN
             RAISE EXCEPTION 'Put-back evidence requires a matching immutable physical pick record' USING ERRCODE='23514';
         END IF;
     END IF;
-    IF NEW.document_type='RETURN' AND NOT EXISTS (
-        SELECT 1 FROM stockrescue.transfer_reconciliation_evidence e
-        WHERE e.org_id=NEW.org_id AND e.transfer_id=NEW.transfer_id AND e.id=NEW.return_request_evidence_id
-            AND e.line_id=NEW.line_id AND e.evidence_type='RETURN_REQUEST'
-            AND coalesce(btrim(e.observed_state->>'requestReference'),'')<>''
-            AND (e.expected_state->>'outstanding')::bigint=NEW.quantity
-            AND (e.observed_state->>'requestedQuantity')::bigint=NEW.quantity
-    ) THEN
-        RAISE EXCEPTION 'Physical return line must fulfill its exact outstanding request line' USING ERRCODE='23514';
+    IF NEW.document_type='RETURN' THEN
+        PERFORM 1 FROM stockrescue.transfer_order
+         WHERE org_id=NEW.org_id AND id=NEW.transfer_id FOR UPDATE;
+        SELECT (e.expected_state->>'outstanding')::bigint
+          INTO return_request_quantity
+          FROM stockrescue.transfer_reconciliation_evidence e
+         WHERE e.org_id=NEW.org_id AND e.transfer_id=NEW.transfer_id AND e.id=NEW.return_request_evidence_id
+           AND e.line_id=NEW.line_id AND e.evidence_type='RETURN_REQUEST'
+           AND coalesce(btrim(e.observed_state->>'requestReference'),'')<>''
+           AND (e.observed_state->>'requestedQuantity')::bigint=(e.expected_state->>'outstanding')::bigint
+           AND NOT EXISTS (
+               SELECT 1 FROM stockrescue.transfer_reconciliation_evidence state
+                WHERE state.org_id=e.org_id AND state.transfer_id=e.transfer_id
+                  AND state.line_id=e.line_id
+                  AND state.expected_state->>'returnRequestEvidenceId'=e.id::text
+                  AND state.evidence_type IN ('RETURN_FULFILLED','RETURN_SUPERSEDED'));
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Physical return must reference a current, unfulfilled return request' USING ERRCODE='23514';
+        END IF;
+        SELECT coalesce(sum(quantity),0)::numeric INTO previously_returned
+          FROM stockrescue.transfer_physical_document_line
+         WHERE org_id=NEW.org_id AND transfer_id=NEW.transfer_id AND line_id=NEW.line_id
+           AND return_request_evidence_id=NEW.return_request_evidence_id AND document_type='RETURN';
+        IF previously_returned + NEW.quantity::numeric > return_request_quantity::numeric THEN
+            RAISE EXCEPTION 'Physical returns cannot exceed the approved return request quantity' USING ERRCODE='23514';
+        END IF;
     END IF;
     RETURN NEW;
 END;
@@ -2844,7 +2870,8 @@ CREATE TABLE stockrescue.transfer_reconciliation_evidence (
     actor_user_id UUID NOT NULL,
     membership_id UUID NOT NULL,
     evidence_type VARCHAR(24) NOT NULL CHECK (evidence_type IN
-        ('DISCREPANCY','RETURN_REQUEST','PROJECTION_REPAIR','CUSTODY_RECONCILIATION')),
+        ('DISCREPANCY','RETURN_REQUEST','PROJECTION_REPAIR','CUSTODY_RECONCILIATION',
+         'RETURN_PARTIAL','RETURN_FULFILLED','RETURN_SUPERSEDED')),
     expected_state JSONB NOT NULL CHECK (jsonb_typeof(expected_state)='object'),
     observed_state JSONB NOT NULL CHECK (jsonb_typeof(observed_state)='object'),
     reason VARCHAR(500) NOT NULL CHECK (length(btrim(reason))>0 AND reason COLLATE "C" !~ '[[:cntrl:]]'),
@@ -2866,6 +2893,8 @@ ALTER TABLE stockrescue.transfer_physical_document_line
     REFERENCES stockrescue.transfer_reconciliation_evidence(org_id,transfer_id,line_id,id) ON DELETE RESTRICT;
 CREATE INDEX transfer_reconciliation_timeline_idx
     ON stockrescue.transfer_reconciliation_evidence(org_id,transfer_id,recorded_at DESC,id DESC);
+CREATE INDEX transfer_reconciliation_line_lifecycle_idx
+    ON stockrescue.transfer_reconciliation_evidence(org_id,transfer_id,line_id,evidence_type,recorded_at DESC,id DESC);
 CREATE INDEX transfer_reconciliation_open_idx
     ON stockrescue.transfer_reconciliation_evidence(org_id,transfer_id,evidence_type,recorded_at DESC)
     WHERE evidence_type='DISCREPANCY';
@@ -2937,6 +2966,9 @@ CREATE TABLE stockrescue.transfer_custody_movement (
 );
 CREATE INDEX transfer_custody_timeline_idx
     ON stockrescue.transfer_custody_movement(org_id,transfer_id,recorded_at DESC,id DESC);
+CREATE INDEX transfer_custody_dispatch_order_idx
+    ON stockrescue.transfer_custody_movement(org_id,recorded_at,transfer_id,line_id)
+    WHERE movement_type='DISPATCH';
 CREATE INDEX transfer_custody_line_timeline_idx
     ON stockrescue.transfer_custody_movement(org_id,transfer_id,line_id,version);
 CREATE UNIQUE INDEX transfer_custody_single_dispatch_idx
@@ -3245,7 +3277,7 @@ BEGIN
                             AND e.line_id=l.line_id
                             AND e.evidence_type='RETURN_REQUEST'
                             AND coalesce(btrim(e.observed_state->>'requestReference'),'')<>''
-                            AND (e.expected_state->>'outstanding')::bigint=NEW.quantity)) THEN
+                            AND (e.expected_state->>'outstanding')::bigint>=NEW.quantity)) THEN
             RAISE EXCEPTION 'Return custody must match physical stock returned to its source position' USING ERRCODE='23514';
         END IF;
     END IF;
