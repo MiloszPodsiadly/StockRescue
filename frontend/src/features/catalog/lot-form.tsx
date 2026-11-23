@@ -4,12 +4,14 @@ import { Field, inputClass } from '@/components/form-field'
 import { correctLotMetadata, registerLot } from '@/api/lots'
 import type { ManufacturerLot, RegisterLot } from '@/api/lots'
 import { DurableForm } from './durable-form'
+import { useCatalogScope } from './catalog-query'
 
 type Marking = RegisterLot['dateMarking']
 export function LotForm({ organizationId, productId, lot, storeId, onRefresh, onSaved, onCancel, onLock }: {
   organizationId: string, productId: string, lot?: ManufacturerLot, storeId?: string, onRefresh: () => Promise<void>, onSaved?: () => Promise<void>, onCancel?: () => void, onLock?: (locked: boolean) => void,
 }) {
   const navigate = useNavigate()
+  const scope = useCatalogScope()
   // The reviewed snapshot stays fixed while a request may be committed but unacknowledged.
   const [original] = useState(lot)
   const [code, setCode] = useState(lot?.lotCode ?? '')
@@ -42,7 +44,16 @@ export function LotForm({ organizationId, productId, lot, storeId, onRefresh, on
     execute={async (body, signal) => original
       ? (await correctLotMetadata(organizationId, original.id, { requestId: body.requestId, ...body.metadata, expectedVersion: body.expectedVersion, reason: body.reason, evidenceReviewed: true }, signal)).lot
       : registerLot(organizationId, { requestId: body.requestId, ...(body.storeId ? { storeId: body.storeId } : {}), ...body.metadata, productId, lotCode: body.lotCode }, signal)}
-    onCancel={onCancel} onRefresh={onRefresh} onLock={onLock} onSaved={async result => { if (onSaved) await onSaved(); else await navigate({ to: '/organizations/$organizationId/catalog/lots/$lotId', params: { organizationId, lotId: result.id } }) }}>
+    onCancel={onCancel} onRefresh={onRefresh} onLock={onLock} onSaved={async result => {
+      if (onSaved) await onSaved()
+      else {
+        await navigate({
+          to: '/organizations/$organizationId/catalog/lots/$lotId',
+          params: { organizationId, lotId: result.id },
+          state: { stockRescueCreatedLot: { actorId: scope[1], organizationId, lotId: result.id, lotCode: result.lotCode } } as never,
+        })
+      }
+    }}>
     <Field label="Manufacturer lot code">{id => <input id={id} required maxLength={128} value={code} readOnly={correction} onChange={event => { setCode(event.target.value) }} className={inputClass} />}</Field>
     {storeRegistration ? <p className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-sm"><strong>Manufacturer identity UNVERIFIED.</strong> This records observed lot metadata at the selected store. It does not record goods received or create stock quantity.</p> : <Field label="Manufacturer identity status">{id => <select id={id} value={identity} onChange={event => { setIdentity(event.target.value as RegisterLot['identityState']); setVerified(false) }} className={inputClass}>
       {original?.identityState !== 'CONFIRMED' && <option value="CANDIDATE">Candidate — identity unverified</option>}<option value="CONFIRMED">Confirmed manufacturer identity</option>

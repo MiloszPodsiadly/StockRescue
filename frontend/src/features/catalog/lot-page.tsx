@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useParams } from '@tanstack/react-router'
+import { useLocation, useNavigate, useParams } from '@tanstack/react-router'
 import { archiveLot, getLot, listLotCorrections } from '@/api/lots'
 import type { ArchiveLot as ArchiveLotCommand, ManufacturerLot } from '@/api/lots'
 import { getProduct } from '@/api/products'
@@ -27,6 +27,22 @@ export function LotPage() {
 function LotDetail({ organizationId, lotId }: { organizationId: string, lotId: string }) {
   const scope = useCatalogScope()
   const client = useQueryClient()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [createdLotPreview] = useState(() => readCreatedLotPreview(location.state, scope[1], organizationId, lotId))
+  useEffect(() => {
+    if (!createdLotPreview) return
+    void navigate({
+      to: '/organizations/$organizationId/catalog/lots/$lotId',
+      params: { organizationId, lotId },
+      replace: true,
+      state: previous => {
+        const next = { ...previous } as Record<string, unknown>
+        delete next.stockRescueCreatedLot
+        return next
+      },
+    })
+  }, [createdLotPreview, lotId, navigate, organizationId])
   const organization = useOrganization()
   const [editing, setEditing] = useState<ManufacturerLot | null>(null)
   const [safetyEditing, setSafetyEditing] = useState<ManufacturerLot | null>(null)
@@ -44,7 +60,10 @@ function LotDetail({ organizationId, lotId }: { organizationId: string, lotId: s
     await client.invalidateQueries({ queryKey: [...scope, 'eligibility'] })
     setEditing(null); setSafetyEditing(null); setArchiving(null)
   }
-  if (!lot.data || accessFailed(lot.error) || !product.data || accessFailed(product.error)) return <QueryNotice title={lot.isPending || product.isPending ? 'Loading lot context…' : 'Lot unavailable'} error={lot.error ?? product.error} reload={() => { void lot.refetch(); if (productId) void product.refetch() }} />
+  if (!lot.data || accessFailed(lot.error) || !product.data || accessFailed(product.error)) return <>
+    {!accessFailed(lot.error) && (lot.data?.lotCode ?? createdLotPreview?.lotCode) && <h2 className="break-all text-3xl font-semibold">{lot.data?.lotCode ?? createdLotPreview?.lotCode}</h2>}
+    <QueryNotice title={lot.isPending || product.isPending ? 'Loading lot context…' : 'Lot unavailable'} error={lot.error ?? product.error} reload={() => { void lot.refetch(); if (productId) void product.refetch() }} />
+  </>
   const current = lot.data
   const administrator = organization.role === 'ORG_ADMIN'
   const editable = administrator && current.active && product.data.active
@@ -72,6 +91,15 @@ function LotDetail({ organizationId, lotId }: { organizationId: string, lotId: s
           : <p className="text-sm text-muted-foreground">Choose an assigned store to record source evidence and assess its storage context.</p>}
     <PolicyPanel organizationId={organizationId} category={product.data.category} temperature={product.data.temperatureClass} />
   </section>
+}
+
+function readCreatedLotPreview(state: unknown, actorId: string, organizationId: string, lotId: string) {
+  if (typeof state !== 'object' || state === null) return undefined
+  const preview = (state as Record<string, unknown>).stockRescueCreatedLot
+  if (typeof preview !== 'object' || preview === null) return undefined
+  const value = preview as Record<string, unknown>
+  if (value.actorId !== actorId || value.organizationId !== organizationId || value.lotId !== lotId || typeof value.lotCode !== 'string' || value.lotCode.length === 0) return undefined
+  return { lotCode: value.lotCode }
 }
 function LotArchive({ organizationId, lot, onSaved, onRefresh, onCancel }: {
   organizationId: string, lot: ManufacturerLot, onSaved: (lot: ManufacturerLot) => Promise<void>, onRefresh: () => Promise<void>, onCancel: () => void,
