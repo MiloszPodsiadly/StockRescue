@@ -103,6 +103,26 @@ public class AccessPolicy {
         return requireStore(actor, organization, store, action, write, false, true);
     }
 
+    /**
+     * Authorizes a physical receipt or return while holding only a shared store row lock.
+     * The same transaction must never upgrade this lock after acquiring participant-store locks.
+     */
+    public OrganizationAccess requireTransferSettlementStore(UUID actor, UUID organization, UUID store, StoreAction action) {
+        var membership = lock(actor, organization, false);
+        boolean includeArchived = membership.role() == OrganizationRole.ORG_ADMIN;
+        if (!access.transferSettlementStore(organization, store, includeArchived)) throw new OrganizationUnavailableException();
+        if (includeArchived && !access.store(organization, store, false)) return membership;
+        if (membership.role() == OrganizationRole.ORG_ADMIN) return membership;
+        var role = access.storeRole(organization, membership.membershipId(), store, true)
+                .orElseThrow(OrganizationUnavailableException::new);
+        if (!storeActions(role).contains(action)) throw new AccessDeniedException("Action unavailable");
+        return membership;
+    }
+
+    public boolean isActiveStore(UUID organization, UUID store) {
+        return access.store(organization, store, false);
+    }
+
     private OrganizationAccess requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write,
             boolean includeArchived, boolean sharedStoreLock) {
         var membership = write ? lock(actor, organization, false) : organization(actor, organization);

@@ -17,7 +17,7 @@ import { lookupLane } from '@/api/configuration'
 import {
   acknowledgeTransferCommandIntent, executeTransferCommand, getTransfer, inspectTransferCommandIntent,
   getTransferCapabilities, isTransferCommandIntent, listActiveTransferReturns, listPendingTransferCommandIntents, listTransferCustody, listTransferDiscrepancies,
-  listTransferInTransit, listTransferScopedDiscrepancies, listTransfers, listTransfersInTransit, markTransferCommandIntentSubmitted, prepareTransferCommandIntent,
+  getTransferSettlementPositions, listTransferInTransit, listTransferScopedDiscrepancies, listTransfers, listTransfersInTransit, markTransferCommandIntentSubmitted, prepareTransferCommandIntent,
   resolveFailedTransferCommandIntent,
 } from '@/api/transfers'
 import type {
@@ -28,20 +28,12 @@ import { OrganizationPage } from '../organizations/organization-page'
 import { useOrganization } from '../organizations/organization-context'
 import { useTenantKey } from '../organizations/tenant-requests'
 import { formatTransferAge, transferStatusLabel, transferStatusOptions } from './transfer-format'
+import { loadStoreCursorPages } from './transfer-pagination'
+import type { StoreCursorStates } from './transfer-pagination'
 
 type DraftTransferLine = { id: string, sourcePositionId: string, destinationLocationId: string, quantity: string }
 type PendingReturnLine = { lineId: string, requestId: string, requestReference: string, requestedQuantity: number, settledQuantity: number, unsettledQuantity: number }
 const newDraftTransferLine = (): DraftTransferLine => ({ id: crypto.randomUUID(), sourcePositionId: '', destinationLocationId: '', quantity: '' })
-
-type StoreCursorPage<T> = { items: T[], nextCursor: string | null, hasMore: boolean }
-
-async function loadStoreCursorPages<T>(storeIds: string[], cursors: Record<string, string | null>,
-  load: (storeId: string, cursor: string | null) => Promise<StoreCursorPage<T>>) {
-  const pages = await Promise.all(storeIds.map(async storeId => ({ storeId, page: await load(storeId, cursors[storeId] ?? null) })))
-  const nextCursors: Record<string, string | null> = {}
-  for (const { storeId, page } of pages) nextCursors[storeId] = page.hasMore ? page.nextCursor : null
-  return { items: pages.flatMap(({ page }) => page.items), nextCursors, hasMore: pages.some(({ page }) => page.hasMore && page.nextCursor !== null) }
-}
 
 function discrepancyStatus(item: TransferDiscrepancyRecord) {
   if (['PENDING', 'PARTIALLY_FULFILLED', 'FULFILLED', 'SUPERSEDED'].includes(item.resolutionScope))
@@ -96,22 +88,22 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
   const readableStores = uniqueBy(storeItems.filter(store => store.active && store.allowedActions.includes('READ_TRANSFERS')), store => store.id)
   const queueStoreIds = (storeFilter ? readableStores.filter(store => store.id === storeFilter) : readableStores).map(store => store.id)
   const queue = useInfiniteQuery({
-    queryKey: [...scope, 'transfers', 'queue', status, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
-    initialPageParam: {} as Record<string, string | null>,
+    queryKey: [...scope, 'transfers', 'queue', storeSearch, status, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
+    initialPageParam: {} as StoreCursorStates,
     queryFn: ({ signal, pageParam }) => loadStoreCursorPages(queueStoreIds, pageParam,
       (storeId, cursor) => listTransfers(organizationId, storeId, status, signal, cursor, 50)),
     getNextPageParam: page => page.hasMore ? page.nextCursors : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
   const transit = useInfiniteQuery({
-    queryKey: [...scope, 'transfers', 'in-transit', queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
-    initialPageParam: {} as Record<string, string | null>,
+    queryKey: [...scope, 'transfers', 'in-transit', storeSearch, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
+    initialPageParam: {} as StoreCursorStates,
     queryFn: ({ signal, pageParam }) => loadStoreCursorPages(queueStoreIds, pageParam,
       (storeId, cursor) => listTransfersInTransit(organizationId, storeId, signal, cursor, 50)),
     getNextPageParam: page => page.hasMore ? page.nextCursors : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
   const evidence = useInfiniteQuery({
-    queryKey: [...scope, 'transfers', 'evidence', queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
-    initialPageParam: {} as Record<string, string | null>,
+    queryKey: [...scope, 'transfers', 'evidence', storeSearch, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
+    initialPageParam: {} as StoreCursorStates,
     queryFn: ({ signal, pageParam }) => loadStoreCursorPages(queueStoreIds, pageParam,
       (storeId, cursor) => listTransferDiscrepancies(organizationId, storeId, signal, cursor, 50)),
     getNextPageParam: page => page.hasMore ? page.nextCursors : undefined, refetchOnWindowFocus: true, staleTime: 0,
@@ -143,7 +135,7 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
       ? `Saved as ${transferStatusLabel(outcome.status)}. Server record ${outcome.transferId.slice(0, 8)} · version ${outcome.version}.`
       : `Saved as ${transferStatusLabel(outcome.status)}. The result is confirmed; its recovery record still needs acknowledgement.`)
     await Promise.all([refreshTransferData(), refreshPendingIntents()])
-    await navigate({ to: '/organizations/$organizationId/transfers/$transferId', params: { organizationId, transferId: outcome.transferId } })
+    if (transferId !== outcome.transferId) await navigate({ to: '/organizations/$organizationId/transfers/$transferId', params: { organizationId, transferId: outcome.transferId } })
   }
 
   async function runIntent(intent: TransferCommandIntent) {
@@ -201,7 +193,7 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
         setPendingInspection(null); setRecoveryMissing(false)
         setCommandNotice(`Recovered ${transferStatusLabel(result.committedOutcome.status)} from the saved command record.`)
         await Promise.all([refreshTransferData(), refreshPendingIntents()])
-        await navigate({ to: '/organizations/$organizationId/transfers/$transferId', params: { organizationId, transferId: result.committedOutcome.transferId } })
+        if (transferId !== result.committedOutcome.transferId) await navigate({ to: '/organizations/$organizationId/transfers/$transferId', params: { organizationId, transferId: result.committedOutcome.transferId } })
       } else {
         setPendingInspection(result)
         setRecoveryMissing(result.executionStatus === 'SUBMITTED_AWAITING_OUTCOME' || result.executionStatus === 'PREPARED')
@@ -554,14 +546,28 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
     lineId: item.lineId, requestId: item.requestId, requestReference: item.requestReference,
     requestedQuantity: item.requestedQuantity, settledQuantity: item.settledQuantity, unsettledQuantity: item.unsettledQuantity,
   }))
+  const canReceivePhysicalSettlement = capabilities.data?.canReceivePhysicalSettlement ?? false
+  const canConfirmPhysicalReturn = capabilities.data?.canConfirmPhysicalReturn ?? false
   const sourceCanConfirmReturn = sourceActions.includes('RECEIVE_STOCK') && sourceActions.includes('READ_INVENTORY')
-  const returnPositionQueries = useQueries({ queries: pendingReturns.map(item => {
+    || canConfirmPhysicalReturn
+  const historicalPositions = useQuery({ queryKey: [...scope, 'transfers', 'settlement-positions', transfer.id, transfer.version],
+    enabled: canReceivePhysicalSettlement || canConfirmPhysicalReturn,
+    queryFn: ({ signal }) => getTransferSettlementPositions(organizationId, transfer.id, signal), staleTime: 0 })
+  const regularReturnPositionQueries = useQueries({ queries: pendingReturns.map(item => {
     const line = transfer.lines.find(candidate => candidate.id === item.lineId)!
     return { queryKey: [...scope, 'transfers', 'return-source-position', transfer.id, item.lineId, transfer.version],
-      enabled: sourceCanConfirmReturn, queryFn: ({ signal }: { signal: AbortSignal }) => getInventorySnapshot(organizationId, transfer.sourceStoreId, line.sourcePositionId, signal), staleTime: 0 }
+      enabled: sourceCanConfirmReturn && !canConfirmPhysicalReturn,
+      queryFn: ({ signal }: { signal: AbortSignal }) => getInventorySnapshot(organizationId, transfer.sourceStoreId, line.sourcePositionId, signal), staleTime: 0 }
   }) })
+  const returnPositionQueries: ReturnPositionQuery[] = canConfirmPhysicalReturn
+    ? pendingReturns.map(item => {
+      const saved = historicalPositions.data?.sourcePositions.find(position => position.lineId === item.lineId)
+      return { data: saved ? { version: saved.version } : undefined, isPending: historicalPositions.isPending,
+        isError: historicalPositions.isError || Boolean(historicalPositions.data && !saved), refetch: () => historicalPositions.refetch() }
+    })
+    : regularReturnPositionQueries
   const canReadDestinationStock = destinationActions.includes('READ_INVENTORY')
-  const receivingPositions = useQuery({ queryKey: [...scope, 'transfers', 'destination-positions', transfer.id, transfer.version], enabled: canReadDestinationStock && transfer.lines.some(line => outstanding(line) > 0),
+  const receivingPositions = useQuery({ queryKey: [...scope, 'transfers', 'destination-positions', transfer.id, transfer.version], enabled: canReadDestinationStock && !canReceivePhysicalSettlement && transfer.lines.some(line => outstanding(line) > 0),
     queryFn: async ({ signal }) => {
       const records = await Promise.all(transfer.lines.map(async line => {
         const page = await listInventoryPositions(organizationId, transfer.destinationStoreId,
@@ -570,6 +576,9 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
       }))
       return new Map(records)
     }, staleTime: 0 })
+  const destinationPositions = canReceivePhysicalSettlement
+    ? new Map(historicalPositions.data?.destinationPositions.map(position => [position.lineId, { version: position.version }]) ?? [])
+    : receivingPositions.data
   const ageSeconds = Math.max(0, ...transitItems.map(line => line.ageSeconds))
   const firstDispatchAt = [...transitItems].sort((left, right) => left.dispatchedAt.localeCompare(right.dispatchedAt))[0]?.dispatchedAt
   const nowVersion = transfer.version
@@ -595,10 +604,14 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
     {activeReturnQuery.isPending && <p role="status" className="rounded-xl border border-border p-4 text-sm">Checking current unsettled physical return requests before enabling stock actions…</p>}
     {activeReturnQuery.isError && <p role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">Current physical return state could not be verified, so stock and return actions are unavailable. {errorMessage(activeReturnQuery.error)} <Button variant="outline" onClick={() => { void activeReturnQuery.refetch() }}>Retry return state</Button></p>}
     {pendingReturns.length > 0 && <p role="note" className="rounded-xl border border-border p-4 text-sm">A physical receipt or confirmed loss on a line with an active return request will supersede that request's remaining quantity. You can then create a new request for the current outstanding quantity.</p>}
-    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('RECEIVE_STOCK') && (canReadDestinationStock
-      ? transfer.lines.filter(line => outstanding(line) > 0).map(line => <ReceiveAction key={line.id} transfer={transfer} line={line} position={receivingPositions.data?.get(line.id)} busy={busy} onCommand={onCommand} />)
-      : <StateMessage state="forbidden" title="Destination inventory version unavailable" description="Receiving requires current inventory read access at the destination so stale stock cannot be overwritten." />)}
-    {receivingPositions.isError && canReadDestinationStock && <p role="alert" className="text-sm text-destructive">Destination stock version could not be read. Refresh inventory access before receiving: {errorMessage(receivingPositions.error)} <Button variant="outline" onClick={() => { void receivingPositions.refetch() }}>Retry stock read</Button></p>}
+    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status)
+      && (destinationActions.includes('RECEIVE_STOCK') && canReadDestinationStock || canReceivePhysicalSettlement)
+      && transfer.lines.filter(line => outstanding(line) > 0).map(line => <ReceiveAction key={line.id} transfer={transfer} line={line} position={destinationPositions?.get(line.id)} busy={busy} onCommand={onCommand} />)}
+    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status)
+      && destinationActions.includes('RECEIVE_STOCK') && !canReadDestinationStock && !canReceivePhysicalSettlement
+      && <StateMessage state="forbidden" title="Destination inventory version unavailable" description="Receiving requires current inventory read access at the destination so stale stock cannot be overwritten." />}
+    {receivingPositions.isError && canReadDestinationStock && !canReceivePhysicalSettlement && <p role="alert" className="text-sm text-destructive">Destination stock version could not be read. Refresh inventory access before receiving: {errorMessage(receivingPositions.error)} <Button variant="outline" onClick={() => { void receivingPositions.refetch() }}>Retry stock read</Button></p>}
+    {historicalPositions.isError && (canReceivePhysicalSettlement || canConfirmPhysicalReturn) && <p role="alert" className="text-sm text-destructive">Transfer settlement position versions could not be read. Retry the transfer record before recording a physical receipt or return. {errorMessage(historicalPositions.error)} <Button variant="outline" onClick={() => { void historicalPositions.refetch() }}>Retry settlement version read</Button></p>}
     {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES') && transfer.lines.some(line => outstanding(line) > 0) && <DamageAction transfer={transfer} busy={busy} onCommand={onCommand} />}
     {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('REQUEST_TRANSFER_RETURN') && transfer.lines.some(line => outstanding(line) > 0 && !pendingReturns.some(item => item.lineId === line.id)) && <RequestReturnAction key={`${transfer.id}:${transfer.version}`} transfer={transfer} pendingLineIds={new Set(pendingReturns.map(item => item.lineId))} busy={busy} onCommand={onCommand} />}
     {activeReturnQuery.isSuccess && pendingReturns.length > 0 && <section aria-label="Return requests" className="space-y-4 rounded-2xl border border-border p-5"><h4 className="text-lg font-semibold">Physical return requests</h4>{pendingReturns.map(item => {
@@ -664,7 +677,7 @@ function RequestReturnAction({ transfer, pendingLineIds, busy, onCommand }: {
   </form>
 }
 
-type ReturnPositionQuery = { data?: StockPosition, isPending: boolean, isError: boolean, refetch: () => Promise<unknown> }
+type ReturnPositionQuery = { data?: Pick<StockPosition, 'version'>, isPending: boolean, isError: boolean, refetch: () => Promise<unknown> }
 
 function ConfirmReturnAction({ transfer, returns, positionQueries, busy, onCommand }: {
   transfer: Transfer, returns: PendingReturnLine[], positionQueries: ReturnPositionQuery[],
@@ -817,7 +830,7 @@ function DispatchAction({ transfer, busy, onCommand }: { transfer: Transfer, bus
   </form>
 }
 
-function ReceiveAction({ transfer, line, position, busy, onCommand }: { transfer: Transfer, line: Transfer['lines'][number], position?: StockPosition | null, busy: boolean, onCommand: (intent: TransferCommandIntent) => Promise<void> }) {
+function ReceiveAction({ transfer, line, position, busy, onCommand }: { transfer: Transfer, line: Transfer['lines'][number], position?: Pick<StockPosition, 'version'> | null, busy: boolean, onCommand: (intent: TransferCommandIntent) => Promise<void> }) {
   const [quantity, setQuantity] = useState(String(outstanding(line)))
   const [documentReference, setDocumentReference] = useState('')
   const [lineReference, setLineReference] = useState('')

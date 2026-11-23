@@ -136,6 +136,37 @@ public class TransferRepository {
                 """).param("org", organizationId).param("store", storeId).query(Boolean.class).single();
     }
 
+    public boolean hasOpenTransferForProduct(UUID organizationId, UUID productId) {
+        return jdbc.sql("""
+                SELECT EXISTS (
+                    SELECT 1 FROM stockrescue.transfer_order t
+                    JOIN stockrescue.transfer_line l ON l.org_id=t.org_id AND l.transfer_id=t.id
+                    JOIN stockrescue.stock_position p ON p.org_id=l.org_id AND p.store_id=l.source_store_id
+                        AND p.id=l.source_position_id
+                    WHERE t.org_id=:org AND p.product_id=:product
+                      AND t.status IN ('REQUESTED','APPROVED','PICKING','PICKED','IN_TRANSIT',
+                                       'PARTIALLY_RECEIVED','RECONCILIATION_REQUIRED')
+                )
+                """).param("org", organizationId).param("product", productId).query(Boolean.class).single();
+    }
+
+    public boolean hasOpenTransferForLocation(UUID organizationId, UUID storeId, UUID locationId) {
+        return jdbc.sql("""
+                SELECT EXISTS (
+                    SELECT 1 FROM stockrescue.transfer_order t
+                    JOIN stockrescue.transfer_line l ON l.org_id=t.org_id AND l.transfer_id=t.id
+                    JOIN stockrescue.stock_position p ON p.org_id=l.org_id AND p.store_id=l.source_store_id
+                        AND p.id=l.source_position_id
+                    WHERE t.org_id=:org AND (
+                        (l.destination_store_id=:store AND l.destination_location_id=:location)
+                        OR (l.source_store_id=:store AND p.location_id=:location))
+                      AND t.status IN ('REQUESTED','APPROVED','PICKING','PICKED','IN_TRANSIT',
+                                       'PARTIALLY_RECEIVED','RECONCILIATION_REQUIRED')
+                )
+                """).param("org", organizationId).param("store", storeId).param("location", locationId)
+                .query(Boolean.class).single();
+    }
+
     public long custodyLedgerMismatchCount() {
         return jdbc.sql("""
                 WITH account_mismatch AS (

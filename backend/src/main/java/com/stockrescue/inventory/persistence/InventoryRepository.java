@@ -93,15 +93,12 @@ public class InventoryRepository {
         lockContexts(org,store,requested,false);
     }
 
-    /**
-     * Physical transfer settlement may reference an archived lot after dispatch. The lot remains
-     * locked and food-safety evaluation will quarantine the received or returned quantity.
-     */
+    /** Physical settlement locks even archived contexts so all such stock is recorded in quarantine. */
     public void lockTransferSettlementContexts(UUID org,UUID store,Collection<PositionIdentity> requested) {
         lockContexts(org,store,requested,true);
     }
 
-    private void lockContexts(UUID org,UUID store,Collection<PositionIdentity> requested,boolean allowArchivedLot) {
+    private void lockContexts(UUID org,UUID store,Collection<PositionIdentity> requested,boolean allowArchivedContext) {
         requireWriteTransaction();
         var contexts=requested.stream().distinct().sorted(Comparator.comparing(PositionIdentity::productId)
                 .thenComparing(PositionIdentity::lotId).thenComparing(PositionIdentity::locationId)).toList();
@@ -112,7 +109,7 @@ public class InventoryRepository {
         var lockedProducts=jdbc.sql("SELECT id,active FROM stockrescue.product WHERE org_id=:org AND id IN (:ids) ORDER BY id FOR SHARE")
                 .param("org",org).param("ids",products).query((row,index)->Map.entry(row.getObject("id",UUID.class),row.getBoolean("active"))).list();
         if(lockedProducts.size()!=products.size()) throw new OrganizationUnavailableException();
-        if(lockedProducts.stream().anyMatch(product->!product.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
+        if(!allowArchivedContext && lockedProducts.stream().anyMatch(product->!product.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
 
         var productsByLot=new HashMap<UUID,UUID>();
         for(var context:contexts) {
@@ -125,7 +122,7 @@ public class InventoryRepository {
                         row.getObject("product_id",UUID.class),row.getBoolean("active"))).list();
         if(lockedLots.size()!=lots.size() || lockedLots.stream().anyMatch(lot->!lot.productId().equals(productsByLot.get(lot.id()))))
             throw new OrganizationUnavailableException();
-        if(!allowArchivedLot && lockedLots.stream().anyMatch(lot->!lot.active()))
+        if(!allowArchivedContext && lockedLots.stream().anyMatch(lot->!lot.active()))
             throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
 
         var locations=contexts.stream().map(PositionIdentity::locationId).distinct().sorted().toList();
@@ -136,7 +133,7 @@ public class InventoryRepository {
                 """).param("org",org).param("store",store).param("ids",locations)
                 .query((row,index)->Map.entry(row.getObject("id",UUID.class),row.getBoolean("active"))).list();
         if(lockedLocations.size()!=locations.size()) throw new OrganizationUnavailableException();
-        if(lockedLocations.stream().anyMatch(location->!location.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
+        if(!allowArchivedContext && lockedLocations.stream().anyMatch(location->!location.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
     }
 
     public Optional<StockPosition> positionByIdentity(UUID org,UUID store,UUID location,UUID lot) {

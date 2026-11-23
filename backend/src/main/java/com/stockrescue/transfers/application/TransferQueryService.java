@@ -36,9 +36,32 @@ public class TransferQueryService {
     @Transactional(readOnly = true)
     public TransferCapabilities capabilities(UUID actor, UUID organizationId, UUID transferId) {
         var detail = authorizedDetail(actor, organizationId, transferId);
+        boolean sourceActive = access.isActiveStore(organizationId, detail.transfer().sourceStoreId());
+        boolean destinationActive = access.isActiveStore(organizationId, detail.transfer().destinationStoreId());
+        boolean administrator = access.organization(actor, organizationId).role()
+                == com.stockrescue.access.application.OrganizationAccess.OrganizationRole.ORG_ADMIN;
+        boolean receivingStatus = List.of(TransferStatus.IN_TRANSIT, TransferStatus.PARTIALLY_RECEIVED,
+                TransferStatus.RECONCILIATION_REQUIRED).contains(detail.transfer().status());
+        boolean canReceivePhysicalSettlement = administrator && !destinationActive && receivingStatus
+                && detail.transfer().outstandingQuantity().signum() > 0;
+        boolean canConfirmPhysicalReturn = administrator && !sourceActive
+                && detail.transfer().status() == TransferStatus.RECONCILIATION_REQUIRED
+                && !transfers.activeReturns(organizationId, transferId).isEmpty();
         return new TransferCapabilities(
                 access.currentStoreActions(actor, organizationId, detail.transfer().sourceStoreId()),
-                access.currentStoreActions(actor, organizationId, detail.transfer().destinationStoreId()));
+                access.currentStoreActions(actor, organizationId, detail.transfer().destinationStoreId()),
+                canReceivePhysicalSettlement, canConfirmPhysicalReturn);
+    }
+
+    @Transactional(readOnly = true)
+    public TransferDetail historicalSettlementDetail(UUID actor, UUID organizationId, UUID transferId) {
+        var detail = authorizedDetail(actor, organizationId, transferId);
+        if (access.organization(actor, organizationId).role()
+                    != com.stockrescue.access.application.OrganizationAccess.OrganizationRole.ORG_ADMIN
+                || access.isActiveStore(organizationId, detail.transfer().sourceStoreId())
+                    && access.isActiveStore(organizationId, detail.transfer().destinationStoreId()))
+            throw new OrganizationUnavailableException();
+        return detail;
     }
 
     @Transactional(readOnly = true)
@@ -142,11 +165,18 @@ public class TransferQueryService {
     }
 
     private void authorizeRead(UUID actor, UUID organizationId, UUID sourceStoreId, UUID destinationStoreId) {
-        access.organization(actor, organizationId);
+        var membership = access.organization(actor, organizationId);
         try {
             access.requireStore(actor, organizationId, sourceStoreId, StoreAction.READ_TRANSFERS, false);
         } catch (OrganizationUnavailableException unavailable) {
-            access.requireStore(actor, organizationId, destinationStoreId, StoreAction.READ_TRANSFERS, false);
+            try {
+                access.requireStore(actor, organizationId, destinationStoreId, StoreAction.READ_TRANSFERS, false);
+            } catch (OrganizationUnavailableException destinationUnavailable) {
+                if (membership.role() == com.stockrescue.access.application.OrganizationAccess.OrganizationRole.ORG_ADMIN
+                        && (!access.isActiveStore(organizationId, sourceStoreId)
+                                || !access.isActiveStore(organizationId, destinationStoreId))) return;
+                throw destinationUnavailable;
+            }
         }
     }
 
@@ -176,5 +206,6 @@ public class TransferQueryService {
         catch (IllegalArgumentException invalid) { throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST); }
     }
 
-    public record TransferCapabilities(List<StoreAction> sourceActions, List<StoreAction> destinationActions) { }
+    public record TransferCapabilities(List<StoreAction> sourceActions, List<StoreAction> destinationActions,
+            boolean canReceivePhysicalSettlement, boolean canConfirmPhysicalReturn) { }
 }

@@ -15,6 +15,7 @@ import com.stockrescue.catalog.domain.Gtin;
 import com.stockrescue.catalog.persistence.ProductRepository;
 import com.stockrescue.catalog.persistence.ProductRepository.Operation;
 import com.stockrescue.platform.audit.AuditWriter;
+import com.stockrescue.stores.application.TransferCustodyArchiveGuard;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,8 +31,10 @@ public class ProductService {
     private final AccessPolicy access;
     private final ProductRepository products;
     private final AuditWriter audit;
-    public ProductService(AccessPolicy access, ProductRepository products, AuditWriter audit) {
-        this.access=access; this.products=products; this.audit=audit;
+    private final TransferCustodyArchiveGuard transferArchiveGuard;
+    public ProductService(AccessPolicy access, ProductRepository products, AuditWriter audit,
+            TransferCustodyArchiveGuard transferArchiveGuard) {
+        this.access=access; this.products=products; this.audit=audit; this.transferArchiveGuard=transferArchiveGuard;
     }
 
     @Transactional
@@ -121,6 +124,7 @@ public class ProductService {
         var before=existing(org,id,true);
         if (!before.active()) throw new CatalogFailure(CatalogFailure.Kind.INACTIVE);
         if (before.version()!=expectedVersion) throw conflict();
+        if (transferArchiveGuard.hasOpenTransferForProduct(org, id)) throw conflict();
         var after=products.archive(org,id,expectedVersion).orElseThrow(ProductService::conflict);
         audit.securityChange(actor,org,"product",id,"PRODUCT_ARCHIVED",Map.of("outcome","SUCCEEDED","before",before,"after",after),reason);
         return view(actor,org,after);

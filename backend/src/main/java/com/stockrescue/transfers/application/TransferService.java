@@ -17,6 +17,8 @@ import com.stockrescue.inventory.application.InventoryService.TransferReleaseLin
 import com.stockrescue.inventory.application.InventoryService.TransferDispatchLine;
 import com.stockrescue.inventory.application.InventoryService.TransferReceiptLine;
 import com.stockrescue.inventory.application.InventoryService.TransferReturnLine;
+import com.stockrescue.inventory.application.InventoryService.TransferSettlementPositionRequest;
+import com.stockrescue.inventory.application.InventoryService.TransferSettlementPositionVersion;
 import com.stockrescue.inventory.domain.InventoryFailure;
 import com.stockrescue.inventory.domain.InventoryOperation;
 import com.stockrescue.inventory.domain.StockPosition;
@@ -93,6 +95,13 @@ public class TransferService {
     public record CommandOutcome(UUID transferId, TransferStatus status, long version, UUID commandId,
             UUID stockMovementId) { }
     public record Recovery(String operation, UUID requestId, CommandOutcome outcome) { }
+    public record TransferSettlementPositions(List<TransferSettlementPositionVersion> sourcePositions,
+            List<TransferSettlementPositionVersion> destinationPositions) {
+        public TransferSettlementPositions {
+            sourcePositions = List.copyOf(sourcePositions);
+            destinationPositions = List.copyOf(destinationPositions);
+        }
+    }
 
     private final AccessPolicy access;
     private final TransferQueryService queries;
@@ -527,7 +536,7 @@ public class TransferService {
     public CommandOutcome receive(UUID actor, UUID organizationId, UUID transferId, ReceiveRequest request) {
         var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
-        var member=access.requireStoreIncludingArchived(actor,organizationId,identity.destinationStoreId(),StoreAction.RECEIVE_STOCK,true);
+        var member=access.requireTransferSettlementStore(actor,organizationId,identity.destinationStoreId(),StoreAction.RECEIVE_STOCK);
         byte[] digest=commandFingerprint(organizationId,RECEIVE,transferId,normalized);
         transfers.lockCommand(organizationId,actor,RECEIVE,normalized.requestId());
         var replay=replay(actor,organizationId,RECEIVE,transferId,normalized.requestId(),digest);
@@ -734,7 +743,7 @@ public class TransferService {
     public CommandOutcome confirmReturn(UUID actor,UUID organizationId,UUID transferId,ConfirmReturnRequest request) {
         var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
-        var member=access.requireStoreIncludingArchived(actor,organizationId,identity.sourceStoreId(),StoreAction.RECEIVE_STOCK,true);
+        var member=access.requireTransferSettlementStore(actor,organizationId,identity.sourceStoreId(),StoreAction.RECEIVE_STOCK);
         byte[] digest=commandFingerprint(organizationId,CONFIRM_RETURN,transferId,normalized);
         transfers.lockCommand(organizationId,actor,CONFIRM_RETURN,normalized.requestId());
         var replay=replay(actor,organizationId,CONFIRM_RETURN,transferId,normalized.requestId(),digest);
@@ -865,6 +874,18 @@ public class TransferService {
     }
 
     @Transactional(readOnly = true)
+    public TransferSettlementPositions settlementPositions(UUID actor, UUID organizationId, UUID transferId) {
+        var detail = queries.historicalSettlementDetail(actor, organizationId, transferId);
+        var sourceRequests = detail.lines().stream().map(line ->
+                new TransferSettlementPositionRequest(line.id(), line.sourcePositionId(), null)).toList();
+        var destinationRequests = detail.lines().stream().map(line -> new TransferSettlementPositionRequest(line.id(), null,
+                new PositionIdentity(line.destinationLocationId(), line.productId(), line.lotId()))).toList();
+        var source = stock.transferSettlementPositionVersions(actor, organizationId, detail.transfer().sourceStoreId(), sourceRequests);
+        var destination = stock.transferSettlementPositionVersions(actor, organizationId, detail.transfer().destinationStoreId(), destinationRequests);
+        return new TransferSettlementPositions(source, destination);
+    }
+
+    @Transactional(readOnly = true)
     public boolean canCancel(UUID actor, UUID organizationId, UUID transferId) {
         access.organization(actor, organizationId);
         var identity = identity(organizationId, transferId);
@@ -925,8 +946,8 @@ public class TransferService {
             }
             case START_PICK, PICK -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.PICK_TRANSFER, true).membershipId();
             case DISPATCH -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.DISPATCH_TRANSFER, true).membershipId();
-            case RECEIVE -> access.requireTransferStore(actor, organizationId, identity.destinationStoreId(), StoreAction.RECEIVE_STOCK, true).membershipId();
-            case CONFIRM_RETURN -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.RECEIVE_STOCK, true).membershipId();
+            case RECEIVE -> access.requireTransferSettlementStore(actor, organizationId, identity.destinationStoreId(), StoreAction.RECEIVE_STOCK).membershipId();
+            case CONFIRM_RETURN -> access.requireTransferSettlementStore(actor, organizationId, identity.sourceStoreId(), StoreAction.RECEIVE_STOCK).membershipId();
             case REQUEST_RETURN -> access.requireTransferStore(actor, organizationId, identity.destinationStoreId(), StoreAction.REQUEST_TRANSFER_RETURN, true).membershipId();
             case OPEN_DISCREPANCY, CONFIRM_LOSS, CLOSE -> requireDiscrepancyManager(actor, organizationId, identity).membershipId();
             default -> throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);

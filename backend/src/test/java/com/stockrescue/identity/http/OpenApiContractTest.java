@@ -196,6 +196,21 @@ class OpenApiContractTest extends InfrastructureTestBase {
         for(var field:java.util.List.of("quantity","capacity","availableQuantity")) assertThat(locationSchema.has(field)).isFalse();
         assertThat(schemas.path("EligibilityResponse").path("properties").has("locationVersion")).isTrue();
 
+        var transferBase="/api/v1/organizations/{organizationId}/transfers";
+        var transferCapabilities=document.path("paths").path(transferBase+"/{transferId}/capabilities").path("get");
+        assertThat(transferCapabilities.path("operationId").asString()).isEqualTo("getTransferCapabilities");
+        var transferCapabilityProperties=schemas.path("TransferCapabilitiesResponse").path("properties");
+        for(var field:java.util.List.of("sourceActions","destinationActions","canReceivePhysicalSettlement","canConfirmPhysicalReturn"))
+            assertThat(transferCapabilityProperties.has(field)).isTrue();
+        var settlementPositions=document.path("paths").path(transferBase+"/{transferId}/settlement-positions").path("get");
+        assertThat(settlementPositions.path("operationId").asString()).isEqualTo("getTransferSettlementPositions");
+        var settlementPositionProperties=schemas.path("TransferSettlementPositionVersion").path("properties");
+        for(var field:java.util.List.of("lineId","positionId","version")) assertThat(settlementPositionProperties.has(field)).isTrue();
+        assertThat(settlementPositionProperties.path("positionId").path("type"))
+                .extracting(value -> value.asString()).containsExactly("string", "null");
+        assertThat(schemas.path("TransferSettlementPositionVersion").path("required"))
+                .anyMatch(value -> value.asString().equals("positionId"));
+
         var inventory="/api/v1/organizations/{organizationId}/stores/{storeId}/inventory";
         var inventoryPaths=document.path("paths");
         var redrivePath=inventory+"/outbox/parked-events";

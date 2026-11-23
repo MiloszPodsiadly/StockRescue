@@ -221,13 +221,25 @@ public class TransferController {
     }
 
     @GetMapping("/{transferId}/capabilities")
-    @Operation(operationId = "getTransferCapabilities", summary = "Read current source and destination actions for an authorized transfer")
+    @Operation(operationId = "getTransferCapabilities", summary = "Read current actions for an authorized transfer")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferCapabilitiesResponse.class)))
     public ResponseEntity<TransferCapabilitiesResponse> capabilities(Authentication actor,
             @PathVariable UUID organizationId, @PathVariable UUID transferId) {
         var value = transfers.capabilities(actor(actor), organizationId, transferId);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(new TransferCapabilitiesResponse(value.sourceActions(), value.destinationActions()));
+                .body(new TransferCapabilitiesResponse(value.sourceActions(), value.destinationActions(),
+                        value.canReceivePhysicalSettlement(), value.canConfirmPhysicalReturn()));
+    }
+
+    @GetMapping("/{transferId}/settlement-positions")
+    @Operation(operationId = "getTransferSettlementPositions", summary = "Read only the position versions needed to settle an archived transfer")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferSettlementPositionsResponse.class)))
+    public ResponseEntity<TransferSettlementPositionsResponse> settlementPositions(Authentication actor,
+            @PathVariable UUID organizationId, @PathVariable UUID transferId) {
+        var value = transfers.settlementPositions(actor(actor), organizationId, transferId);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new TransferSettlementPositionsResponse(value.sourcePositions().stream().map(TransferSettlementPositionVersion::from).toList(),
+                        value.destinationPositions().stream().map(TransferSettlementPositionVersion::from).toList()));
     }
 
     @GetMapping("/{transferId}/custody")
@@ -577,7 +589,23 @@ public class TransferController {
 
     public record TransferCapabilitiesResponse(
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreAction> sourceActions,
-            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreAction> destinationActions) { }
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreAction> destinationActions,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canReceivePhysicalSettlement,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canConfirmPhysicalReturn) { }
+
+    public record TransferSettlementPositionsResponse(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferSettlementPositionVersion> sourcePositions,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferSettlementPositionVersion> destinationPositions) { }
+
+    public record TransferSettlementPositionVersion(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID lineId,
+            @Schema(types = {"string", "null"}, format = "uuid", requiredMode = Schema.RequiredMode.REQUIRED) UUID positionId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long version) {
+        private static TransferSettlementPositionVersion from(
+                com.stockrescue.inventory.application.InventoryService.TransferSettlementPositionVersion value) {
+            return new TransferSettlementPositionVersion(value.lineId(), value.positionId(), value.version());
+        }
+    }
 
     public record TransferQueueItem(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID id,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID sourceStoreId,

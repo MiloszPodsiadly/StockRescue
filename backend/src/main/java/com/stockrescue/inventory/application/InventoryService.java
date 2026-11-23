@@ -68,6 +68,8 @@ public class InventoryService {
     public record TransferReceiptLine(UUID lineId,UUID locationId,UUID productId,UUID lotId,
             long expectedVersion,long quantity) { }
     public record TransferReturnLine(UUID lineId,UUID positionId,long expectedVersion,long quantity) { }
+    public record TransferSettlementPositionRequest(UUID lineId,UUID positionId,PositionIdentity identity) { }
+    public record TransferSettlementPositionVersion(UUID lineId,UUID positionId,long version) { }
     public record TransferStockLineResult(UUID lineId,UUID positionId,UUID allocationId,long quantity,
             long positionVersion,StockBuckets buckets) { }
     public record TransferStockResult(UUID commandId,UUID movementId,List<TransferStockLineResult> lines) {
@@ -414,7 +416,7 @@ public class InventoryService {
         if(requestId==null || transferId==null || physicallyReceivedAt==null
                 || physicallyReceivedAt.isAfter(clock.instant())
                 || physicallyReceivedAt.isBefore(Instant.parse("0001-01-01T00:00:00Z"))) throw failure(Kind.INVALID_REQUEST);
-        var member=access.requireStoreIncludingArchived(actor,org,store,StoreAction.RECEIVE_STOCK,true);
+        var member=access.requireTransferSettlementStore(actor,org,store,StoreAction.RECEIVE_STOCK);
         var lines=normalizeTransferReceipts(requestedLines);
         var received=physicallyReceivedAt.truncatedTo(ChronoUnit.MICROS);
         reason=text(reason,500);evidenceReference=text(evidenceReference,256);
@@ -491,7 +493,7 @@ public class InventoryService {
     public TransferStockResult returnForTransfer(UUID actor,UUID org,UUID store,UUID requestId,UUID transferId,
             String reason,String evidenceReference,List<TransferReturnLine> requestedLines) {
         if(requestId==null || transferId==null) throw failure(Kind.INVALID_REQUEST);
-        var member=access.requireStoreIncludingArchived(actor,org,store,StoreAction.RECEIVE_STOCK,true);
+        var member=access.requireTransferSettlementStore(actor,org,store,StoreAction.RECEIVE_STOCK);
         var lines=normalizeTransferReturns(requestedLines);
         reason=text(reason,500);evidenceReference=text(evidenceReference,256);
         byte[] digest=transferSettlementFingerprint(store,InventoryOperation.TRANSFER_RETURN,transferId,lines,reason,evidenceReference);
@@ -527,6 +529,29 @@ public class InventoryService {
         }
         return postTransferStock(actor,org,store,member.membershipId(),requestId,digest,reason,evidenceReference,
                 InventoryOperation.TRANSFER_RETURN,prepared);
+    }
+
+    @Transactional(readOnly=true)
+    public List<TransferSettlementPositionVersion> transferSettlementPositionVersions(UUID actor,UUID org,UUID store,
+            List<TransferSettlementPositionRequest> requests) {
+        access.requireStoreIncludingArchived(actor,org,store,StoreAction.READ_INVENTORY,false);
+        if(requests==null || requests.isEmpty() || requests.stream().anyMatch(request -> request==null || request.lineId()==null)
+                || requests.stream().map(TransferSettlementPositionRequest::lineId).distinct().count()!=requests.size())
+            throw new IllegalArgumentException("Transfer position versions require unique line identities");
+        return requests.stream().map(request -> {
+            if(request.positionId()!=null && request.identity()!=null || request.positionId()==null && request.identity()==null)
+                throw new IllegalArgumentException("Each transfer position requires exactly one lookup identity");
+            if(request.positionId()!=null) {
+                var position=inventory.position(org,store,request.positionId(),false).orElseThrow(OrganizationUnavailableException::new);
+                return new TransferSettlementPositionVersion(request.lineId(),position.id(),position.version());
+            }
+            var identity=request.identity();
+            var position=inventory.positionByIdentity(org,store,identity.locationId(),identity.lotId());
+            if(position.isPresent() && !position.orElseThrow().productId().equals(identity.productId()))
+                throw new OrganizationUnavailableException();
+            return position.map(value -> new TransferSettlementPositionVersion(request.lineId(),value.id(),value.version()))
+                    .orElseGet(() -> new TransferSettlementPositionVersion(request.lineId(),null,0));
+        }).toList();
     }
 
     private void validateTransferReservation(UUID actor,UUID org,UUID store,UUID transferId,UUID lineId,

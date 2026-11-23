@@ -18,7 +18,7 @@ type Props = {
   hasMore: boolean
   onPageChange: (offset: number) => void
   onUpdated: () => Promise<void>
-  onResolved: () => Promise<void>
+  onResolved: (intentId: string) => Promise<void>
 }
 
 type AttemptFailure = { kind: 'DEFINITIVELY_REJECTED' | 'STALE_OR_CONFLICTING' | 'UNKNOWN', message: string }
@@ -148,7 +148,7 @@ export function InventoryCommandRecovery({ actorId, organizationId, storeId, int
       setMessages(current => without(current, intent.id))
       setFailures(current => without(current, intent.id))
       setRejected(current => without(current, intent.id))
-      await onResolved()
+      await onResolved(intent.id)
     } catch (error) {
       setMessages(current => ({ ...current, [intent.id]: errorMessage(error) }))
     } finally {
@@ -164,7 +164,7 @@ export function InventoryCommandRecovery({ actorId, organizationId, storeId, int
       setMessages(current => without(current, intent.id))
       setFailures(current => without(current, intent.id))
       setRejected(current => without(current, intent.id))
-      await onResolved()
+      await onResolved(intent.id)
     } catch (error) {
       setMessages(current => ({ ...current, [intent.id]: errorMessage(error) }))
       setRejected(current => ({ ...current, [intent.id]: false }))

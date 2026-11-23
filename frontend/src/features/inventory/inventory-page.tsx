@@ -18,7 +18,7 @@ import {
   executeInventoryCommandIntent, reconcileInventory, repairInventoryProjection,
 } from '@/api/inventory'
 import type {
-  AvailableByLot, InventoryAllocation, InventoryCommandIntentOperation, ProjectionRepair,
+  AvailableByLot, InventoryAllocation, InventoryCommandIntent, InventoryCommandIntentOperation, ProjectionRepair,
   Reconciliation, ReconciliationFinding, StockPosition,
 } from '@/api/inventory'
 import { OrganizationPage } from '../organizations/organization-page'
@@ -47,6 +47,7 @@ function InventoryWorkspace({ organizationId, storeId }: { organizationId: strin
   const [intentOffset, setIntentOffset] = useState(0)
   const [selectedPositionId, setSelectedPositionId] = useState('')
   const [commandResetVersion, setCommandResetVersion] = useState(0)
+  const [recoveryIntent, setRecoveryIntent] = useState<InventoryCommandIntent | null>(null)
   const store = useQuery({ queryKey: [...scope, 'store', storeId], queryFn: ({ signal }) => getStore(organizationId, storeId, signal), ...refresh })
   const canRead = Boolean(store.data?.allowedActions.includes('READ_INVENTORY'))
   const filters = { productId: productId || undefined, lotId: lotId || undefined, locationId: locationId || undefined, offset, limit: 25 }
@@ -61,11 +62,13 @@ function InventoryWorkspace({ organizationId, storeId }: { organizationId: strin
     queryFn: ({ signal }) => listPendingInventoryCommandIntents(organizationId, storeId, signal, { limit: 1, subject: `position:${selectedPositionId}` }),
     refetchOnWindowFocus: true, staleTime: 0, gcTime: 0 })
   const pendingIntents = intents.data?.items ?? []
+  const recoveryIntents = recoveryIntent && !pendingIntents.some(intent => intent.id === recoveryIntent.id)
+    ? [...pendingIntents, recoveryIntent] : pendingIntents
   const intentsLoaded = Boolean(intents.data) && !intents.isError
   const receiptIntentLoaded = receiptIntent.isFetched && !receiptIntent.isError
-  const pendingReceiptIntent = (receiptIntent.data?.items.length ?? 0) > 0
+  const pendingReceiptIntent = (receiptIntent.data?.items.length ?? 0) > 0 || recoveryIntent?.subject === 'receipt-document'
   const selectedIntentLoaded = selectedIntent.isFetched && !selectedIntent.isError
-  const pendingSelectedIntent = (selectedIntent.data?.items.length ?? 0) > 0
+  const pendingSelectedIntent = (selectedIntent.data?.items.length ?? 0) > 0 || recoveryIntent?.subject === `position:${selectedPositionId}`
   const intentError = intents.error ?? receiptIntent.error ?? selectedIntent.error
   const positions = useQuery({ queryKey: [...inventoryKey, 'positions', filters], enabled: canRead, queryFn: ({ signal }) => listInventoryPositions(organizationId, storeId, filters, signal), ...refresh })
   const availability = useQuery({ queryKey: [...inventoryKey, 'availability', filters], enabled: canRead, queryFn: ({ signal }) => listInventoryAvailableByLot(organizationId, storeId, filters, signal), ...refresh })
@@ -87,6 +90,7 @@ function InventoryWorkspace({ organizationId, storeId }: { organizationId: strin
   }
   useEffect(() => subscribeAccessChanges(changed => {
     if (changed !== organizationId) return
+    setRecoveryIntent(null)
     void client.invalidateQueries({ queryKey: ['tenant', actorId, scopedOrganizationId, 'store', storeId] }, { cancelRefetch: false })
     void client.invalidateQueries({ queryKey: ['tenant', actorId, scopedOrganizationId, 'inventory', storeId] }, { cancelRefetch: false })
   }), [client, organizationId, actorId, scopedOrganizationId, storeId])
@@ -106,8 +110,8 @@ function InventoryWorkspace({ organizationId, storeId }: { organizationId: strin
     {(products.isError || lots.isError || locations.isError) && <p role="status" className="rounded-xl border border-border p-4 text-sm text-muted-foreground">Some catalog labels are unavailable. Inventory remains scoped and can still be reviewed by its saved record references.</p>}
     {intents.isPending && <p role="status" className="rounded-xl border border-border p-4 text-sm">Checking saved inventory operations before enabling recovery.</p>}
     {intentError && <Unavailable title="Pending inventory operations could not be checked" error={intentError} retry={() => { void client.invalidateQueries({ queryKey: [...inventoryKey, 'command-intents'] }) }} />}
-    {intentsLoaded && <InventoryCommandRecovery key={`${actorId}:${organizationId}:${storeId}`} actorId={actorId} organizationId={organizationId} storeId={storeId} intents={pendingIntents} offset={intentOffset} hasMore={intents.data?.hasMore ?? false} onPageChange={setIntentOffset} onUpdated={commandRefresh} onResolved={commandResolved} />}
-    <InventoryReceiptForm key={`${organizationId}:${storeId}:${commandResetVersion}`} organizationId={organizationId} storeId={storeId} store={store.data} products={products.data?.items ?? []} locations={locations.data?.items ?? []} scope={inventoryKey} intentsLoaded={receiptIntentLoaded} pendingIntent={pendingReceiptIntent} onCommitted={() => commandRefresh(true)} />
+    {(intentsLoaded || recoveryIntent !== null) && <InventoryCommandRecovery key={`${actorId}:${organizationId}:${storeId}`} actorId={actorId} organizationId={organizationId} storeId={storeId} intents={recoveryIntents} offset={intentOffset} hasMore={intents.data?.hasMore ?? false} onPageChange={setIntentOffset} onUpdated={commandRefresh} onResolved={async intentId => { setRecoveryIntent(current => current?.id === intentId ? null : current); await commandResolved() }} />}
+    <InventoryReceiptForm key={`${organizationId}:${storeId}:${commandResetVersion}`} organizationId={organizationId} storeId={storeId} store={store.data} products={products.data?.items ?? []} locations={locations.data?.items ?? []} scope={inventoryKey} intentsLoaded={receiptIntentLoaded} pendingIntent={pendingReceiptIntent} onPrepared={setRecoveryIntent} onCommitted={() => commandRefresh(true)} />
     {positions.isPending ? <StateMessage state="loading" title="Loading inventory" description="Reading the latest saved stock positions." /> : positions.isError ? <Unavailable title="Inventory could not be loaded" error={positions.error} retry={() => { void positions.refetch() }} /> : positions.data.items.length === 0 ? <StateMessage state="empty" title="No stock positions in this view" description="There are no recorded stock rows for the selected product, lot and location filters." /> : <>
       <PositionTable items={positions.data.items} productNames={new Map((products.data?.items ?? []).map(item => [item.id, `${item.sku} · ${item.name}`]))} lotNames={new Map((lots.data?.items ?? []).map(item => [item.id, item.lotCode]))} locationNames={new Map((locations.data?.items ?? []).map(item => [item.id, `${item.code} · ${item.name}`]))} selectedId={selectedPositionId} onSelect={id => setSelectedPositionId(id)} />
       {availability.isError ? <p role="alert" className="text-sm">Availability by lot could not be refreshed: {errorMessage(availability.error)}</p> : availability.data && <AvailabilityTable items={availability.data.items} lotNames={new Map((lots.data?.items ?? []).map(item => [item.id, item.lotCode]))} locationNames={new Map((locations.data?.items ?? []).map(item => [item.id, `${item.code} · ${item.name}`]))} observedAt={availability.data.observedAt} />}
@@ -116,7 +120,7 @@ function InventoryWorkspace({ organizationId, storeId }: { organizationId: strin
 
     {selectedPositionId && selectedSnapshot.isPending && <StateMessage state="loading" title="Refreshing selected position" description="Reading the current saved version before showing any stock operation." />}
     {selectedSnapshot.isError && <Unavailable title="Position could not be refreshed" error={selectedSnapshot.error} retry={() => { void selectedSnapshot.refetch() }} />}
-    {selected && <SelectedPosition key={`${organizationId}:${storeId}:${selected.id}:${commandResetVersion}`} organizationId={organizationId} storeId={storeId} store={store.data} position={selected} scope={inventoryKey} intentsLoaded={selectedIntentLoaded} pendingIntent={pendingSelectedIntent} onCommitted={() => commandRefresh(true)} />}
+    {selected && <SelectedPosition key={`${organizationId}:${storeId}:${selected.id}:${commandResetVersion}`} organizationId={organizationId} storeId={storeId} store={store.data} position={selected} scope={inventoryKey} intentsLoaded={selectedIntentLoaded} pendingIntent={pendingSelectedIntent} onPrepared={setRecoveryIntent} onCommitted={() => commandRefresh(true)} />}
     <ReconciliationPanel organizationId={organizationId} storeId={storeId} canReconcile={store.data.allowedActions.includes('RECONCILE_INVENTORY')} canRemediate={store.data.allowedActions.includes('REMEDIATE_INVENTORY')} scope={inventoryKey} onReviewPosition={setSelectedPositionId} onCommitted={commandRefresh} />
   </section>
 }
@@ -136,7 +140,7 @@ function AvailabilityTable({ items, lotNames, locationNames, observedAt }: { ite
   return <section aria-label="Available stock by lot" className="space-y-3"><div><h3 className="text-lg font-semibold">Availability by lot and position</h3><p className="text-sm text-muted-foreground">This is a separate point-in-time read, observed <time dateTime={observedAt}>{new Date(observedAt).toLocaleString()}</time>.</p></div><ul className="grid gap-3 md:grid-cols-2">{items.map(item => <li key={item.positionId} className="rounded-xl border border-border p-4 text-sm"><p className="font-medium">Lot {lotNames.get(item.lotId) ?? item.lotId}</p><p>{locationNames.get(item.locationId) ?? item.locationId}</p><p className="mt-2">Available: {item.initialization === 'NOT_INITIALIZED' || item.available === null ? 'Unknown' : `${item.available} ${item.unit}`}</p><p className="text-muted-foreground">{item.trust} · position version {item.positionVersion}</p></li>)}</ul></section>
 }
 
-function SelectedPosition({ organizationId, storeId, store, position, scope, intentsLoaded, pendingIntent, onCommitted }: { organizationId: string, storeId: string, store: Store, position: StockPosition, scope: readonly unknown[], intentsLoaded: boolean, pendingIntent: boolean, onCommitted: () => Promise<void> }) {
+function SelectedPosition({ organizationId, storeId, store, position, scope, intentsLoaded, pendingIntent, onPrepared, onCommitted }: { organizationId: string, storeId: string, store: Store, position: StockPosition, scope: readonly unknown[], intentsLoaded: boolean, pendingIntent: boolean, onPrepared: (intent: InventoryCommandIntent) => void, onCommitted: () => Promise<void> }) {
   const { id, initialization, trust, onHand, reserved, quarantined, otherBlocked, available, unit, version } = position
   const history = useQuery({ queryKey: [...scope, 'movements', id], queryFn: ({ signal }) => listInventoryMovements(organizationId, storeId, id, 0, signal), ...refresh })
   const allocations = useQuery({ queryKey: [...scope, 'allocations', id], queryFn: ({ signal }) => listInventoryAllocations(organizationId, storeId, id, signal), ...refresh })
@@ -144,7 +148,7 @@ function SelectedPosition({ organizationId, storeId, store, position, scope, int
     <header className="space-y-2"><h3 className="text-2xl font-semibold">Position details</h3><p className="break-all text-xs text-muted-foreground">Position {id} · version {version} · observed {new Date(position.observedAt).toLocaleString()}</p></header>
     {initialization === 'NOT_INITIALIZED' ? <StateMessage state="unavailable" title="Physical quantity is unknown" description="No verified opening count has been recorded. This is not a zero balance; receive or count physical stock before relying on availability." /> : <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">{[['On hand', onHand], ['Reserved', reserved], ['Quarantined', quarantined], ['Other blocked', otherBlocked], ['Available', available]].map(([label, value]) => <div key={String(label)} className="rounded-xl bg-muted/40 p-4"><p className="text-sm text-muted-foreground">{label}</p><p className="mt-1 text-xl font-semibold">{value === null ? 'Unknown' : `${value} ${unit}`}</p></div>)}</div>}
     {trust === 'FROZEN' && <p role="status" className="rounded-xl border border-amber-500/40 bg-amber-50 p-4 text-sm text-amber-950">This position is frozen for review. New operations may be rejected until its evidence is reconciled.</p>}
-    <InventoryOperations organizationId={organizationId} storeId={storeId} store={store} position={position} allocations={allocations.data?.items ?? []} intentsLoaded={intentsLoaded} pendingIntent={pendingIntent} onCommitted={onCommitted} />
+    <InventoryOperations organizationId={organizationId} storeId={storeId} store={store} position={position} allocations={allocations.data?.items ?? []} intentsLoaded={intentsLoaded} pendingIntent={pendingIntent} onPrepared={onPrepared} onCommitted={onCommitted} />
     <div className="grid gap-6 xl:grid-cols-2">
       <section aria-label="Reservation and hold status" className="space-y-3"><h4 className="text-lg font-semibold">Reservations and holds</h4>{allocations.isPending ? <p role="status">Loading allocation history…</p> : allocations.isError ? <p role="alert">{errorMessage(allocations.error)}</p> : allocations.data.items.length === 0 ? <p className="text-sm text-muted-foreground">No active or historical allocations are recorded for this position.</p> : <ul className="space-y-2">{allocations.data.items.map(item => <li key={item.id} className="rounded-xl border border-border p-3 text-sm">{item.bucket} · {item.remaining} {unit} · {item.state} · version {item.version}{item.ownedByCurrentUser ? ' · created by you' : ''}</li>)}</ul>}</section>
       <section aria-label="Movement history" className="space-y-3"><h4 className="text-lg font-semibold">Movement history</h4>{history.isPending ? <p role="status">Loading committed movements…</p> : history.isError ? <p role="alert">{errorMessage(history.error)}</p> : history.data.items.length === 0 ? <p className="text-sm text-muted-foreground">No movement has been recorded yet.</p> : <ol className="space-y-2">{history.data.items.map(item => <li key={item.id} className="rounded-xl border border-border p-3 text-sm"><div className="flex flex-wrap justify-between gap-2"><strong>{item.operation.replaceAll('_', ' ')}</strong><time dateTime={item.recordedAt}>{new Date(item.recordedAt).toLocaleString()}</time></div><p className="mt-1">On hand {signed(item.deltaOnHand)} · reserved {signed(item.deltaReserved)} · quarantined {signed(item.deltaQuarantined)} · other blocked {signed(item.deltaOtherBlocked)}</p><p className="mt-1 text-muted-foreground">{item.reason} · Evidence: {item.evidenceReference} · version {item.positionVersion}</p></li>)}</ol>}</section>
@@ -152,7 +156,7 @@ function SelectedPosition({ organizationId, storeId, store, position, scope, int
   </section>
 }
 
-function InventoryOperations({ organizationId, storeId, store, position, allocations, intentsLoaded, pendingIntent, onCommitted }: { organizationId: string, storeId: string, store: Store, position: StockPosition, allocations: InventoryAllocation[], intentsLoaded: boolean, pendingIntent: boolean, onCommitted: () => Promise<void> }) {
+function InventoryOperations({ organizationId, storeId, store, position, allocations, intentsLoaded, pendingIntent, onPrepared, onCommitted }: { organizationId: string, storeId: string, store: Store, position: StockPosition, allocations: InventoryAllocation[], intentsLoaded: boolean, pendingIntent: boolean, onPrepared: (intent: InventoryCommandIntent) => void, onCommitted: () => Promise<void> }) {
   const tenantSignal = useTenantRequests()
   const submittingRef = useRef(false)
   const [submitting, setSubmitting] = useState(false)
@@ -183,14 +187,17 @@ function InventoryOperations({ organizationId, storeId, store, position, allocat
     submittingRef.current=true
     setSubmitting(true)
     setSubmissionError('')
+    let preparedIntent: InventoryCommandIntent | undefined
     try {
-      const prepared=await prepareInventoryCommandIntent(organizationId,storeId,{
+      preparedIntent=await prepareInventoryCommandIntent(organizationId,storeId,{
         prepareId:crypto.randomUUID(),operation:operationFor(effectiveChoice),payload,
       },tenantSignal())
-      await executeInventoryCommandIntent(organizationId,storeId,prepared.id,tenantSignal())
+      await executeInventoryCommandIntent(organizationId,storeId,preparedIntent.id,tenantSignal())
+      onPrepared(preparedIntent)
       setConfirmed(false);setQuantity('');setReason('');setEvidenceReference('');setAllocationId('')
       await onCommitted()
     } catch(error) {
+      if (preparedIntent) onPrepared(preparedIntent)
       setSubmissionError(errorMessage(error))
       await onCommitted()
     } finally {

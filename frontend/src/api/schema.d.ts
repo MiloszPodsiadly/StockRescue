@@ -1501,7 +1501,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read current source and destination actions for an authorized transfer */
+        /** Read current actions for an authorized transfer */
         get: operations["getTransferCapabilities"];
         put?: never;
         post?: never;
@@ -1718,6 +1718,23 @@ export interface paths {
         put?: never;
         /** Request return of each selected line's remaining quantity without settling transit */
         post: operations["requestTransferReturn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/settlement-positions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read only the position versions needed to settle an archived transfer */
+        get: operations["getTransferSettlementPositions"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3344,6 +3361,8 @@ export interface components {
             requestId: string;
         };
         TransferCapabilitiesResponse: {
+            canConfirmPhysicalReturn: boolean;
+            canReceivePhysicalSettlement: boolean;
             destinationActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "READ_TRANSFERS" | "REQUEST_TRANSFER" | "APPROVE_TRANSFER" | "PICK_TRANSFER" | "DISPATCH_TRANSFER" | "CANCEL_TRANSFER" | "REQUEST_TRANSFER_RETURN" | "MANAGE_TRANSFER_DISCREPANCIES" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
             sourceActions: ("READ_STORE" | "EDIT_STORE" | "ARCHIVE_STORE" | "MANAGE_STORAGE_ZONES" | "REGISTER_SOURCE_EVIDENCE" | "MANAGE_STORAGE_LOCATIONS" | "REGISTER_STORE_LOT" | "READ_INVENTORY" | "RECEIVE_STOCK" | "RESERVE_STOCK" | "RELEASE_RESERVATION" | "ADJUST_STOCK" | "WRITE_OFF_STOCK" | "QUARANTINE_STOCK" | "RECORD_SALE" | "READ_TRANSFERS" | "REQUEST_TRANSFER" | "APPROVE_TRANSFER" | "PICK_TRANSFER" | "DISPATCH_TRANSFER" | "CANCEL_TRANSFER" | "REQUEST_TRANSFER_RETURN" | "MANAGE_TRANSFER_DISCREPANCIES" | "MANAGE_INVENTORY_ALLOCATIONS" | "RECONCILE_INVENTORY" | "REMEDIATE_INVENTORY")[];
         };
@@ -3747,6 +3766,18 @@ export interface components {
         TransferReturnRequestLine: {
             /** Format: uuid */
             lineId: string;
+        };
+        TransferSettlementPositionVersion: {
+            /** Format: uuid */
+            lineId: string;
+            /** Format: uuid */
+            positionId: string | null;
+            /** Format: int64 */
+            version: number;
+        };
+        TransferSettlementPositionsResponse: {
+            destinationPositions: components["schemas"]["TransferSettlementPositionVersion"][];
+            sourcePositions: components["schemas"]["TransferSettlementPositionVersion"][];
         };
         UpdateLaneRequest: {
             active: boolean;
@@ -14342,6 +14373,83 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommandResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    getTransferSettlementPositions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferSettlementPositionsResponse"];
                 };
             };
             /** @description Invalid transfer request */

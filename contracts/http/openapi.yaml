@@ -8810,7 +8810,7 @@ paths:
           description: "Invalid evidence, stock safety or transfer context"
       security:
       - session: []
-      summary: Read current source and destination actions for an authorized transfer
+      summary: Read current actions for an authorized transfer
       tags:
       - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/{transferId}/close-discrepancy:
@@ -9755,6 +9755,70 @@ paths:
       - session: []
       summary: Request return of each selected line's remaining quantity without settling
         transit
+      tags:
+      - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/settlement-positions:
+    get:
+      operationId: getTransferSettlementPositions
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferSettlementPositionsResponse"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Read only the position versions needed to settle an archived transfer
       tags:
       - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/{transferId}/start-pick:
@@ -14684,6 +14748,10 @@ components:
     TransferCapabilitiesResponse:
       type: object
       properties:
+        canConfirmPhysicalReturn:
+          type: boolean
+        canReceivePhysicalSettlement:
+          type: boolean
         destinationActions:
           type: array
           items:
@@ -14747,6 +14815,8 @@ components:
             - RECONCILE_INVENTORY
             - REMEDIATE_INVENTORY
       required:
+      - canConfirmPhysicalReturn
+      - canReceivePhysicalSettlement
       - destinationActions
       - sourceActions
     TransferCommandIntentInspection:
@@ -15808,6 +15878,38 @@ components:
           format: uuid
       required:
       - lineId
+    TransferSettlementPositionVersion:
+      type: object
+      properties:
+        lineId:
+          type: string
+          format: uuid
+        positionId:
+          type:
+          - string
+          - "null"
+          format: uuid
+        version:
+          type: integer
+          format: int64
+      required:
+      - lineId
+      - positionId
+      - version
+    TransferSettlementPositionsResponse:
+      type: object
+      properties:
+        destinationPositions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferSettlementPositionVersion"
+        sourcePositions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferSettlementPositionVersion"
+      required:
+      - destinationPositions
+      - sourcePositions
     UpdateLaneRequest:
       type: object
       properties:

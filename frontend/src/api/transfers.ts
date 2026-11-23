@@ -43,6 +43,7 @@ export type TransferInTransitLine = JsonResponse<'listTransfersInTransit'> exten
 export type TransferDiscrepancyRecord = JsonResponse<'listTransferDiscrepancies'> extends PageOf<infer Item> ? Item : never
 export type TransferActiveReturn = JsonResponse<'listActiveTransferReturns'> extends { items: (infer Item)[] } ? Item : never
 export type TransferCapabilities = components['schemas']['TransferCapabilitiesResponse']
+export type TransferSettlementPositions = components['schemas']['TransferSettlementPositionsResponse']
 
 const base = '/api/v1/organizations/{organizationId}/transfers' as const
 const intentsBase = '/api/v1/organizations/{organizationId}/transfer-command-intents' as const
@@ -126,6 +127,14 @@ export async function getTransfer(organizationId: string, transferId: string, si
 
 export async function getTransferCapabilities(organizationId: string, transferId: string, signal: AbortSignal) {
   const { data, error, response } = await api.GET(`${base}/{transferId}/capabilities`, {
+    params: { path: { organizationId, transferId } }, signal: requestSignal(signal),
+  })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function getTransferSettlementPositions(organizationId: string, transferId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.GET(`${base}/{transferId}/settlement-positions`, {
     params: { path: { organizationId, transferId } }, signal: requestSignal(signal),
   })
   if (!data) throw new ApiError(response, error)

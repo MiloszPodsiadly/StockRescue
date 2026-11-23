@@ -14,6 +14,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.stockrescue.access.application.AccessPolicy;
 import com.stockrescue.access.application.EffectivePermissions.StoreAction;
@@ -544,6 +545,80 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(custody(reverse.transferId(), reverse.lineId())).isEqualTo("2:0:0:0:2");
         assertThat(stockOnHand(fixture.sourceStore, fixture.sourceLocation)).isEqualTo(3);
         assertThat(stockOnHand(fixture.destinationStore, fixture.destinationLocation)).isEqualTo(3);
+    }
+
+    @Test
+    void opposingReceiptsAndReturnsShareParticipantLocksWithoutDeadlock() throws Exception {
+        var forwardOperator=fixture.owner();
+        var reverseOperator=fixture.owner();
+        fixture.addReverseLane();
+        long sourceVersion=fixture.seedSource(6);
+        var forward=preparePickedTransfer(forwardOperator,fixture.sourceStore,fixture.destinationStore,fixture.position,
+                fixture.destinationLocation,2,sourceVersion);
+        long reverseSourceVersion=fixture.seedDestination(6);
+        UUID reverseSourcePosition=fixture.stockPosition(fixture.destinationStore,fixture.destinationLocation);
+        var reverse=preparePickedTransfer(reverseOperator,fixture.destinationStore,fixture.sourceStore,reverseSourcePosition,
+                fixture.sourceLocation,2,reverseSourceVersion);
+        dispatch(forwardOperator,forward,3,"dispatch-opposing-receive-forward");
+        dispatch(reverseOperator,reverse,3,"dispatch-opposing-receive-reverse");
+
+        UUID forwardDestinationPosition=fixture.stockPosition(fixture.destinationStore,fixture.destinationLocation);
+        UUID reverseDestinationPosition=fixture.position;
+        var receipts=withSettlementAuthorizationBarrier(
+                () -> forwardOperator.write("POST",base()+"/"+forward.transferId()+"/receive",
+                        receiveRequest(forward,4,stockVersion(fixture.destinationStore,forwardDestinationPosition),1,"receive-opposing-forward")),
+                () -> reverseOperator.write("POST",base()+"/"+reverse.transferId()+"/receive",
+                        receiveRequest(reverse,4,stockVersion(fixture.sourceStore,reverseDestinationPosition),1,"receive-opposing-reverse")));
+        assertThat(receipts).allSatisfy(response -> assertThat(response.statusCode()).as(response.body()).isEqualTo(200));
+        assertThat(custody(forward.transferId(),forward.lineId())).isEqualTo("2:1:0:0:1");
+        assertThat(custody(reverse.transferId(),reverse.lineId())).isEqualTo("2:1:0:0:1");
+
+        var forwardReturnRequest=forwardOperator.write("POST",base()+"/"+forward.transferId()+"/request-return",Map.of(
+                "requestId",UUID.randomUUID(),"expectedVersion",5,"requestReference","opposing-forward-"+UUID.randomUUID(),
+                "lines",java.util.List.of(Map.of("lineId",forward.lineId())),"reason","Carrier returned the remaining line",
+                "evidenceReference","carrier:opposing-forward"));
+        var reverseReturnRequest=reverseOperator.write("POST",base()+"/"+reverse.transferId()+"/request-return",Map.of(
+                "requestId",UUID.randomUUID(),"expectedVersion",5,"requestReference","opposing-reverse-"+UUID.randomUUID(),
+                "lines",java.util.List.of(Map.of("lineId",reverse.lineId())),"reason","Carrier returned the remaining line",
+                "evidenceReference","carrier:opposing-reverse"));
+        assertThat(forwardReturnRequest.statusCode()).as(forwardReturnRequest.body()).isEqualTo(200);
+        assertThat(reverseReturnRequest.statusCode()).as(reverseReturnRequest.body()).isEqualTo(200);
+        var forwardReference=jdbc.sql("SELECT observed_state->>'requestReference' FROM stockrescue.transfer_reconciliation_evidence WHERE org_id=:org AND command_id=:command AND evidence_type='RETURN_REQUEST'")
+                .param("org",fixture.organization).param("command",UUID.fromString(tree(forwardReturnRequest).path("commandId").asString()))
+                .query(String.class).single();
+        var reverseReference=jdbc.sql("SELECT observed_state->>'requestReference' FROM stockrescue.transfer_reconciliation_evidence WHERE org_id=:org AND command_id=:command AND evidence_type='RETURN_REQUEST'")
+                .param("org",fixture.organization).param("command",UUID.fromString(tree(reverseReturnRequest).path("commandId").asString()))
+                .query(String.class).single();
+        var returns=withSettlementAuthorizationBarrier(
+                () -> forwardOperator.write("POST",base()+"/"+forward.transferId()+"/confirm-return",
+                        confirmReturnRequest(UUID.randomUUID(),6,forwardReference,"return-opposing-forward",forward.lineId(),
+                                stockVersion(fixture.sourceStore,fixture.position),"return-forward-line",forward.sku(),forward.lotCode())),
+                () -> reverseOperator.write("POST",base()+"/"+reverse.transferId()+"/confirm-return",
+                        confirmReturnRequest(UUID.randomUUID(),6,reverseReference,"return-opposing-reverse",reverse.lineId(),
+                                stockVersion(fixture.destinationStore,reverseSourcePosition),"return-reverse-line",reverse.sku(),reverse.lotCode())));
+        assertThat(returns).allSatisfy(response -> assertThat(response.statusCode()).as(response.body()).isEqualTo(200));
+        assertThat(custody(forward.transferId(),forward.lineId())).isEqualTo("2:1:0:1:0");
+        assertThat(custody(reverse.transferId(),reverse.lineId())).isEqualTo("2:1:0:1:0");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND operation='RECEIVE' AND transfer_id IN (:forward,:reverse)")
+                .param("org",fixture.organization).param("forward",forward.transferId()).param("reverse",reverse.transferId())
+                .query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND operation='CONFIRM_RETURN' AND transfer_id IN (:forward,:reverse)")
+                .param("org",fixture.organization).param("forward",forward.transferId()).param("reverse",reverse.transferId())
+                .query(Long.class).single()).isEqualTo(2);
+        for(var transferId:java.util.List.of(forward.transferId(),reverse.transferId())) {
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_type='RECEIPT'")
+                    .param("org",fixture.organization).param("transfer",transferId).query(Long.class).single()).isEqualTo(1);
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_type='RETURN'")
+                    .param("org",fixture.organization).param("transfer",transferId).query(Long.class).single()).isEqualTo(1);
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_outbox_event WHERE org_id=:org AND transfer_id=:transfer AND event_type='TransferReceived'")
+                    .param("org",fixture.organization).param("transfer",transferId).query(Long.class).single()).isEqualTo(1);
+            assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_outbox_event WHERE org_id=:org AND transfer_id=:transfer AND event_type='TransferReturned'")
+                    .param("org",fixture.organization).param("transfer",transferId).query(Long.class).single()).isEqualTo(1);
+        }
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_outbox_event e JOIN stockrescue.stock_movement m ON m.org_id=e.org_id AND m.store_id=e.store_id AND m.id=e.movement_id WHERE m.org_id=:org AND m.operation='TRANSFER_IN'")
+                .param("org",fixture.organization).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_outbox_event e JOIN stockrescue.stock_movement m ON m.org_id=e.org_id AND m.store_id=e.store_id AND m.id=e.movement_id WHERE m.org_id=:org AND m.operation='TRANSFER_RETURN'")
+                .param("org",fixture.organization).query(Long.class).single()).isEqualTo(2);
     }
 
     @Test
@@ -1636,19 +1711,118 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         var owner=fixture.owner();
         var prepared=preparePickedTransfer(owner,2);
         dispatch(owner,prepared,3,"dispatch-to-legacy-archived-store");
+        jdbc.sql("UPDATE stockrescue.storage_location SET active=FALSE,version=version+1,updated_at=clock_timestamp() WHERE org_id=:org AND store_id=:store AND zone_id=:zone AND active")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).param("zone",fixture.destinationZone).update();
+        jdbc.sql("UPDATE stockrescue.storage_zone SET active=FALSE,version=version+1,updated_at=clock_timestamp() WHERE org_id=:org AND store_id=:store AND id=:zone")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).param("zone",fixture.destinationZone).update();
+        jdbc.sql("UPDATE stockrescue.product SET active=FALSE,version=version+1 WHERE org_id=:org AND id=:product")
+                .param("org",fixture.organization).param("product",fixture.product).update();
         jdbc.sql("UPDATE stockrescue.store SET active=FALSE,version=version+1,updated_at=clock_timestamp() WHERE org_id=:org AND id=:store")
                 .param("org",fixture.organization).param("store",fixture.destinationStore).update();
 
         problem(fixture.destinationOperator().write("POST",base()+"/"+prepared.transferId()+"/receive",
                 receiveRequest(prepared,4,0,2,"unauthorized-archived-store-receipt")),404,"RESOURCE_NOT_FOUND");
-        var received=owner.write("POST",base()+"/"+prepared.transferId()+"/receive",
-                receiveRequest(prepared,4,0,2,"admin-legacy-archived-store-receipt"));
+        problem(fixture.destinationOperator().get(base()+"/"+prepared.transferId()+"/settlement-positions"),404,"RESOURCE_NOT_FOUND");
+        var detail=owner.get(base()+"/"+prepared.transferId());
+        assertThat(detail.statusCode()).as(detail.body()).isEqualTo(200);
+        var capabilities=tree(owner.get(base()+"/"+prepared.transferId()+"/capabilities"));
+        assertThat(capabilities.path("destinationActions").isEmpty()).isTrue();
+        assertThat(capabilities.path("canReceivePhysicalSettlement").asBoolean()).isTrue();
+        assertThat(capabilities.path("canConfirmPhysicalReturn").asBoolean()).isFalse();
+        var positionVersions=tree(owner.get(base()+"/"+prepared.transferId()+"/settlement-positions"));
+        assertThat(positionVersions.path("destinationPositions").get(0).path("version").asLong()).isZero();
+        var receipt=receiveRequest(prepared,4,0,2,"admin-legacy-archived-store-receipt");
+        var preparedIntent=owner.write("POST","/api/v1/organizations/"+fixture.organization+"/transfer-command-intents",Map.of(
+                "prepareId",UUID.randomUUID(),"operation","RECEIVE","transferId",prepared.transferId(),"payload",receipt));
+        assertThat(preparedIntent.statusCode()).as(preparedIntent.body()).isEqualTo(200);
+        UUID intentId=UUID.fromString(tree(preparedIntent).path("id").asString());
+        var submitted=owner.write("POST","/api/v1/organizations/"+fixture.organization+"/transfer-command-intents/"+intentId+"/submitted",null);
+        assertThat(submitted.statusCode()).as(submitted.body()).isEqualTo(200);
+        var received=owner.write("POST",base()+"/"+prepared.transferId()+"/receive",receipt);
 
         assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
+        var inspection=tree(owner.get("/api/v1/organizations/"+fixture.organization+"/transfer-command-intents/"+intentId));
+        assertThat(inspection.path("executionStatus").asString()).isEqualTo("COMMITTED_AWAITING_ACKNOWLEDGEMENT");
+        assertThat(inspection.path("committedOutcome").path("status").asString()).isEqualTo("RECEIVED");
+        assertThat(owner.write("POST","/api/v1/organizations/"+fixture.organization+"/transfer-command-intents/"+intentId+"/acknowledge",null)
+                .statusCode()).isEqualTo(200);
         assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("2:2:0:0:0");
         assertThat(jdbc.sql("SELECT on_hand || ':' || quarantined || ':' || available FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location AND lot_id=:lot")
                 .param("org",fixture.organization).param("store",fixture.destinationStore).param("location",fixture.destinationLocation)
                 .param("lot",fixture.lot).query(String.class).single()).isEqualTo("2:2:0");
+    }
+
+    @Test
+    void productAndLocationsCannotBeArchivedWhileTheyAnchorOpenTransferCustody() throws Exception {
+        var owner=fixture.owner();
+        var prepared=preparePickedTransfer(owner,2);
+        dispatch(owner,prepared,3,"dispatch-before-context-archive");
+
+        long productVersion=jdbc.sql("SELECT version FROM stockrescue.product WHERE org_id=:org AND id=:product")
+                .param("org",fixture.organization).param("product",fixture.product).query(Long.class).single();
+        problem(owner.write("POST","/api/v1/organizations/"+fixture.organization+"/products/"+fixture.product+"/archive",
+                Map.of("requestId",UUID.randomUUID(),"expectedVersion",productVersion,"reason","Retire product with goods still in transit")),
+                409,"CATALOG_CONFLICT");
+        for(var location:java.util.List.of(fixture.sourceLocation,fixture.destinationLocation)) {
+            UUID store=location.equals(fixture.sourceLocation)?fixture.sourceStore:fixture.destinationStore;
+            problem(owner.write("POST","/api/v1/organizations/"+fixture.organization+"/stores/"+store+
+                    "/storage-locations/"+location+"/archive",Map.of("requestId",UUID.randomUUID(),"expectedVersion",0,
+                            "reason","Keep the physical transfer context usable until custody settles")),409,"CONFIGURATION_CONFLICT");
+        }
+        assertThat(jdbc.sql("SELECT active FROM stockrescue.product WHERE org_id=:org AND id=:product")
+                .param("org",fixture.organization).param("product",fixture.product).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.storage_location WHERE org_id=:org AND id IN (:source,:destination) AND active")
+                .param("org",fixture.organization).param("source",fixture.sourceLocation).param("destination",fixture.destinationLocation)
+                .query(Long.class).single()).isEqualTo(2);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("2:0:0:0:2");
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_type='DISPATCH'")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void administratorCanPrepareAndConfirmReturnAtLegacyArchivedSource() throws Exception {
+        var owner=fixture.owner();
+        var sourceOperator=fixture.operator();
+        var prepared=preparePickedTransfer(owner,2);
+        dispatch(owner,prepared,3,"dispatch-before-legacy-source-return");
+        var returnReference="legacy-source-return-"+UUID.randomUUID();
+        var requested=owner.write("POST",base()+"/"+prepared.transferId()+"/request-return",Map.of(
+                "requestId",UUID.randomUUID(),"expectedVersion",4,"requestReference",returnReference,
+                "lines",java.util.List.of(Map.of("lineId",prepared.lineId())),"reason","Carrier returned the final packages",
+                "evidenceReference","carrier:legacy-source-return"));
+        assertThat(requested.statusCode()).as(requested.body()).isEqualTo(200);
+        jdbc.sql("UPDATE stockrescue.store SET active=FALSE,version=version+1,updated_at=clock_timestamp() WHERE org_id=:org AND id=:store")
+                .param("org",fixture.organization).param("store",fixture.sourceStore).update();
+
+        var capabilities=tree(owner.get(base()+"/"+prepared.transferId()+"/capabilities"));
+        assertThat(capabilities.path("sourceActions").isEmpty()).isTrue();
+        assertThat(capabilities.path("canConfirmPhysicalReturn").asBoolean()).isTrue();
+        assertThat(capabilities.path("canReceivePhysicalSettlement").asBoolean()).isFalse();
+        var versions=tree(owner.get(base()+"/"+prepared.transferId()+"/settlement-positions"));
+        long sourceVersion=versions.path("sourcePositions").get(0).path("version").asLong();
+        assertThat(sourceVersion).isEqualTo(stockVersion(fixture.sourceStore,fixture.position));
+        var storedReference=jdbc.sql("SELECT observed_state->>'requestReference' FROM stockrescue.transfer_reconciliation_evidence WHERE org_id=:org AND command_id=:command AND evidence_type='RETURN_REQUEST'")
+                .param("org",fixture.organization).param("command",UUID.fromString(tree(requested).path("commandId").asString()))
+                .query(String.class).single();
+        var confirmation=confirmReturnRequest(UUID.randomUUID(),5,storedReference,"legacy-return-receipt-"+UUID.randomUUID(),
+                prepared.lineId(),sourceVersion,"legacy-return-line",prepared.sku(),prepared.lotCode());
+        problem(sourceOperator.write("POST",base()+"/"+prepared.transferId()+"/confirm-return",confirmation),404,"RESOURCE_NOT_FOUND");
+        var preparedIntent=owner.write("POST","/api/v1/organizations/"+fixture.organization+"/transfer-command-intents",Map.of(
+                "prepareId",UUID.randomUUID(),"operation","CONFIRM_RETURN","transferId",prepared.transferId(),"payload",confirmation));
+        assertThat(preparedIntent.statusCode()).as(preparedIntent.body()).isEqualTo(200);
+        UUID intentId=UUID.fromString(tree(preparedIntent).path("id").asString());
+        assertThat(owner.write("POST","/api/v1/organizations/"+fixture.organization+"/transfer-command-intents/"+intentId+"/submitted",null)
+                .statusCode()).isEqualTo(200);
+        var received=owner.write("POST",base()+"/"+prepared.transferId()+"/confirm-return",confirmation);
+        assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
+        var inspection=tree(owner.get("/api/v1/organizations/"+fixture.organization+"/transfer-command-intents/"+intentId));
+        assertThat(inspection.path("executionStatus").asString()).isEqualTo("COMMITTED_AWAITING_ACKNOWLEDGEMENT");
+        assertThat(owner.write("POST","/api/v1/organizations/"+fixture.organization+"/transfer-command-intents/"+intentId+"/acknowledge",null)
+                .statusCode()).isEqualTo(200);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("2:0:0:2:0");
+        assertThat(jdbc.sql("SELECT on_hand || ':' || quarantined || ':' || available FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND id=:position")
+                .param("org",fixture.organization).param("store",fixture.sourceStore).param("position",fixture.position)
+                .query(String.class).single()).isEqualTo("5:2:3");
     }
 
     @Test
@@ -3001,6 +3175,33 @@ class TransferWorkflowTest extends InfrastructureTestBase {
             var two = workers.submit(() -> { start.await(); return second.call(); });
             start.countDown();
             return java.util.List.of(one.get(30, TimeUnit.SECONDS), two.get(30, TimeUnit.SECONDS));
+        }
+    }
+
+    private java.util.List<HttpResponse<String>> withSettlementAuthorizationBarrier(Callable<HttpResponse<String>> first,
+            Callable<HttpResponse<String>> second) throws Exception {
+        var bothAuthorized=new CountDownLatch(2);
+        var continueSettlements=new CountDownLatch(1);
+        var gatedThreads=ConcurrentHashMap.<Long>newKeySet();
+        org.mockito.Mockito.doAnswer(call -> {
+            var authorized=call.callRealMethod();
+            if(gatedThreads.add(Thread.currentThread().threadId())) {
+                bothAuthorized.countDown();
+                if(!continueSettlements.await(15,TimeUnit.SECONDS))
+                    throw new IllegalStateException("Settlement authorization barrier timed out");
+            }
+            return authorized;
+        }).when(accessPolicy).requireTransferSettlementStore(
+                org.mockito.ArgumentMatchers.any(UUID.class),org.mockito.ArgumentMatchers.any(UUID.class),
+                org.mockito.ArgumentMatchers.any(UUID.class),org.mockito.ArgumentMatchers.any(StoreAction.class));
+        try(var workers=Executors.newFixedThreadPool(2)) {
+            var one=workers.submit(first);
+            var two=workers.submit(second);
+            assertThat(bothAuthorized.await(10,TimeUnit.SECONDS)).as("both requests held only shared participant-store locks before proceeding").isTrue();
+            continueSettlements.countDown();
+            return java.util.List.of(one.get(30,TimeUnit.SECONDS),two.get(30,TimeUnit.SECONDS));
+        } finally {
+            continueSettlements.countDown();
         }
     }
 
