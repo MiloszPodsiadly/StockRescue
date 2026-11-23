@@ -200,8 +200,10 @@ class OpenApiContractTest extends InfrastructureTestBase {
         var transferCapabilities=document.path("paths").path(transferBase+"/{transferId}/capabilities").path("get");
         assertThat(transferCapabilities.path("operationId").asString()).isEqualTo("getTransferCapabilities");
         var transferCapabilityProperties=schemas.path("TransferCapabilitiesResponse").path("properties");
-        for(var field:java.util.List.of("sourceActions","destinationActions","canReceivePhysicalSettlement","canConfirmPhysicalReturn"))
+        for(var field:java.util.List.of("sourceActions","destinationActions","canReceivePhysicalSettlement","canConfirmPhysicalReturn","historicalSettlementActions"))
             assertThat(transferCapabilityProperties.has(field)).isTrue();
+        assertThat(transferCapabilityProperties.path("historicalSettlementActions").path("items").path("enum").toString())
+                .isEqualTo("[\"REQUEST_RETURN\",\"CONFIRM_LOSS\",\"OPEN_DISCREPANCY\",\"CLOSE\"]");
         var settlementPositions=document.path("paths").path(transferBase+"/{transferId}/settlement-positions").path("get");
         assertThat(settlementPositions.path("operationId").asString()).isEqualTo("getTransferSettlementPositions");
         var settlementPositionProperties=schemas.path("TransferSettlementPositionVersion").path("properties");

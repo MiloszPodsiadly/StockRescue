@@ -2,6 +2,8 @@ package com.stockrescue.access.application;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import com.stockrescue.access.application.EffectivePermissions.OrganizationAction;
@@ -117,6 +119,23 @@ public class AccessPolicy {
                 .orElseThrow(OrganizationUnavailableException::new);
         if (!storeActions(role).contains(action)) throw new AccessDeniedException("Action unavailable");
         return membership;
+    }
+
+    /**
+     * Provides a transfer-scoped administrator fallback for documented historical custody settlement only.
+     * It never grants ordinary archived-store actions. The participant rows are checked and shared-locked in ID order
+     * before TransferService acquires its participant and advisory locks.
+     */
+    public Optional<OrganizationAccess> historicalTransferSettlementAdmin(UUID actor, UUID organization,
+            UUID sourceStore, UUID destinationStore, StoreAction action) {
+        if (!Set.of(StoreAction.REQUEST_TRANSFER_RETURN, StoreAction.MANAGE_TRANSFER_DISCREPANCIES).contains(action))
+            throw new IllegalArgumentException("Only historical transfer settlement actions are supported");
+        var membership = lock(actor, organization, false);
+        var participants = access.transferParticipantStores(organization, sourceStore, destinationStore);
+        if (participants.size() != 2) throw new OrganizationUnavailableException();
+        if (participants.stream().allMatch(AccessRepository.TransferParticipantStore::active)) return Optional.empty();
+        if (membership.role() != OrganizationRole.ORG_ADMIN) throw new OrganizationUnavailableException();
+        return Optional.of(membership);
     }
 
     public boolean isActiveStore(UUID organization, UUID store) {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { loadStoreCursorPages } from './transfer-pagination'
+import { loadStoreCursorPages, TransferRequestScheduler } from './transfer-pagination'
 
 describe('per-store transfer pagination', () => {
   it('finishes stores with different page counts without requesting an exhausted store again', async () => {
@@ -58,5 +58,42 @@ describe('per-store transfer pagination', () => {
     const load = vi.fn(async () => ({ items: ['item'], nextCursor: '   ', hasMore: true }))
     await expect(loadStoreCursorPages(['A'], {}, load)).rejects.toThrow('advertises another page without a cursor')
     expect(load).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases a failed request slot and aborts the rest of that page batch', async () => {
+    const scheduler = new TransferRequestScheduler(1)
+    const controller = new AbortController()
+    const load = vi.fn(async (storeId: string, _cursor: string | null, signal?: AbortSignal) => {
+      if (storeId === 'fails') throw new Error('request failed')
+      return new Promise<{ items: string[], nextCursor: string | null, hasMore: boolean }>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true })
+      })
+    })
+
+    await expect(loadStoreCursorPages(['fails', 'queued'], {}, load, scheduler, controller.signal))
+      .rejects.toThrow('request failed')
+    expect(load).toHaveBeenCalledTimes(1)
+    await expect(scheduler.run(new AbortController().signal, async () => 'available again')).resolves.toBe('available again')
+  })
+
+  it('removes a context-aborted queued request and drains the next workspace request', async () => {
+    const scheduler = new TransferRequestScheduler(1)
+    const activeController = new AbortController()
+    const queuedController = new AbortController()
+    const active = scheduler.run(activeController.signal, () => new Promise<string>((_resolve, reject) => {
+      activeController.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true })
+    }))
+    const activeResult = expect(active).rejects.toMatchObject({ name: 'AbortError' })
+    const queuedOperation = vi.fn(async () => 'stale context')
+    const queued = scheduler.run(queuedController.signal, queuedOperation)
+    const queuedResult = expect(queued).rejects.toMatchObject({ name: 'AbortError' })
+    const current = scheduler.run(new AbortController().signal, async () => 'current context')
+
+    queuedController.abort()
+    await queuedResult
+    activeController.abort()
+    await activeResult
+    await expect(current).resolves.toBe('current context')
+    expect(queuedOperation).not.toHaveBeenCalled()
   })
 })

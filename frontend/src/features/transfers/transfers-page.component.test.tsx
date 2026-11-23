@@ -149,6 +149,41 @@ it('does not request exhausted stores again when queue, transit and evidence pag
   expect(screen.queryByRole('button', { name: 'Load more evidence' })).not.toBeInTheDocument()
 })
 
+it('limits combined queue, transit and evidence fan-out while loading every store', async () => {
+  const stores = Array.from({ length: 25 }, (_, index) => store(`store-${index + 1}`, ['READ_TRANSFERS']))
+  apiMocks.stores.mockResolvedValue({ items: stores, hasMore: false })
+  let active = 0
+  let maximumActive = 0
+  let completed = 0
+  async function response<T>(value: T): Promise<T> {
+    active++
+    maximumActive = Math.max(maximumActive, active)
+    await Promise.resolve()
+    active--
+    completed++
+    return value
+  }
+  apiMocks.queue.mockImplementation(async () => response({ items: [], nextCursor: null, hasMore: false }))
+  apiMocks.transit.mockImplementation(async () => response({ items: [], nextCursor: null, hasMore: false }))
+  apiMocks.queueEvidence.mockImplementation(async () => response({ items: [], nextCursor: null, hasMore: false }))
+  const organization = { id: orgId, role: 'ORG_ADMIN' } as never
+
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <TenantScope.Provider value={['tenant', orgId, 'actor-1']}><OrganizationContext.Provider value={organization}>
+      <TransfersPage />
+    </OrganizationContext.Provider></TenantScope.Provider>
+  </QueryClientProvider>)
+
+  await waitFor(() => expect(completed).toBe(75))
+  expect(maximumActive).toBeLessThanOrEqual(8)
+  expect(apiMocks.queue.mock.calls).toHaveLength(25)
+  expect(apiMocks.transit.mock.calls).toHaveLength(25)
+  expect(apiMocks.queueEvidence.mock.calls).toHaveLength(25)
+  expect(new Set(apiMocks.queue.mock.calls.map(call => call[1])).size).toBe(25)
+  expect(new Set(apiMocks.transit.mock.calls.map(call => call[1])).size).toBe(25)
+  expect(new Set(apiMocks.queueEvidence.mock.calls.map(call => call[1])).size).toBe(25)
+})
+
 it('edits two transfer lines, blocks a duplicate source position and submits each observed version', async () => {
   const user = userEvent.setup()
   const onCommand = vi.fn().mockResolvedValue(undefined)
@@ -237,6 +272,76 @@ it('surfaces a stale destination position and requires a fresh version before re
   expect(await screen.findByRole('alert')).toHaveTextContent('stock position changed since it was reviewed')
   expect(screen.getByRole('button', { name: 'Record 2 physical units received' })).toBeDisabled()
   expect(screen.queryByRole('form', { name: 'Request physical return' })).not.toBeInTheDocument()
+})
+
+it('shows and submits only the historical actions explicitly returned for an archived destination', async () => {
+  const user = userEvent.setup()
+  const transfer = transferFixture()
+  const source = store('source', ['READ_TRANSFERS'])
+  const destination = store('destination', ['READ_TRANSFERS'])
+  const onCommand = vi.fn().mockResolvedValue(undefined)
+  apiMocks.capabilities.mockResolvedValueOnce({ sourceActions: ['READ_STORE', 'READ_TRANSFERS'], destinationActions: ['READ_STORE', 'READ_TRANSFERS'],
+    canReceivePhysicalSettlement: false, canConfirmPhysicalReturn: false,
+    historicalSettlementActions: ['REQUEST_RETURN', 'CONFIRM_LOSS', 'OPEN_DISCREPANCY'] })
+  apiMocks.activeReturns.mockResolvedValueOnce({ items: [] })
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} onCommand={onCommand} busy={false} onRefresh={async () => undefined} />)
+
+  expect(await screen.findByRole('note', { name: 'Administrative historical settlement' })).toHaveTextContent('does not reactivate either store')
+  const request = await screen.findByRole('form', { name: 'Request physical return' })
+  expect(await screen.findByRole('form', { name: 'Resolve loss or damage' })).toBeInTheDocument()
+  expect(await screen.findByRole('form', { name: 'Open a custody discrepancy' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Confirm reconciliation' })).not.toBeInTheDocument()
+  await user.type(within(request).getByLabelText('Return request reference'), 'legacy-return-request')
+  await user.type(within(request).getByLabelText('Reason for return request'), 'Documented historical custody review')
+  await user.type(within(request).getByLabelText('Evidence reference'), 'carrier:legacy-return-request')
+  await user.click(within(request).getByRole('checkbox', { name: /I understand this request records intent only/ }))
+  await user.click(within(request).getByRole('button', { name: 'Record return request' }))
+
+  await waitFor(() => expect(onCommand).toHaveBeenCalledTimes(1))
+  expect(onCommand.mock.calls[0]![0]).toMatchObject({ operation: 'REQUEST_RETURN', transferId: transfer.id,
+    body: { expectedVersion: transfer.version, lines: [{ lineId: 'line-1' }] } })
+})
+
+it('keeps historical settlement actions unavailable until active returns are verified', async () => {
+  const transfer = transferFixture()
+  const source = store('source', ['READ_TRANSFERS'])
+  const destination = store('destination', ['READ_TRANSFERS'])
+  apiMocks.activeReturns.mockRejectedValueOnce(new Error('return verification unavailable'))
+  apiMocks.capabilities.mockResolvedValueOnce({ sourceActions: ['READ_TRANSFERS'], destinationActions: ['READ_TRANSFERS'],
+    canReceivePhysicalSettlement: false, canConfirmPhysicalReturn: false, historicalSettlementActions: ['REQUEST_RETURN', 'CONFIRM_LOSS', 'OPEN_DISCREPANCY'] })
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]} onCommand={vi.fn()} busy={false} onRefresh={async () => undefined} />)
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('physical return state could not be verified')
+  expect(screen.queryByRole('form', { name: 'Request physical return' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('form', { name: 'Resolve loss or damage' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('form', { name: 'Open a custody discrepancy' })).not.toBeInTheDocument()
+})
+
+it('shows and submits historical close only when the server grants the reconciled transfer capability', async () => {
+  const user = userEvent.setup()
+  const fixture = transferFixture('RECONCILIATION_REQUIRED')
+  const transfer = { ...fixture, outstandingQuantity: 0, lines: [{ ...fixture.lines[0]!,
+    quantities: { ...fixture.lines[0]!.quantities, physicallyReturned: 2, outstanding: 0 } }] }
+  const source = store('source', ['READ_TRANSFERS'])
+  const destination = store('destination', ['READ_TRANSFERS'])
+  const onCommand = vi.fn().mockResolvedValue(undefined)
+  apiMocks.activeReturns.mockResolvedValueOnce({ items: [] })
+  apiMocks.capabilities.mockResolvedValueOnce({ sourceActions: ['READ_STORE', 'READ_TRANSFERS'],
+    destinationActions: ['READ_STORE', 'READ_TRANSFERS'], canReceivePhysicalSettlement: false,
+    canConfirmPhysicalReturn: false, historicalSettlementActions: ['CLOSE'] })
+  renderWithTenant(<TransferDetailView organizationId={orgId} transfer={transfer} stores={[source, destination]}
+    onCommand={onCommand} busy={false} onRefresh={async () => undefined} />)
+
+  expect(await screen.findByRole('note', { name: 'Administrative historical settlement' })).toBeInTheDocument()
+  const close = await screen.findByRole('form', { name: 'Confirm final reconciliation' })
+  await user.type(within(close).getByLabelText('Reason'), 'Verified all historical custody is settled')
+  await user.type(within(close).getByLabelText('Evidence reference'), 'reconciliation:legacy-transfer')
+  await user.click(within(close).getByRole('checkbox'))
+  await user.click(within(close).getByRole('button', { name: 'Confirm reconciliation' }))
+
+  await waitFor(() => expect(onCommand).toHaveBeenCalledTimes(1))
+  expect(onCommand.mock.calls[0]![0]).toMatchObject({ operation: 'CLOSE', transferId: transfer.id,
+    body: { expectedVersion: transfer.version, evidenceReference: 'reconciliation:legacy-transfer' } })
 })
 
 it('uses the narrow historical settlement capability and reviewed version for an archived destination receipt', async () => {

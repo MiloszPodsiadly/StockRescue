@@ -1,6 +1,8 @@
 package com.stockrescue.transfers.application;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Set;
 import java.util.UUID;
 
 import com.stockrescue.access.application.AccessPolicy;
@@ -42,15 +44,31 @@ public class TransferQueryService {
                 == com.stockrescue.access.application.OrganizationAccess.OrganizationRole.ORG_ADMIN;
         boolean receivingStatus = List.of(TransferStatus.IN_TRANSIT, TransferStatus.PARTIALLY_RECEIVED,
                 TransferStatus.RECONCILIATION_REQUIRED).contains(detail.transfer().status());
+        var activeReturns = transfers.activeReturns(organizationId, transferId);
+        Set<UUID> activeReturnLines = activeReturns.stream().map(TransferRepository.ActiveReturn::lineId)
+                .collect(java.util.stream.Collectors.toSet());
         boolean canReceivePhysicalSettlement = administrator && !destinationActive && receivingStatus
                 && detail.transfer().outstandingQuantity().signum() > 0;
         boolean canConfirmPhysicalReturn = administrator && !sourceActive
                 && detail.transfer().status() == TransferStatus.RECONCILIATION_REQUIRED
-                && !transfers.activeReturns(organizationId, transferId).isEmpty();
+                && !activeReturns.isEmpty();
+        var historicalActions = new ArrayList<HistoricalSettlementAction>();
+        if (administrator && (!sourceActive || !destinationActive)) {
+            boolean outstanding = detail.lines().stream().anyMatch(line -> line.quantities().outstanding() > 0);
+            if (!destinationActive && receivingStatus && detail.lines().stream()
+                    .anyMatch(line -> line.quantities().outstanding() > 0 && !activeReturnLines.contains(line.id())))
+                historicalActions.add(HistoricalSettlementAction.REQUEST_RETURN);
+            if (!destinationActive && receivingStatus && outstanding)
+                historicalActions.add(HistoricalSettlementAction.CONFIRM_LOSS);
+            if (receivingStatus) historicalActions.add(HistoricalSettlementAction.OPEN_DISCREPANCY);
+            if (detail.transfer().status() == TransferStatus.RECONCILIATION_REQUIRED && !outstanding
+                    && transfers.hasReconciliationEvidence(organizationId, transferId))
+                historicalActions.add(HistoricalSettlementAction.CLOSE);
+        }
         return new TransferCapabilities(
                 access.currentStoreActions(actor, organizationId, detail.transfer().sourceStoreId()),
                 access.currentStoreActions(actor, organizationId, detail.transfer().destinationStoreId()),
-                canReceivePhysicalSettlement, canConfirmPhysicalReturn);
+                canReceivePhysicalSettlement, canConfirmPhysicalReturn, historicalActions);
     }
 
     @Transactional(readOnly = true)
@@ -206,6 +224,15 @@ public class TransferQueryService {
         catch (IllegalArgumentException invalid) { throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST); }
     }
 
+    public enum HistoricalSettlementAction { REQUEST_RETURN, CONFIRM_LOSS, OPEN_DISCREPANCY, CLOSE }
+
     public record TransferCapabilities(List<StoreAction> sourceActions, List<StoreAction> destinationActions,
-            boolean canReceivePhysicalSettlement, boolean canConfirmPhysicalReturn) { }
+            boolean canReceivePhysicalSettlement, boolean canConfirmPhysicalReturn,
+            List<HistoricalSettlementAction> historicalSettlementActions) {
+        public TransferCapabilities {
+            sourceActions = List.copyOf(sourceActions);
+            destinationActions = List.copyOf(destinationActions);
+            historicalSettlementActions = List.copyOf(historicalSettlementActions);
+        }
+    }
 }

@@ -1709,7 +1709,7 @@ class TransferWorkflowTest extends InfrastructureTestBase {
     @Test
     void administratorCanSettleLegacyArchivedDestinationAndStockIsQuarantined() throws Exception {
         var owner=fixture.owner();
-        var prepared=preparePickedTransfer(owner,2);
+        var prepared=preparePickedTransfer(owner,10);
         dispatch(owner,prepared,3,"dispatch-to-legacy-archived-store");
         jdbc.sql("UPDATE stockrescue.storage_location SET active=FALSE,version=version+1,updated_at=clock_timestamp() WHERE org_id=:org AND store_id=:store AND zone_id=:zone AND active")
                 .param("org",fixture.organization).param("store",fixture.destinationStore).param("zone",fixture.destinationZone).update();
@@ -1721,7 +1721,7 @@ class TransferWorkflowTest extends InfrastructureTestBase {
                 .param("org",fixture.organization).param("store",fixture.destinationStore).update();
 
         problem(fixture.destinationOperator().write("POST",base()+"/"+prepared.transferId()+"/receive",
-                receiveRequest(prepared,4,0,2,"unauthorized-archived-store-receipt")),404,"RESOURCE_NOT_FOUND");
+                receiveRequest(prepared,4,0,10,"unauthorized-archived-store-receipt")),404,"RESOURCE_NOT_FOUND");
         problem(fixture.destinationOperator().get(base()+"/"+prepared.transferId()+"/settlement-positions"),404,"RESOURCE_NOT_FOUND");
         var detail=owner.get(base()+"/"+prepared.transferId());
         assertThat(detail.statusCode()).as(detail.body()).isEqualTo(200);
@@ -1731,7 +1731,7 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(capabilities.path("canConfirmPhysicalReturn").asBoolean()).isFalse();
         var positionVersions=tree(owner.get(base()+"/"+prepared.transferId()+"/settlement-positions"));
         assertThat(positionVersions.path("destinationPositions").get(0).path("version").asLong()).isZero();
-        var receipt=receiveRequest(prepared,4,0,2,"admin-legacy-archived-store-receipt");
+        var receipt=receiveRequest(prepared,4,0,6,"admin-legacy-archived-store-receipt");
         var preparedIntent=owner.write("POST","/api/v1/organizations/"+fixture.organization+"/transfer-command-intents",Map.of(
                 "prepareId",UUID.randomUUID(),"operation","RECEIVE","transferId",prepared.transferId(),"payload",receipt));
         assertThat(preparedIntent.statusCode()).as(preparedIntent.body()).isEqualTo(200);
@@ -1743,13 +1743,150 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
         var inspection=tree(owner.get("/api/v1/organizations/"+fixture.organization+"/transfer-command-intents/"+intentId));
         assertThat(inspection.path("executionStatus").asString()).isEqualTo("COMMITTED_AWAITING_ACKNOWLEDGEMENT");
-        assertThat(inspection.path("committedOutcome").path("status").asString()).isEqualTo("RECEIVED");
+        assertThat(inspection.path("committedOutcome").path("status").asString()).isEqualTo("PARTIALLY_RECEIVED");
         assertThat(owner.write("POST","/api/v1/organizations/"+fixture.organization+"/transfer-command-intents/"+intentId+"/acknowledge",null)
                 .statusCode()).isEqualTo(200);
-        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("2:2:0:0:0");
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("10:6:0:0:4");
         assertThat(jdbc.sql("SELECT on_hand || ':' || quarantined || ':' || available FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location AND lot_id=:lot")
                 .param("org",fixture.organization).param("store",fixture.destinationStore).param("location",fixture.destinationLocation)
-                .param("lot",fixture.lot).query(String.class).single()).isEqualTo("2:2:0");
+                .param("lot",fixture.lot).query(String.class).single()).isEqualTo("6:6:0");
+
+        var opened=owner.write("POST",base()+"/"+prepared.transferId()+"/open-discrepancy",
+                Map.of("requestId",UUID.randomUUID(),"expectedVersion",5,"lineId",prepared.lineId(),
+                        "expectedState","Six units received at the archived destination",
+                        "observedState","Four units remain unaccounted for in transit",
+                        "reason","Reconcile the documented carrier shortage",
+                        "evidenceReference","carrier:legacy-archived-shortage"));
+        assertThat(opened.statusCode()).as(opened.body()).isEqualTo(200);
+        var loss=owner.write("POST",base()+"/"+prepared.transferId()+"/damage",
+                damageRequest(prepared,6,4,"admin-legacy-archived-store-documented-loss"));
+        assertThat(loss.statusCode()).as(loss.body()).isEqualTo(200);
+        var closed=owner.write("POST",base()+"/"+prepared.transferId()+"/close-discrepancy",
+                decision(UUID.randomUUID(),7,"Close documented custody for the archived destination"));
+        assertThat(closed.statusCode()).as(closed.body()).isEqualTo(200);
+        assertThat(tree(closed).path("status").asString()).isEqualTo("CLOSED_WITH_DISCREPANCY");
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("10:6:4:0:0");
+        assertThat(jdbc.sql("SELECT on_hand || ':' || quarantined || ':' || available FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location AND lot_id=:lot")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).param("location",fixture.destinationLocation)
+                .param("lot",fixture.lot).query(String.class).single()).isEqualTo("6:6:0");
+    }
+
+    @Test
+    void administratorCanRequestReturnAndConfirmDocumentedLossAtLegacyArchivedDestination() throws Exception {
+        var owner=fixture.owner();
+        var destinationOperator=fixture.destinationOperator();
+        var prepared=preparePickedTransfer(owner,2);
+        dispatch(owner,prepared,3,"dispatch-before-legacy-destination-reconciliation");
+        jdbc.sql("UPDATE stockrescue.store SET active=FALSE,version=version+1,updated_at=clock_timestamp() WHERE org_id=:org AND id=:store")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).update();
+
+        var returnReference="legacy-destination-return-"+UUID.randomUUID();
+        var returnRequest=Map.of("requestId",UUID.randomUUID(),"expectedVersion",4,"requestReference",returnReference,
+                "lines",java.util.List.of(Map.of("lineId",prepared.lineId())),"reason","Request a carrier return for an archived destination",
+                "evidenceReference","carrier:legacy-destination-return");
+        problem(destinationOperator.write("POST",base()+"/"+prepared.transferId()+"/request-return",returnRequest),
+                404,"RESOURCE_NOT_FOUND");
+        problem(destinationOperator.write("POST",base()+"/"+prepared.transferId()+"/damage",
+                damageRequest(prepared,4,2,"unauthorized-archived-destination-loss")),404,"RESOURCE_NOT_FOUND");
+        var capabilities=tree(owner.get(base()+"/"+prepared.transferId()+"/capabilities"));
+        assertThat(capabilities.path("historicalSettlementActions").toString())
+                .contains("REQUEST_RETURN","CONFIRM_LOSS");
+
+        var requested=owner.write("POST",base()+"/"+prepared.transferId()+"/request-return",returnRequest);
+        assertThat(requested.statusCode()).as(requested.body()).isEqualTo(200);
+        var loss=owner.write("POST",base()+"/"+prepared.transferId()+"/damage",
+                damageRequest(prepared,5,2,"legacy-destination-documented-loss"));
+        assertThat(loss.statusCode()).as(loss.body()).isEqualTo(200);
+        var closed=owner.write("POST",base()+"/"+prepared.transferId()+"/close-discrepancy",
+                decision(UUID.randomUUID(),6,"Close the documented loss at the archived destination"));
+        assertThat(closed.statusCode()).as(closed.body()).isEqualTo(200);
+        assertThat(tree(closed).path("status").asString()).isEqualTo("CLOSED_WITH_DISCREPANCY");
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("2:0:2:0:0");
+        assertThat(stockOnHand(fixture.sourceStore,fixture.sourceLocation)).isEqualTo(3);
+        assertThat(tree(owner.get(base()+"/"+prepared.transferId()+"/capabilities"))
+                .path("historicalSettlementActions").isEmpty()).isTrue();
+    }
+
+    @Test
+    void historicalReturnIntentCanBePreparedSubmittedExecutedInspectedAndAcknowledged() throws Exception {
+        var owner=fixture.owner();
+        var prepared=preparePickedTransfer(owner,2);
+        dispatch(owner,prepared,3,"dispatch-before-legacy-return-intent");
+        jdbc.sql("UPDATE stockrescue.store SET active=FALSE,version=version+1,updated_at=clock_timestamp() WHERE org_id=:org AND id=:store")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).update();
+
+        var request=Map.of("requestId",UUID.randomUUID(),"expectedVersion",4,"requestReference","legacy-intent-"+UUID.randomUUID(),
+                "lines",java.util.List.of(Map.of("lineId",prepared.lineId())),"reason","Recover the authorized historical return request",
+                "evidenceReference","carrier:legacy-intent-return");
+        String intentsPath="/api/v1/organizations/"+fixture.organization+"/transfer-command-intents";
+        problem(fixture.destinationOperator().write("POST",intentsPath,Map.of("prepareId",UUID.randomUUID(),"operation","REQUEST_RETURN",
+                "transferId",prepared.transferId(),"payload",request)),404,"RESOURCE_NOT_FOUND");
+        var intentResponse=owner.write("POST",intentsPath,Map.of("prepareId",UUID.randomUUID(),"operation","REQUEST_RETURN",
+                "transferId",prepared.transferId(),"payload",request));
+        assertThat(intentResponse.statusCode()).as(intentResponse.body()).isEqualTo(200);
+        UUID intentId=UUID.fromString(tree(intentResponse).path("id").asString());
+        assertThat(owner.write("POST",intentsPath+"/"+intentId+"/submitted",null).statusCode()).isEqualTo(200);
+        assertThat(owner.write("POST",base()+"/"+prepared.transferId()+"/request-return",request).statusCode()).isEqualTo(200);
+        var inspection=tree(owner.get(intentsPath+"/"+intentId));
+        assertThat(inspection.path("executionStatus").asString()).isEqualTo("COMMITTED_AWAITING_ACKNOWLEDGEMENT");
+        assertThat(inspection.path("committedOutcome").path("transferId").asString()).isEqualTo(prepared.transferId().toString());
+        assertThat(owner.write("POST",intentsPath+"/"+intentId+"/acknowledge",null).statusCode()).isEqualTo(200);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("2:0:0:0:2");
+    }
+
+    @Test
+    void administratorCanReconcileTransferWhenBothParticipantsAreLegacyArchived() throws Exception {
+        var owner=fixture.owner();
+        var operator=fixture.operator();
+        var prepared=preparePickedTransfer(owner,2);
+        dispatch(owner,prepared,3,"dispatch-before-both-archived-reconciliation");
+        jdbc.sql("UPDATE stockrescue.store SET active=FALSE,version=version+1,updated_at=clock_timestamp() WHERE org_id=:org AND id IN (:source,:destination)")
+                .param("org",fixture.organization).param("source",fixture.sourceStore).param("destination",fixture.destinationStore).update();
+        var initialCapabilities=tree(owner.get(base()+"/"+prepared.transferId()+"/capabilities"));
+        assertThat(initialCapabilities.path("historicalSettlementActions").toString())
+                .contains("OPEN_DISCREPANCY","REQUEST_RETURN","CONFIRM_LOSS");
+
+        var unauthorized=Map.of("requestId",UUID.randomUUID(),"expectedVersion",4,"lineId",prepared.lineId(),
+                "expectedState","Two units are in carrier custody","observedState","Carrier evidence requires review",
+                "reason","Operator must not resolve archived custody","evidenceReference","carrier:unauthorized-archive-review");
+        problem(operator.write("POST",base()+"/"+prepared.transferId()+"/open-discrepancy",unauthorized),404,"RESOURCE_NOT_FOUND");
+        problem(operator.write("POST",base()+"/"+prepared.transferId()+"/close-discrepancy",
+                decision(UUID.randomUUID(),4,"Operator must not close archived custody")),404,"RESOURCE_NOT_FOUND");
+
+        var opened=owner.write("POST",base()+"/"+prepared.transferId()+"/open-discrepancy",
+                Map.of("requestId",UUID.randomUUID(),"expectedVersion",4,"lineId",prepared.lineId(),
+                        "expectedState","Two units are in carrier custody","observedState","Carrier evidence requires review",
+                        "reason","Review historical custody evidence","evidenceReference","carrier:both-archived-review"));
+        assertThat(opened.statusCode()).as(opened.body()).isEqualTo(200);
+        var returnReference="both-archived-return-"+UUID.randomUUID();
+        var requested=owner.write("POST",base()+"/"+prepared.transferId()+"/request-return",Map.of(
+                "requestId",UUID.randomUUID(),"expectedVersion",5,"requestReference",returnReference,
+                "lines",java.util.List.of(Map.of("lineId",prepared.lineId())),"reason","Request the physical return of the outstanding units",
+                "evidenceReference","carrier:both-archived-return"));
+        assertThat(requested.statusCode()).as(requested.body()).isEqualTo(200);
+        long sourceVersion=stockVersion(fixture.sourceStore,fixture.position);
+        var confirmation=confirmReturnRequest(UUID.randomUUID(),6,returnReference,"both-archived-receipt-"+UUID.randomUUID(),
+                prepared.lineId(),sourceVersion,"both-archived-return-line",prepared.sku(),prepared.lotCode());
+        var confirmed=owner.write("POST",base()+"/"+prepared.transferId()+"/confirm-return",confirmation);
+        assertThat(confirmed.statusCode()).as(confirmed.body()).isEqualTo(200);
+        assertThat(tree(owner.get(base()+"/"+prepared.transferId()+"/capabilities"))
+                .path("historicalSettlementActions").toString()).contains("CLOSE");
+        var closeRequest=decision(UUID.randomUUID(),7,"Close reconciled custody for two archived participants");
+        String intentsPath="/api/v1/organizations/"+fixture.organization+"/transfer-command-intents";
+        var closeIntent=owner.write("POST",intentsPath,Map.of("prepareId",UUID.randomUUID(),"operation","CLOSE",
+                "transferId",prepared.transferId(),"payload",closeRequest));
+        assertThat(closeIntent.statusCode()).as(closeIntent.body()).isEqualTo(200);
+        UUID closeIntentId=UUID.fromString(tree(closeIntent).path("id").asString());
+        assertThat(owner.write("POST",intentsPath+"/"+closeIntentId+"/submitted",null).statusCode()).isEqualTo(200);
+        var closed=owner.write("POST",base()+"/"+prepared.transferId()+"/close-discrepancy",closeRequest);
+        assertThat(closed.statusCode()).as(closed.body()).isEqualTo(200);
+        assertThat(tree(closed).path("status").asString()).isEqualTo("CLOSED_WITH_DISCREPANCY");
+        assertThat(tree(owner.get(intentsPath+"/"+closeIntentId)).path("executionStatus").asString())
+                .isEqualTo("COMMITTED_AWAITING_ACKNOWLEDGEMENT");
+        assertThat(owner.write("POST",intentsPath+"/"+closeIntentId+"/acknowledge",null).statusCode()).isEqualTo(200);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("2:0:0:2:0");
+        assertThat(tree(owner.get(base()+"/"+prepared.transferId()+"/capabilities"))
+                .path("historicalSettlementActions").isEmpty()).isTrue();
     }
 
     @Test

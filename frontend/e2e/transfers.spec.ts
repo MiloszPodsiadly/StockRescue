@@ -399,6 +399,10 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await switchSession(page, owner.context, `/organizations/${organization}/transfers/${transferId}`)
     await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toBeVisible()
     await expect(page.getByText(isolatedRequestId)).toBeVisible()
+    await write(owner.context, `${organizationPath}/transfer-command-intents/${isolatedPending.id}/resolve-failure`,
+      { resolution: 'REJECTED' }, 200)
+    await page.reload()
+    await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toHaveCount(0)
 
     await expect(page.getByText(/Closed with discrepancy · version/)).toBeVisible()
     await expect(page.getByText(/Actor .* outstanding 4 → 0/)).toBeVisible()
@@ -468,6 +472,9 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     await expect(recalledInventoryRow.getByRole('cell').nth(3)).toHaveText('26 EA')
     await expect(recalledInventoryRow.getByRole('cell').nth(5)).toHaveText('5 EA')
     await expect(recalledInventoryRow.getByRole('cell').nth(7)).toHaveText('21 EA')
+
+    await exerciseArchivedDestinationReturnRecovery(page, owner.context, organization, source, destination,
+      sourceLocation, destinationLocation, product, suffix)
   } finally {
     const cleanup = await Promise.allSettled([recoveryContext?.close() ?? Promise.resolve(), recipient?.context.close() ?? Promise.resolve(), owner.context.close()])
     for (const result of cleanup) {
@@ -475,6 +482,151 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     }
   }
 })
+
+async function exerciseArchivedDestinationReturnRecovery(page: Page, context: BrowserContext, organization: string,
+  source: Store, destination: Store, sourceLocation: Location, destinationLocation: Location, product: Product, suffix: string) {
+  const organizationPath = `/api/v1/organizations/${organization}`
+  const historicalSuffix = `${suffix}-HISTORY`
+  const expiry = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10)
+  const lot = await write<Lot>(context, `${organizationPath}/lots`, {
+    requestId: randomUUID(), productId: product.id, storeId: source.id, lotCode: `HISTORY-${historicalSuffix}`,
+    identityState: 'CONFIRMED', manufacturerVerified: true, manufacturerIdentityKey: `manufacturer:${historicalSuffix}`,
+    manufacturerProvenance: { source: 'Manufacturer transfer record', reference: `maker:${historicalSuffix}` },
+    dateMarking: { labeledValue: expiry, type: 'USE_BY', precision: 'DAY',
+      provenance: { source: 'Original package label', reference: `expiry:${historicalSuffix}` } },
+  }, 201)
+  await write(context, `${organizationPath}/lots/${lot.id}/safety-status-evidence`, {
+    requestId: randomUUID(), expectedVersion: lot.version, recallState: 'NOT_REPORTED', damageState: 'NOT_REPORTED',
+    provenance: { source: 'Reviewed supplier status', reference: `safety:${historicalSuffix}` },
+    reason: 'Reviewed supplier status for historical settlement verification',
+  }, 201)
+  await write(context, `${organizationPath}/stores/${source.id}/inventory/receipt-documents`, {
+    requestId: randomUUID(), supplierKey: `supplier:${historicalSuffix}`, documentType: 'DELIVERY_NOTE',
+    documentReference: `DELIVERY-${historicalSuffix}`, physicallyReceivedAt: new Date().toISOString(),
+    reason: 'Counted the dedicated historical settlement test quantity at source',
+    evidenceReference: `supplier-document:${historicalSuffix}`,
+    lines: [{ documentLineReference: `line-${historicalSuffix}`, locationId: sourceLocation.id,
+      productId: product.id, lotId: lot.id, quantity: 5, expectedVersion: 0 }],
+  }, 201)
+  const stock = await read<StockPage>(context,
+    `${organizationPath}/stores/${source.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${sourceLocation.id}&offset=0&limit=100`)
+  expect(stock.items).toHaveLength(1)
+  const sourcePosition = stock.items[0]!
+  const created = await write<components['schemas']['CommandResponse']>(context, `${organizationPath}/transfers`, {
+    requestId: randomUUID(), sourceStoreId: source.id, destinationStoreId: destination.id,
+    lines: [{ sourcePositionId: sourcePosition.id, destinationLocationId: destinationLocation.id,
+      quantity: 5, expectedSourceVersion: sourcePosition.version }],
+    reason: 'Create a transfer to verify archived destination settlement recovery',
+    evidenceReference: `historical-transfer:${historicalSuffix}`,
+  }, 200)
+  const transferPath = `${organizationPath}/transfers/${created.transferId}`
+  let transfer = await read<Transfer>(context, transferPath)
+  const line = transfer.lines[0]!
+  await write(context, `${transferPath}/approve`, { requestId: randomUUID(), expectedVersion: transfer.version,
+    reason: 'Approve the dedicated historical settlement transfer', evidenceReference: `approval:${historicalSuffix}` }, 200)
+  transfer = await read<Transfer>(context, transferPath)
+  await write(context, `${transferPath}/start-pick`, { requestId: randomUUID(), expectedVersion: transfer.version,
+    reason: 'Release the historical settlement line for physical picking', evidenceReference: `pick-start:${historicalSuffix}` }, 200)
+  transfer = await read<Transfer>(context, transferPath)
+  await write(context, `${transferPath}/pick`, { requestId: randomUUID(), expectedVersion: transfer.version,
+    lineId: line.id, documentReference: `PICK-${historicalSuffix}`, quantity: 5, observedSku: product.sku,
+    observedLotCode: lot.lotCode, reason: 'Counted all five units at source', evidenceReference: `pick:${historicalSuffix}` }, 200)
+  transfer = await read<Transfer>(context, transferPath)
+  await write(context, `${transferPath}/dispatch`, { requestId: randomUUID(), expectedVersion: transfer.version,
+    documentReference: `DISPATCH-${historicalSuffix}`, lines: [{ lineId: line.id, quantity: 5,
+      observedSku: product.sku, observedLotCode: lot.lotCode }], reason: 'Carrier accepted the counted units',
+    evidenceReference: `dispatch:${historicalSuffix}` }, 200)
+  transfer = await read<Transfer>(context, transferPath)
+  expect(transfer.status).toBe('IN_TRANSIT')
+
+  setStoreActiveInCompose(organization, destination.id, false)
+  await page.goto(`/organizations/${organization}/transfers/${transfer.id}`)
+  await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toHaveCount(0)
+  await expect(page.getByRole('note', { name: 'Administrative historical settlement' })).toBeVisible()
+  const returnRequest = page.getByRole('form', { name: 'Request physical return' })
+  await expect(returnRequest).toBeVisible()
+  await returnRequest.getByLabel('Return request reference').fill(`RETURN-${historicalSuffix}`)
+  await returnRequest.getByLabel('Reason for return request').fill('Document the physical return of all outstanding historical custody')
+  await returnRequest.getByLabel('Evidence reference').fill(`return-request:${historicalSuffix}`)
+  await returnRequest.getByRole('checkbox', { name: /I understand this request records intent only/ }).check()
+  await expect(returnRequest.getByRole('button', { name: 'Record return request' })).toBeEnabled()
+  const returnBodies: unknown[] = []
+  const captureReturn = (request: import('@playwright/test').Request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/request-return')) returnBodies.push(request.postDataJSON())
+  }
+  page.on('request', captureReturn)
+  try {
+    page = await recoverCommittedTransferCommand(page, `${transferPath}/request-return`,
+      () => returnRequest.getByRole('button', { name: 'Record return request' }).click(), 'Reconciliation required')
+  } finally {
+    page.off('request', captureReturn)
+  }
+  expect(returnBodies.length).toBeGreaterThan(0)
+  const returnBody = returnBodies[0] as { requestId: string, requestReference: string }
+  transfer = await read<Transfer>(context, transferPath)
+  expect(transfer.status).toBe('RECONCILIATION_REQUIRED')
+  expect(transfer.outstandingQuantity).toBe(5)
+  const exactRetry = await write<components['schemas']['CommandResponse']>(context,
+    `${transferPath}/request-return`, returnBody, 200)
+  expect(exactRetry.version).toBe(transfer.version)
+
+  const currentPosition = await read<components['schemas']['StockSnapshotResponse']>(context,
+    `${organizationPath}/stores/${source.id}/inventory/positions/${sourcePosition.id}`)
+  const returned = await write<components['schemas']['CommandResponse']>(context, `${transferPath}/confirm-return`, {
+    requestId: randomUUID(), expectedVersion: transfer.version, requestReference: returnBody.requestReference,
+    documentReference: `RETURN-RECEIPT-${historicalSuffix}`,
+    lines: [{ lineId: line.id, quantity: 5, expectedSourceVersion: currentPosition.version,
+      documentLineReference: `return-line-${historicalSuffix}`, observedSku: product.sku, observedLotCode: lot.lotCode }],
+    reason: 'Physically counted all five units returned to the active source location',
+    evidenceReference: `return-receipt:${historicalSuffix}`,
+  }, 200)
+  expect(returned.status).toBe('RECONCILIATION_REQUIRED')
+  transfer = await read<Transfer>(context, transferPath)
+  expect(transfer.outstandingQuantity).toBe(0)
+  await page.reload()
+  const close = page.getByRole('form', { name: 'Confirm final reconciliation' })
+  await expect(close).toBeVisible()
+  await close.getByLabel('Reason').fill('Reconciled the verified physical return and zero outstanding custody')
+  await close.getByLabel('Evidence reference').fill(`reconciliation:${historicalSuffix}`)
+  await close.getByRole('checkbox').check()
+  await recoverCommittedTransferCommand(page, `${transferPath}/close-discrepancy`,
+    () => close.getByRole('button', { name: 'Confirm reconciliation' }).click(), 'Closed with discrepancy')
+
+  transfer = await read<Transfer>(context, transferPath)
+  expect(transfer.status).toBe('CLOSED_WITH_DISCREPANCY')
+  expect(transfer.lines[0]!.quantities).toMatchObject({ dispatched: 5, physicallyReturned: 5, outstanding: 0 })
+  const custody = await read<{ items: { type: string, quantity: number, outstandingAfter: number }[] }>(context,
+    `${transferPath}/custody?offset=0&limit=50`)
+  expect(custody.items.map(item => `${item.type}:${item.quantity}`).sort()).toEqual(['DISPATCH:5', 'RETURN:5'])
+  expect(custody.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({ type: 'DISPATCH', quantity: 5, outstandingAfter: 5 }),
+    expect.objectContaining({ type: 'RETURN', quantity: 5, outstandingAfter: 0 }),
+  ]))
+  const sourceAfterReturn = await read<components['schemas']['StockSnapshotResponse']>(context,
+    `${organizationPath}/stores/${source.id}/inventory/positions/${sourcePosition.id}`)
+  expect(sourceAfterReturn.onHand).toBe(5)
+  expect(readStoreActiveInCompose(organization, destination.id)).toBe('f')
+}
+
+function setStoreActiveInCompose(organization: string, storeId: string, active: boolean) {
+  const ids = [organization, storeId]
+  if (ids.some(id => !/^[0-9a-f-]{36}$/i.test(id))) throw new Error('Expected database fixture identifiers to be UUIDs')
+  const output = execFileSync('docker', ['compose', '--project-name', process.env.STOCKRESCUE_TEST_PROJECT!,
+    '--env-file', process.env.STOCKRESCUE_TEST_ENV_FILE!, 'exec', '-T', 'postgres', 'psql', '-U',
+    'stockrescue_admin', '-d', 'stockrescue', '-v', 'ON_ERROR_STOP=1', '-c',
+    `UPDATE stockrescue.store SET active=${active ? 'TRUE' : 'FALSE'},version=version+1,updated_at=clock_timestamp() WHERE org_id='${organization}'::uuid AND id='${storeId}'::uuid;`],
+  { cwd: repository, encoding: 'utf8', timeout: 30000 })
+  if (!output.includes('UPDATE 1')) throw new Error('The isolated Compose fixture did not update exactly one store')
+}
+
+function readStoreActiveInCompose(organization: string, storeId: string) {
+  const output = execFileSync('docker', ['compose', '--project-name', process.env.STOCKRESCUE_TEST_PROJECT!,
+    '--env-file', process.env.STOCKRESCUE_TEST_ENV_FILE!, 'exec', '-T', 'postgres', 'psql', '-U',
+    'stockrescue_admin', '-d', 'stockrescue', '-Atc',
+    `SELECT active FROM stockrescue.store WHERE org_id='${organization}'::uuid AND id='${storeId}'::uuid;`],
+  { cwd: repository, encoding: 'utf8', timeout: 30000 })
+  return output.trim()
+}
 
 async function verifyRecallBlocksInTransitReceipt(context: BrowserContext, organizationPath: string, source: Store, destination: Store,
   destinationLocation: Location, product: Product, lot: Lot, positionId: string, suffix: string) {

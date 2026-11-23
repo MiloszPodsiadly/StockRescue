@@ -14783,6 +14783,15 @@ components:
             - MANAGE_INVENTORY_ALLOCATIONS
             - RECONCILE_INVENTORY
             - REMEDIATE_INVENTORY
+        historicalSettlementActions:
+          type: array
+          items:
+            type: string
+            enum:
+            - REQUEST_RETURN
+            - CONFIRM_LOSS
+            - OPEN_DISCREPANCY
+            - CLOSE
         sourceActions:
           type: array
           items:
@@ -14818,6 +14827,7 @@ components:
       - canConfirmPhysicalReturn
       - canReceivePhysicalSettlement
       - destinationActions
+      - historicalSettlementActions
       - sourceActions
     TransferCommandIntentInspection:
       type: object

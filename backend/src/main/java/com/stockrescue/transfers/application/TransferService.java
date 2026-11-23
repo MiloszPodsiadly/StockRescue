@@ -640,8 +640,9 @@ public class TransferService {
     public CommandOutcome recordDamage(UUID actor,UUID organizationId,UUID transferId,DamageRequest request) {
         var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
-        var member=access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),
-                StoreAction.MANAGE_TRANSFER_DISCREPANCIES,true);
+        var member=requireTransferSettlementAction(actor,organizationId,identity,StoreAction.MANAGE_TRANSFER_DISCREPANCIES,
+                ()->access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),
+                        StoreAction.MANAGE_TRANSFER_DISCREPANCIES,true));
         byte[] digest=commandFingerprint(organizationId,CONFIRM_LOSS,transferId,normalized);
         transfers.lockCommand(organizationId,actor,CONFIRM_LOSS,normalized.requestId());
         var replay=replay(actor,organizationId,CONFIRM_LOSS,transferId,normalized.requestId(),digest);
@@ -700,7 +701,9 @@ public class TransferService {
     public CommandOutcome requestReturn(UUID actor,UUID organizationId,UUID transferId,RequestReturn request) {
         var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
-        var member=access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),StoreAction.REQUEST_TRANSFER_RETURN,true);
+        var member=requireTransferSettlementAction(actor,organizationId,identity,StoreAction.REQUEST_TRANSFER_RETURN,
+                ()->access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),
+                        StoreAction.REQUEST_TRANSFER_RETURN,true));
         byte[] digest=commandFingerprint(organizationId,REQUEST_RETURN,transferId,normalized);
         transfers.lockCommand(organizationId,actor,REQUEST_RETURN,normalized.requestId());
         var replay=replay(actor,organizationId,REQUEST_RETURN,transferId,normalized.requestId(),digest);
@@ -948,8 +951,13 @@ public class TransferService {
             case DISPATCH -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.DISPATCH_TRANSFER, true).membershipId();
             case RECEIVE -> access.requireTransferSettlementStore(actor, organizationId, identity.destinationStoreId(), StoreAction.RECEIVE_STOCK).membershipId();
             case CONFIRM_RETURN -> access.requireTransferSettlementStore(actor, organizationId, identity.sourceStoreId(), StoreAction.RECEIVE_STOCK).membershipId();
-            case REQUEST_RETURN -> access.requireTransferStore(actor, organizationId, identity.destinationStoreId(), StoreAction.REQUEST_TRANSFER_RETURN, true).membershipId();
-            case OPEN_DISCREPANCY, CONFIRM_LOSS, CLOSE -> requireDiscrepancyManager(actor, organizationId, identity).membershipId();
+            case REQUEST_RETURN -> requireTransferSettlementAction(actor,organizationId,identity,StoreAction.REQUEST_TRANSFER_RETURN,
+                    ()->access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),
+                            StoreAction.REQUEST_TRANSFER_RETURN,true)).membershipId();
+            case CONFIRM_LOSS -> requireTransferSettlementAction(actor,organizationId,identity,StoreAction.MANAGE_TRANSFER_DISCREPANCIES,
+                    ()->access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),
+                            StoreAction.MANAGE_TRANSFER_DISCREPANCIES,true)).membershipId();
+            case OPEN_DISCREPANCY, CLOSE -> requireDiscrepancyManager(actor, organizationId, identity).membershipId();
             default -> throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
         };
     }
@@ -1033,8 +1041,23 @@ public class TransferService {
                 denied=unavailable;
             }
         }
-        if(denied!=null) throw denied;
+        if(denied!=null) {
+            RuntimeException currentDenied=denied;
+            return access.historicalTransferSettlementAdmin(actor,organizationId,identity.sourceStoreId(),
+                    identity.destinationStoreId(),StoreAction.MANAGE_TRANSFER_DISCREPANCIES)
+                    .orElseThrow(()->currentDenied);
+        }
         throw new OrganizationUnavailableException();
+    }
+
+    private com.stockrescue.access.application.OrganizationAccess requireTransferSettlementAction(UUID actor,UUID organizationId,
+            TransferIdentity identity,StoreAction action,java.util.function.Supplier<com.stockrescue.access.application.OrganizationAccess> normalAuthorization) {
+        try {
+            return normalAuthorization.get();
+        } catch(OrganizationUnavailableException | AccessDeniedException denied) {
+            return access.historicalTransferSettlementAdmin(actor,organizationId,identity.sourceStoreId(),
+                    identity.destinationStoreId(),action).orElseThrow(()->denied);
+        }
     }
 
     private static void requireSettleable(TransferRepository.LockedTransfer current,long expectedVersion) {

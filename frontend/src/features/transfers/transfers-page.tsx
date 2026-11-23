@@ -28,7 +28,7 @@ import { OrganizationPage } from '../organizations/organization-page'
 import { useOrganization } from '../organizations/organization-context'
 import { useTenantKey } from '../organizations/tenant-requests'
 import { formatTransferAge, transferStatusLabel, transferStatusOptions } from './transfer-format'
-import { loadStoreCursorPages } from './transfer-pagination'
+import { loadStoreCursorPages, TransferRequestScheduler } from './transfer-pagination'
 import type { StoreCursorStates } from './transfer-pagination'
 
 type DraftTransferLine = { id: string, sourcePositionId: string, destinationLocationId: string, quantity: string }
@@ -62,6 +62,7 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
   const client = useQueryClient()
   const navigate = useNavigate()
   const scope = useTenantKey()
+  const transferRequestScheduler = useMemo(() => new TransferRequestScheduler(8), [])
   const organization = useOrganization()
   const [status, setStatus] = useState<TransferStatus | ''>('')
   const [storeFilter, setStoreFilter] = useState('')
@@ -91,21 +92,24 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
     queryKey: [...scope, 'transfers', 'queue', storeSearch, status, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
     initialPageParam: {} as StoreCursorStates,
     queryFn: ({ signal, pageParam }) => loadStoreCursorPages(queueStoreIds, pageParam,
-      (storeId, cursor) => listTransfers(organizationId, storeId, status, signal, cursor, 50)),
+      (storeId, cursor, requestSignal) => listTransfers(organizationId, storeId, status, requestSignal ?? signal, cursor, 50),
+      transferRequestScheduler, signal),
     getNextPageParam: page => page.hasMore ? page.nextCursors : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
   const transit = useInfiniteQuery({
     queryKey: [...scope, 'transfers', 'in-transit', storeSearch, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
     initialPageParam: {} as StoreCursorStates,
     queryFn: ({ signal, pageParam }) => loadStoreCursorPages(queueStoreIds, pageParam,
-      (storeId, cursor) => listTransfersInTransit(organizationId, storeId, signal, cursor, 50)),
+      (storeId, cursor, requestSignal) => listTransfersInTransit(organizationId, storeId, requestSignal ?? signal, cursor, 50),
+      transferRequestScheduler, signal),
     getNextPageParam: page => page.hasMore ? page.nextCursors : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
   const evidence = useInfiniteQuery({
     queryKey: [...scope, 'transfers', 'evidence', storeSearch, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
     initialPageParam: {} as StoreCursorStates,
     queryFn: ({ signal, pageParam }) => loadStoreCursorPages(queueStoreIds, pageParam,
-      (storeId, cursor) => listTransferDiscrepancies(organizationId, storeId, signal, cursor, 50)),
+      (storeId, cursor, requestSignal) => listTransferDiscrepancies(organizationId, storeId, requestSignal ?? signal, cursor, 50),
+      transferRequestScheduler, signal),
     getNextPageParam: page => page.hasMore ? page.nextCursors : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
   const queueItems = uniqueBy((queue.data?.pages ?? []).flatMap(page => page.items), item => item.id)
@@ -548,6 +552,11 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
   }))
   const canReceivePhysicalSettlement = capabilities.data?.canReceivePhysicalSettlement ?? false
   const canConfirmPhysicalReturn = capabilities.data?.canConfirmPhysicalReturn ?? false
+  const historicalSettlementActions = capabilities.data?.historicalSettlementActions ?? []
+  const canRequestHistoricalReturn = historicalSettlementActions.includes('REQUEST_RETURN')
+  const canConfirmHistoricalLoss = historicalSettlementActions.includes('CONFIRM_LOSS')
+  const canOpenHistoricalDiscrepancy = historicalSettlementActions.includes('OPEN_DISCREPANCY')
+  const canCloseHistoricalDiscrepancy = historicalSettlementActions.includes('CLOSE')
   const sourceCanConfirmReturn = sourceActions.includes('RECEIVE_STOCK') && sourceActions.includes('READ_INVENTORY')
     || canConfirmPhysicalReturn
   const historicalPositions = useQuery({ queryKey: [...scope, 'transfers', 'settlement-positions', transfer.id, transfer.version],
@@ -592,6 +601,7 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
     <div className="flex flex-wrap items-start justify-between gap-3"><div><AppLink href={`/organizations/${organizationId}/transfers`} className="text-sm text-primary underline">Back to transfer queue</AppLink><h3 className="mt-3 break-all text-2xl font-semibold">Transfer {transfer.id}</h3><p className="mt-2">{source ? `${source.code} · ${source.name}` : `Source ${transfer.sourceStoreId}`} <span aria-hidden="true">→</span> {destination ? `${destination.code} · ${destination.name}` : `Destination ${transfer.destinationStoreId}`}</p><p className="mt-2 text-sm text-muted-foreground">{transferStatusLabel(transfer.status)} · version {transfer.version} · outstanding custody {transfer.outstandingQuantity} units</p></div><Button variant="outline" disabled={busy} onClick={() => { void onRefresh() }}>Refresh saved record</Button></div>
     {capabilities.isPending && <p role="status" className="rounded-xl border border-border p-4 text-sm">Checking current actions for both transfer participants…</p>}
     {capabilities.isError && <p role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">Current transfer capabilities could not be checked, so participant actions remain unavailable. {errorMessage(capabilities.error)} <Button variant="outline" onClick={() => { void capabilities.refetch() }}>Retry capability check</Button></p>}
+    {(historicalSettlementActions.length > 0 || canReceivePhysicalSettlement || canConfirmPhysicalReturn) && <p role="note" aria-label="Administrative historical settlement" className="rounded-xl border border-border p-4 text-sm">Administrative settlement of this existing historical transfer. This does not reactivate either store. Confirm the physical facts and record the required documents and evidence before proceeding.</p>}
     {transfer.status === 'RECONCILIATION_REQUIRED' && transfer.outstandingQuantity === 0 && <p role="status" className="rounded-xl border border-border p-4 text-sm">All units are accounted for. A manager must review the recorded evidence and confirm reconciliation before this transfer is finalized.</p>}
     {ageSeconds > 0 && firstDispatchAt && <p className="rounded-xl border border-border p-4 text-sm">Outstanding goods have been in custody for {formatTransferAge(ageSeconds)}. First dispatch: {new Date(firstDispatchAt).toLocaleString()}.</p>}
     <section aria-labelledby="transfer-lines-heading" className="space-y-3"><h4 id="transfer-lines-heading" className="text-lg font-semibold">Lines and stock custody</h4><ul className="grid gap-3">{transfer.lines.map(line => <li key={line.id} className="space-y-3 rounded-xl border border-border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold">Line {line.lineNumber} · {line.sku} · lot {line.lotCode}</p><p className="mt-1 break-all text-sm text-muted-foreground">{line.requestedQuantity} {line.unit} requested · source position {line.sourcePositionId.slice(0, 8)} · destination location {line.destinationLocationId.slice(0, 8)}</p></div><span className="text-sm">{line.picked ? 'Physical pick recorded' : transfer.status === 'PICKING' ? 'Awaiting full-line pick' : 'Not picked'}</span></div><dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-5"><Quantity label="Dispatched" value={line.quantities.dispatched ?? 0} unit={line.unit} /><Quantity label="Received" value={line.quantities.physicallyReceived ?? 0} unit={line.unit} /><Quantity label="Confirmed loss" value={line.quantities.confirmedLoss ?? 0} unit={line.unit} /><Quantity label="Returned" value={line.quantities.physicallyReturned ?? 0} unit={line.unit} /><Quantity label="Outstanding" value={line.quantities.outstanding ?? 0} unit={line.unit} /></dl></li>)}</ul></section>
@@ -612,15 +622,15 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
       && <StateMessage state="forbidden" title="Destination inventory version unavailable" description="Receiving requires current inventory read access at the destination so stale stock cannot be overwritten." />}
     {receivingPositions.isError && canReadDestinationStock && !canReceivePhysicalSettlement && <p role="alert" className="text-sm text-destructive">Destination stock version could not be read. Refresh inventory access before receiving: {errorMessage(receivingPositions.error)} <Button variant="outline" onClick={() => { void receivingPositions.refetch() }}>Retry stock read</Button></p>}
     {historicalPositions.isError && (canReceivePhysicalSettlement || canConfirmPhysicalReturn) && <p role="alert" className="text-sm text-destructive">Transfer settlement position versions could not be read. Retry the transfer record before recording a physical receipt or return. {errorMessage(historicalPositions.error)} <Button variant="outline" onClick={() => { void historicalPositions.refetch() }}>Retry settlement version read</Button></p>}
-    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES') && transfer.lines.some(line => outstanding(line) > 0) && <DamageAction transfer={transfer} busy={busy} onCommand={onCommand} />}
-    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('REQUEST_TRANSFER_RETURN') && transfer.lines.some(line => outstanding(line) > 0 && !pendingReturns.some(item => item.lineId === line.id)) && <RequestReturnAction key={`${transfer.id}:${transfer.version}`} transfer={transfer} pendingLineIds={new Set(pendingReturns.map(item => item.lineId))} busy={busy} onCommand={onCommand} />}
+    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && (destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES') || canConfirmHistoricalLoss) && transfer.lines.some(line => outstanding(line) > 0) && <DamageAction transfer={transfer} busy={busy} onCommand={onCommand} />}
+    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && (destinationActions.includes('REQUEST_TRANSFER_RETURN') || canRequestHistoricalReturn) && transfer.lines.some(line => outstanding(line) > 0 && !pendingReturns.some(item => item.lineId === line.id)) && <RequestReturnAction key={`${transfer.id}:${transfer.version}`} transfer={transfer} pendingLineIds={new Set(pendingReturns.map(item => item.lineId))} busy={busy} onCommand={onCommand} />}
     {activeReturnQuery.isSuccess && pendingReturns.length > 0 && <section aria-label="Return requests" className="space-y-4 rounded-2xl border border-border p-5"><h4 className="text-lg font-semibold">Physical return requests</h4>{pendingReturns.map(item => {
       const line = transfer.lines.find(candidate => candidate.id === item.lineId)!
       return <p key={`${item.requestId}:${item.lineId}`} className="text-sm">Line {line.lineNumber}: {item.unsettledQuantity} {line.unit} remain unsettled under return request {item.requestReference}. This is a logical request; the goods remain in transit custody until the source confirms physical receipt.</p>
     })}</section>}
     {pendingReturns.length > 0 && sourceCanConfirmReturn && activeReturnQuery.isSuccess && <ConfirmReturnAction key={`${transfer.id}:${transfer.version}:${pendingReturns.map(item => item.requestId).join('|')}`} transfer={transfer} returns={pendingReturns} positionQueries={returnPositionQueries} busy={busy} onCommand={onCommand} />}
-    {transfer.status === 'RECONCILIATION_REQUIRED' && transfer.outstandingQuantity === 0 && (sourceActions.includes('MANAGE_TRANSFER_DISCREPANCIES') || destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES')) && <DecisionAction title="Confirm final reconciliation" primaryLabel="Confirm reconciliation" onSubmit={(reason, evidence) => { command('CLOSE', reason, evidence) }} busy={busy} />}
-    {['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES') && <OpenDiscrepancyAction transfer={transfer} busy={busy} onCommand={onCommand} />}
+    {activeReturnQuery.isSuccess && transfer.status === 'RECONCILIATION_REQUIRED' && transfer.outstandingQuantity === 0 && (sourceActions.includes('MANAGE_TRANSFER_DISCREPANCIES') || destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES') || canCloseHistoricalDiscrepancy) && <DecisionAction title="Confirm final reconciliation" primaryLabel="Confirm reconciliation" onSubmit={(reason, evidence) => { command('CLOSE', reason, evidence) }} busy={busy} />}
+    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && (destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES') || canOpenHistoricalDiscrepancy) && <OpenDiscrepancyAction transfer={transfer} busy={busy} onCommand={onCommand} />}
     {transfer.canCancel && ['REQUESTED', 'APPROVED', 'PICKING', 'PICKED'].includes(transfer.status) && <CancelAction transfer={transfer} onCommand={onCommand} busy={busy} />}
 
     <section aria-label="Outstanding in-transit lines" className="space-y-3 rounded-2xl border border-border p-5">

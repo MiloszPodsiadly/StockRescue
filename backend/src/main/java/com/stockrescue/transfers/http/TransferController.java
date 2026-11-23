@@ -8,6 +8,7 @@ import java.util.UUID;
 import com.stockrescue.access.application.EffectivePermissions.StoreAction;
 import com.stockrescue.platform.http.ApiProblem;
 import com.stockrescue.transfers.application.TransferService;
+import com.stockrescue.transfers.application.TransferQueryService;
 import com.stockrescue.transfers.application.TransferService.CommandOutcome;
 import com.stockrescue.transfers.application.TransferService.CreateLine;
 import com.stockrescue.transfers.application.TransferService.CreateRequest;
@@ -228,7 +229,8 @@ public class TransferController {
         var value = transfers.capabilities(actor(actor), organizationId, transferId);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(new TransferCapabilitiesResponse(value.sourceActions(), value.destinationActions(),
-                        value.canReceivePhysicalSettlement(), value.canConfirmPhysicalReturn()));
+                        value.canReceivePhysicalSettlement(), value.canConfirmPhysicalReturn(),
+                        value.historicalSettlementActions()));
     }
 
     @GetMapping("/{transferId}/settlement-positions")
@@ -591,7 +593,8 @@ public class TransferController {
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreAction> sourceActions,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreAction> destinationActions,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canReceivePhysicalSettlement,
-            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canConfirmPhysicalReturn) { }
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canConfirmPhysicalReturn,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferQueryService.HistoricalSettlementAction> historicalSettlementActions) { }
 
     public record TransferSettlementPositionsResponse(
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferSettlementPositionVersion> sourcePositions,
