@@ -1,9 +1,6 @@
 package com.stockrescue.transfers.application;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +35,7 @@ import com.stockrescue.transfers.persistence.TransferRepository.TransferDetail;
 import com.stockrescue.transfers.persistence.TransferRepository.TransferIdentity;
 import com.stockrescue.transfers.persistence.TransferRepository.PhysicalDocument;
 import com.stockrescue.transfers.persistence.TransferRepository.PhysicalDocumentLine;
+import com.stockrescue.transfers.persistence.TransferCommandIntentRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.security.access.AccessDeniedException;
 import org.slf4j.MDC;
@@ -86,29 +84,36 @@ public class TransferService {
     public record DiscrepancyRequest(UUID requestId, long expectedVersion, UUID lineId, String expectedState,
             String observedState, String reason, String evidenceReference) { }
     public record ReturnRequestLine(UUID lineId) { }
-    public record RequestReturn(UUID requestId, long expectedVersion, String documentReference,
+    public record RequestReturn(UUID requestId, long expectedVersion, String requestReference,
             List<ReturnRequestLine> lines, String reason, String evidenceReference) { }
     public record ConfirmReturnLine(UUID lineId, long expectedSourceVersion, String documentLineReference,
             String observedSku, String observedLotCode) { }
-    public record ConfirmReturnRequest(UUID requestId, long expectedVersion, String documentReference,
+    public record ConfirmReturnRequest(UUID requestId, long expectedVersion, String requestReference, String documentReference,
             List<ConfirmReturnLine> lines, String reason, String evidenceReference) { }
     public record CommandOutcome(UUID transferId, TransferStatus status, long version, UUID commandId,
             UUID stockMovementId) { }
     public record Recovery(String operation, UUID requestId, CommandOutcome outcome) { }
 
     private final AccessPolicy access;
+    private final TransferQueryService queries;
+    private final TransferCommandFingerprintService fingerprints;
     private final InventoryRepository inventory;
     private final TransferRepository transfers;
+    private final TransferCommandIntentRepository commandIntents;
     private final InventoryService stock;
     private final LaneService lanes;
     private final AuditWriter audit;
     private final ObjectMapper json;
 
-    public TransferService(AccessPolicy access, InventoryRepository inventory, TransferRepository transfers,
+    public TransferService(AccessPolicy access, TransferQueryService queries, TransferCommandFingerprintService fingerprints,
+            InventoryRepository inventory, TransferRepository transfers, TransferCommandIntentRepository commandIntents,
             InventoryService stock, LaneService lanes, AuditWriter audit, ObjectMapper json) {
         this.access = access;
+        this.queries = queries;
+        this.fingerprints = fingerprints;
         this.inventory = inventory;
         this.transfers = transfers;
+        this.commandIntents = commandIntents;
         this.stock = stock;
         this.lanes = lanes;
         this.audit = audit;
@@ -119,12 +124,9 @@ public class TransferService {
     public CommandOutcome create(UUID actor, UUID organizationId, CreateRequest request) {
         var normalized = TransferRequestNormalizer.normalize(request);
         var member = access.requireTransferStore(actor, organizationId, normalized.sourceStoreId(), StoreAction.REQUEST_TRANSFER, true);
-        byte[] digest = fingerprint(organizationId, CREATE, normalized.sourceStoreId(), normalized.destinationStoreId(),
-                normalized.reason(), normalized.evidenceReference(), normalized.lines().stream()
-                        .map(line -> List.of(line.sourcePositionId(), line.destinationLocationId(), line.quantity(),
-                                line.expectedSourceVersion())).toList());
+        byte[] digest = commandFingerprint(organizationId, CREATE, null, normalized);
         transfers.lockCommand(organizationId, actor, CREATE, normalized.requestId());
-        var replay = replay(actor, organizationId, CREATE, normalized.requestId(), digest);
+        var replay = replay(actor, organizationId, CREATE, null, normalized.requestId(), digest);
         if (replay != null) return replay;
 
         lockStores(organizationId, normalized.sourceStoreId(), normalized.destinationStoreId());
@@ -169,10 +171,9 @@ public class TransferService {
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.APPROVE_TRANSFER, true);
         access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.RESERVE_STOCK, true);
-        byte[] digest = fingerprint(organizationId, APPROVE, transferId, normalized.expectedVersion(),
-                normalized.reason(), normalized.evidenceReference());
+        byte[] digest = commandFingerprint(organizationId, APPROVE, transferId, normalized);
         transfers.lockCommand(organizationId, actor, APPROVE, normalized.requestId());
-        var replay = replay(actor, organizationId, APPROVE, normalized.requestId(), digest);
+        var replay = replay(actor, organizationId, APPROVE, transferId, normalized.requestId(), digest);
         if (replay != null) return replay;
         if (identity.status() != TransferStatus.REQUESTED || identity.version() != normalized.expectedVersion())
             throw new TransferWriteConflict();
@@ -244,10 +245,9 @@ public class TransferService {
         var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.APPROVE_TRANSFER, true);
-        byte[] digest = fingerprint(organizationId, REJECT, transferId, normalized.expectedVersion(),
-                normalized.reason(), normalized.evidenceReference());
+        byte[] digest = commandFingerprint(organizationId, REJECT, transferId, normalized);
         transfers.lockCommand(organizationId, actor, REJECT, normalized.requestId());
-        var replay = replay(actor, organizationId, REJECT, normalized.requestId(), digest);
+        var replay = replay(actor, organizationId, REJECT, transferId, normalized.requestId(), digest);
         if (replay != null) return replay;
         lockStores(organizationId, identity.sourceStoreId(), identity.destinationStoreId());
         var current = transfers.lockTransferForCommand(organizationId, transferId);
@@ -272,21 +272,16 @@ public class TransferService {
         var identity = identity(organizationId, transferId);
         boolean originalOwnerRetry = actor.equals(identity.createdByUserId())
                 && transfers.command(organizationId, actor, CANCEL, normalized.requestId()).isPresent();
-        var action = actor.equals(identity.createdByUserId())
-                && (identity.status() == TransferStatus.REQUESTED || originalOwnerRetry)
-                ? StoreAction.REQUEST_TRANSFER : StoreAction.CANCEL_TRANSFER;
+        var action = cancellationAction(actor, identity.createdByUserId(), identity.status(), originalOwnerRetry);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), action, true);
-        byte[] digest = fingerprint(organizationId, CANCEL, transferId, normalized.expectedVersion(),
-                normalized.reason(), normalized.evidenceReference(), normalized.putBackConfirmed(),
-                normalized.putBackDocumentReference());
+        byte[] digest = commandFingerprint(organizationId, CANCEL, transferId, normalized);
         transfers.lockCommand(organizationId, actor, CANCEL, normalized.requestId());
-        var replay = replay(actor, organizationId, CANCEL, normalized.requestId(), digest);
+        var replay = replay(actor, organizationId, CANCEL, transferId, normalized.requestId(), digest);
         if (replay != null) return replay;
         inventory.lockRequest(organizationId, actor, InventoryOperation.TRANSFER_RELEASE, normalized.requestId());
         lockStores(organizationId, identity.sourceStoreId(), identity.destinationStoreId());
         var current = transfers.lockTransferForCommand(organizationId, transferId);
-        var currentAction = actor.equals(identity.createdByUserId()) && current.status() == TransferStatus.REQUESTED
-                ? StoreAction.REQUEST_TRANSFER : StoreAction.CANCEL_TRANSFER;
+        var currentAction = cancellationAction(actor, current.createdByUserId(), current.status(), false);
         member = access.requireTransferStore(actor, organizationId, current.sourceStoreId(), currentAction, true);
         if (current.version() != normalized.expectedVersion()) throw new TransferWriteConflict();
         if (current.status() != TransferStatus.REQUESTED && current.status() != TransferStatus.APPROVED
@@ -370,10 +365,9 @@ public class TransferService {
         var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.PICK_TRANSFER, true);
-        byte[] digest = fingerprint(organizationId, START_PICK, transferId, normalized.expectedVersion(),
-                normalized.reason(), normalized.evidenceReference());
+        byte[] digest = commandFingerprint(organizationId, START_PICK, transferId, normalized);
         transfers.lockCommand(organizationId, actor, START_PICK, normalized.requestId());
-        var replay = replay(actor, organizationId, START_PICK, normalized.requestId(), digest);
+        var replay = replay(actor, organizationId, START_PICK, transferId, normalized.requestId(), digest);
         if (replay != null) return replay;
 
         lockStores(organizationId, identity.sourceStoreId(), identity.destinationStoreId());
@@ -407,11 +401,9 @@ public class TransferService {
         var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.PICK_TRANSFER, true);
-        byte[] digest = fingerprint(organizationId, PICK, transferId, normalized.expectedVersion(), normalized.lineId(),
-                normalized.documentReference(), normalized.quantity(), normalized.observedSku(), normalized.observedLotCode(),
-                normalized.reason(), normalized.evidenceReference());
+        byte[] digest = commandFingerprint(organizationId, PICK, transferId, normalized);
         transfers.lockCommand(organizationId, actor, PICK, normalized.requestId());
-        var replay = replay(actor, organizationId, PICK, normalized.requestId(), digest);
+        var replay = replay(actor, organizationId, PICK, transferId, normalized.requestId(), digest);
         if (replay != null) return replay;
 
         lockStores(organizationId, identity.sourceStoreId(), identity.destinationStoreId());
@@ -466,11 +458,9 @@ public class TransferService {
         var normalized = TransferRequestNormalizer.normalize(request);
         var identity = identity(organizationId, transferId);
         var member = access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.DISPATCH_TRANSFER, true);
-        byte[] digest = fingerprint(organizationId, DISPATCH, transferId, normalized.expectedVersion(),
-                normalized.documentReference(), normalized.lines().stream().map(line -> List.of(line.lineId(), line.quantity(),
-                        line.observedSku(), line.observedLotCode())).toList(), normalized.reason(), normalized.evidenceReference());
+        byte[] digest = commandFingerprint(organizationId, DISPATCH, transferId, normalized);
         transfers.lockCommand(organizationId, actor, DISPATCH, normalized.requestId());
-        var replay = replay(actor, organizationId, DISPATCH, normalized.requestId(), digest);
+        var replay = replay(actor, organizationId, DISPATCH, transferId, normalized.requestId(), digest);
         if (replay != null) return replay;
 
         lockStores(organizationId, identity.sourceStoreId(), identity.destinationStoreId());
@@ -538,12 +528,9 @@ public class TransferService {
         var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),StoreAction.RECEIVE_STOCK,true);
-        byte[] digest=fingerprint(organizationId,RECEIVE,transferId,normalized.expectedVersion(),normalized.documentReference(),
-                normalized.physicallyReceivedAt(),normalized.lines().stream().map(line -> List.of(line.lineId(),line.quantity(),
-                        line.expectedDestinationVersion(),line.documentLineReference(),line.observedSku(),line.observedLotCode())).toList(),
-                normalized.reason(),normalized.evidenceReference());
+        byte[] digest=commandFingerprint(organizationId,RECEIVE,transferId,normalized);
         transfers.lockCommand(organizationId,actor,RECEIVE,normalized.requestId());
-        var replay=replay(actor,organizationId,RECEIVE,normalized.requestId(),digest);
+        var replay=replay(actor,organizationId,RECEIVE,transferId,normalized.requestId(),digest);
         if(replay!=null) return replay;
 
         lockStores(organizationId,identity.sourceStoreId(),identity.destinationStoreId());
@@ -606,10 +593,9 @@ public class TransferService {
         var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=requireDiscrepancyManager(actor,organizationId,identity);
-        byte[] digest=fingerprint(organizationId,OPEN_DISCREPANCY,transferId,normalized.expectedVersion(),normalized.lineId(),
-                normalized.expectedState(),normalized.observedState(),normalized.reason(),normalized.evidenceReference());
+        byte[] digest=commandFingerprint(organizationId,OPEN_DISCREPANCY,transferId,normalized);
         transfers.lockCommand(organizationId,actor,OPEN_DISCREPANCY,normalized.requestId());
-        var replay=replay(actor,organizationId,OPEN_DISCREPANCY,normalized.requestId(),digest);
+        var replay=replay(actor,organizationId,OPEN_DISCREPANCY,transferId,normalized.requestId(),digest);
         if(replay!=null) return replay;
         lockStores(organizationId,identity.sourceStoreId(),identity.destinationStoreId());
         var current=transfers.lockTransferForCommand(organizationId,transferId);
@@ -641,12 +627,9 @@ public class TransferService {
         var identity=identity(organizationId,transferId);
         var member=access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),
                 StoreAction.MANAGE_TRANSFER_DISCREPANCIES,true);
-        byte[] digest=fingerprint(organizationId,CONFIRM_LOSS,transferId,normalized.expectedVersion(),
-                normalized.documentReference(),normalized.reasonCode(),normalized.lines().stream()
-                        .map(line -> List.of(line.lineId(),line.quantity(),line.documentLineReference())).toList(),
-                normalized.reason(),normalized.evidenceReference());
+        byte[] digest=commandFingerprint(organizationId,CONFIRM_LOSS,transferId,normalized);
         transfers.lockCommand(organizationId,actor,CONFIRM_LOSS,normalized.requestId());
-        var replay=replay(actor,organizationId,CONFIRM_LOSS,normalized.requestId(),digest);
+        var replay=replay(actor,organizationId,CONFIRM_LOSS,transferId,normalized.requestId(),digest);
         if(replay!=null) return replay;
         lockStores(organizationId,identity.sourceStoreId(),identity.destinationStoreId());
         transfers.lockDocumentIdentity(organizationId,identity.destinationStoreId(),"DAMAGE",normalized.documentReference());
@@ -697,10 +680,9 @@ public class TransferService {
         var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=access.requireTransferStore(actor,organizationId,identity.destinationStoreId(),StoreAction.REQUEST_TRANSFER_RETURN,true);
-        byte[] digest=fingerprint(organizationId,REQUEST_RETURN,transferId,normalized.expectedVersion(),normalized.documentReference(),
-                normalized.lines().stream().map(ReturnRequestLine::lineId).toList(),normalized.reason(),normalized.evidenceReference());
+        byte[] digest=commandFingerprint(organizationId,REQUEST_RETURN,transferId,normalized);
         transfers.lockCommand(organizationId,actor,REQUEST_RETURN,normalized.requestId());
-        var replay=replay(actor,organizationId,REQUEST_RETURN,normalized.requestId(),digest);
+        var replay=replay(actor,organizationId,REQUEST_RETURN,transferId,normalized.requestId(),digest);
         if(replay!=null) return replay;
         lockStores(organizationId,identity.sourceStoreId(),identity.destinationStoreId());
         var current=transfers.lockTransferForCommand(organizationId,transferId);
@@ -724,14 +706,14 @@ public class TransferService {
             transfers.recordReconciliationEvidence(new TransferRepository.ReconciliationEvidence(UUID.randomUUID(),organizationId,
                     transferId,line.id(),commandId,actor,member.membershipId(),"RETURN_REQUEST",
                     json.writeValueAsString(Map.of("outstanding",requested.getValue())),
-                    json.writeValueAsString(Map.of("returnReference",normalized.documentReference(),
+                    json.writeValueAsString(Map.of("requestReference",normalized.requestReference(),
                             "requestedQuantity",requested.getValue())),normalized.reason(),normalized.evidenceReference()));
         }
         transfers.advanceStatus(organizationId,transferId,current.version(),TransferStatus.RECONCILIATION_REQUIRED,
                 commandId,actor,member.membershipId(),normalized.reason(),normalized.evidenceReference(),null,null);
         audit.securityChange(actor,organizationId,"transfer",transferId,"TRANSFER_RETURN_REQUESTED",
                 Map.of("outcome","SUCCEEDED","before",current.status(),"after",TransferStatus.RECONCILIATION_REQUIRED,
-                        "version",version,"commandId",commandId,"documentReference",normalized.documentReference(),
+                        "version",version,"commandId",commandId,"requestReference",normalized.requestReference(),
                         "lineCount",requestLines.size()),normalized.reason());
         return outcome;
     }
@@ -741,12 +723,9 @@ public class TransferService {
         var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=access.requireTransferStore(actor,organizationId,identity.sourceStoreId(),StoreAction.RECEIVE_STOCK,true);
-        byte[] digest=fingerprint(organizationId,CONFIRM_RETURN,transferId,normalized.expectedVersion(),normalized.documentReference(),
-                normalized.lines().stream().map(line -> List.of(line.lineId(),line.expectedSourceVersion(),
-                        line.documentLineReference(),line.observedSku(),line.observedLotCode())).toList(),
-                normalized.reason(),normalized.evidenceReference());
+        byte[] digest=commandFingerprint(organizationId,CONFIRM_RETURN,transferId,normalized);
         transfers.lockCommand(organizationId,actor,CONFIRM_RETURN,normalized.requestId());
-        var replay=replay(actor,organizationId,CONFIRM_RETURN,normalized.requestId(),digest);
+        var replay=replay(actor,organizationId,CONFIRM_RETURN,transferId,normalized.requestId(),digest);
         if(replay!=null) return replay;
         lockStores(organizationId,identity.sourceStoreId(),identity.destinationStoreId());
         transfers.lockDocumentIdentity(organizationId,identity.sourceStoreId(),"RETURN",normalized.documentReference());
@@ -759,15 +738,17 @@ public class TransferService {
         var byId=detail.lines().stream().collect(java.util.stream.Collectors.toMap(TransferRepository.TransferLine::id,line -> line));
         var stockLines=new ArrayList<TransferReturnLine>(normalized.lines().size());
         var quantityByLine=new java.util.HashMap<UUID,Long>();
+        var requestEvidenceByLine=new java.util.HashMap<UUID,UUID>();
         for(var requested:normalized.lines()) {
             var line=byId.get(requested.lineId());
             var pending=transfers.pendingReturn(organizationId,transferId,requested.lineId()).orElseThrow(TransferWriteConflict::new);
-            if(line==null || !pending.documentReference().equals(normalized.documentReference())
+            if(line==null || !pending.requestReference().equals(normalized.requestReference())
                     || pending.quantity()!=line.quantities().outstanding()
                     || !line.sku().equals(requested.observedSku()) || !line.lotCode().equals(requested.observedLotCode()))
                 throw new TransferWriteConflict();
             stockLines.add(new TransferReturnLine(line.id(),line.sourcePositionId(),requested.expectedSourceVersion(),pending.quantity()));
             quantityByLine.put(line.id(),pending.quantity());
+            requestEvidenceByLine.put(line.id(),pending.evidenceId());
         }
         var posted=stock.returnForTransfer(actor,organizationId,current.sourceStoreId(),normalized.requestId(),transferId,
                 normalized.reason(),normalized.evidenceReference(),stockLines);
@@ -789,7 +770,7 @@ public class TransferService {
             if(stockLine==null || stockLine.quantity()!=quantity) throw new TransferWriteConflict();
             transfers.recordPhysicalDocumentLine(new PhysicalDocumentLine(organizationId,transferId,documentId,line.id(),
                     "RETURN",line.lineNumber(),requested.documentLineReference(),quantity,"RETURNED",requested.observedSku(),
-                    requested.observedLotCode(),null));
+                    requested.observedLotCode(),null,requestEvidenceByLine.get(line.id())));
             transfers.appendCustodyMovement(new TransferRepository.CustodyAppend(UUID.randomUUID(),organizationId,transferId,
                     line.id(),line.version(),com.stockrescue.transfers.domain.TransferMovementType.RETURN,commandId,actor,
                     member.membershipId(),quantity,current.sourceStoreId(),posted.movementId(),stockLine.positionId(),
@@ -813,9 +794,9 @@ public class TransferService {
         var normalized=TransferRequestNormalizer.normalize(request);
         var identity=identity(organizationId,transferId);
         var member=requireDiscrepancyManager(actor,organizationId,identity);
-        byte[] digest=fingerprint(organizationId,CLOSE,transferId,normalized.expectedVersion(),normalized.reason(),normalized.evidenceReference());
+        byte[] digest=commandFingerprint(organizationId,CLOSE,transferId,normalized);
         transfers.lockCommand(organizationId,actor,CLOSE,normalized.requestId());
-        var replay=replay(actor,organizationId,CLOSE,normalized.requestId(),digest);
+        var replay=replay(actor,organizationId,CLOSE,transferId,normalized.requestId(),digest);
         if(replay!=null) return replay;
         lockStores(organizationId,identity.sourceStoreId(),identity.destinationStoreId());
         var current=transfers.lockTransferForCommand(organizationId,transferId);
@@ -849,28 +830,41 @@ public class TransferService {
 
     @Transactional(readOnly = true)
     public TransferDetail detail(UUID actor, UUID organizationId, UUID transferId) {
+        return queries.detail(actor, organizationId, transferId);
+    }
+
+    @Transactional(readOnly = true)
+    public boolean canCancel(UUID actor, UUID organizationId, UUID transferId) {
         access.organization(actor, organizationId);
-        var detail = transfers.detail(organizationId, transferId).orElseThrow(OrganizationUnavailableException::new);
-        authorizeRead(actor, organizationId, detail.transfer().sourceStoreId(), detail.transfer().destinationStoreId());
-        return detail;
+        var identity = identity(organizationId, transferId);
+        if (!Set.of(TransferStatus.REQUESTED, TransferStatus.APPROVED, TransferStatus.PICKING, TransferStatus.PICKED)
+                .contains(identity.status())) return false;
+        StoreAction action = cancellationAction(actor, identity.createdByUserId(), identity.status(), false);
+        try {
+            access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), action, false);
+            return true;
+        } catch (OrganizationUnavailableException | AccessDeniedException denied) {
+            return false;
+        }
     }
 
     @Transactional(readOnly = true)
     public TransferRepository.Page<TransferRepository.TransferSummary> page(UUID actor, UUID organizationId,
             UUID storeId, TransferStatus status, int offset, int limit) {
-        access.requireStore(actor, organizationId, storeId, StoreAction.READ_TRANSFERS, false);
-        return transfers.page(organizationId, storeId, status, offset, limit);
+        return queries.page(actor, organizationId, storeId, status, offset, limit);
     }
 
     @Transactional(readOnly = true)
     public Recovery recover(UUID actor, UUID organizationId, String operation, UUID requestId) {
-        if (operation == null || requestId == null) throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        access.organization(actor, organizationId);
-        var receipt = transfers.command(organizationId, actor, operation, requestId)
-                .orElseThrow(OrganizationUnavailableException::new);
-        var detail = transfers.detail(organizationId, receipt.transferId()).orElseThrow(OrganizationUnavailableException::new);
-        authorizeRead(actor, organizationId, detail.transfer().sourceStoreId(), detail.transfer().destinationStoreId());
-        return new Recovery(receipt.operation(), receipt.requestId(), json.readValue(receipt.outcome(), CommandOutcome.class));
+        return queries.recover(actor, organizationId, operation, requestId);
+    }
+
+    public byte[] commandFingerprint(UUID organizationId, String operation, UUID transferId, JsonNode payload) {
+        return fingerprints.fromPayload(organizationId, operation, transferId, payload);
+    }
+
+    private byte[] commandFingerprint(UUID organizationId, String operation, UUID transferId, Object request) {
+        return fingerprints.forRequest(organizationId, operation, transferId, request);
     }
 
     @Transactional
@@ -885,7 +879,13 @@ public class TransferService {
         var identity = identity(organizationId, transferId);
         return switch (operation) {
             case APPROVE, REJECT -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.APPROVE_TRANSFER, true).membershipId();
-            case CANCEL -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.CANCEL_TRANSFER, true).membershipId();
+            case CANCEL -> {
+                UUID requestId = payloadUuid(payload, "requestId");
+                boolean ownerRetry = actor.equals(identity.createdByUserId())
+                        && transfers.command(organizationId, actor, CANCEL, requestId).isPresent();
+                StoreAction action = cancellationAction(actor, identity.createdByUserId(), identity.status(), ownerRetry);
+                yield access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), action, true).membershipId();
+            }
             case START_PICK, PICK -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.PICK_TRANSFER, true).membershipId();
             case DISPATCH -> access.requireTransferStore(actor, organizationId, identity.sourceStoreId(), StoreAction.DISPATCH_TRANSFER, true).membershipId();
             case RECEIVE -> access.requireTransferStore(actor, organizationId, identity.destinationStoreId(), StoreAction.RECEIVE_STOCK, true).membershipId();
@@ -896,17 +896,8 @@ public class TransferService {
         };
     }
 
-    @Transactional(readOnly = true)
-    public void authorizeCommandIntentRead(UUID actor, UUID organizationId, String operation, UUID transferId, JsonNode payload) {
-        if (operation == null || organizationId == null || actor == null || !COMMAND_OPERATIONS.contains(operation) || payload == null || !payload.isObject()
-                || (operation.equals(CREATE) != (transferId == null)))
-            throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
-        if (operation.equals(CREATE)) {
-            UUID sourceStoreId = payloadUuid(payload, "sourceStoreId");
-            access.requireTransferStore(actor, organizationId, sourceStoreId, StoreAction.READ_TRANSFERS, false);
-        } else {
-            detail(actor, organizationId, transferId);
-        }
+    public boolean canReadCommandIntent(UUID actor, UUID organizationId, String operation, UUID transferId, JsonNode payload) {
+        return queries.canReadCommandIntent(actor, organizationId, operation, transferId, payload);
     }
 
     private static UUID payloadUuid(JsonNode payload, String field) {
@@ -916,34 +907,32 @@ public class TransferService {
         catch (IllegalArgumentException invalid) { throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST); }
     }
 
+    private static StoreAction cancellationAction(UUID actor, UUID createdBy, TransferStatus status, boolean ownerRetry) {
+        return actor.equals(createdBy) && (status == TransferStatus.REQUESTED || ownerRetry)
+                ? StoreAction.REQUEST_TRANSFER : StoreAction.CANCEL_TRANSFER;
+    }
+
     @Transactional(readOnly = true)
     public TransferRepository.Page<TransferRepository.CustodyMovement> custodyTimeline(UUID actor,UUID organizationId,
             UUID transferId,int offset,int limit) {
-        var detail=detail(actor,organizationId,transferId);
-        return transfers.custodyTimeline(organizationId,detail.transfer().id(),offset,limit);
+        return queries.custodyTimeline(actor, organizationId, transferId, offset, limit);
     }
 
     @Transactional(readOnly = true)
     public TransferRepository.Page<TransferRepository.InTransitLine> inTransitAging(UUID actor,UUID organizationId,
             UUID storeId,int offset,int limit) {
-        access.requireStore(actor,organizationId,storeId,StoreAction.READ_TRANSFERS,false);
-        return transfers.inTransitAging(organizationId,storeId,offset,limit);
+        return queries.inTransitAging(actor, organizationId, storeId, offset, limit);
     }
 
     @Transactional(readOnly = true)
     public TransferRepository.Page<TransferRepository.Discrepancy> discrepancies(UUID actor,UUID organizationId,
             UUID storeId,int offset,int limit) {
-        access.requireStore(actor,organizationId,storeId,StoreAction.READ_TRANSFERS,false);
-        return transfers.discrepancies(organizationId,storeId,offset,limit);
+        return queries.discrepancies(actor, organizationId, storeId, offset, limit);
     }
 
-    private void authorizeRead(UUID actor, UUID organizationId, UUID sourceStoreId, UUID destinationStoreId) {
-        access.organization(actor, organizationId);
-        try {
-            access.requireStore(actor, organizationId, sourceStoreId, StoreAction.READ_TRANSFERS, false);
-        } catch (OrganizationUnavailableException unavailable) {
-            access.requireStore(actor, organizationId, destinationStoreId, StoreAction.READ_TRANSFERS, false);
-        }
+    @Transactional(readOnly = true)
+    public List<TransferRepository.ActiveReturn> activeReturns(UUID actor, UUID organizationId, UUID transferId) {
+        return queries.activeReturns(actor, organizationId, transferId);
     }
 
     private com.stockrescue.access.application.OrganizationAccess requireDiscrepancyManager(UUID actor,UUID organizationId,
@@ -1031,11 +1020,20 @@ public class TransferService {
         List.of(sourceStoreId, destinationStoreId).stream().distinct().sorted().forEach(store -> inventory.lockStoreForWrite(organizationId, store));
     }
 
-    private CommandOutcome replay(UUID actor, UUID organizationId, String operation, UUID requestId, byte[] digest) {
+    private CommandOutcome replay(UUID actor, UUID organizationId, String operation, UUID transferId, UUID requestId, byte[] digest) {
+        var prepared = commandIntents.lockCommandIntent(organizationId, actor, operation, requestId);
+        if (prepared.isPresent()) {
+            var intent = prepared.orElseThrow();
+            if (!java.util.Objects.equals(intent.transferId(), transferId)
+                    || !MessageDigest.isEqual(intent.fingerprint(), digest)
+                    || intent.state().equals("REJECTED") || intent.state().equals("CONFLICTED"))
+                throw new InventoryFailure(InventoryFailure.Kind.IDEMPOTENCY_CONFLICT);
+        }
         var previous = transfers.command(organizationId, actor, operation, requestId);
         if (previous.isEmpty()) return null;
         var receipt = previous.orElseThrow();
-        if (!MessageDigest.isEqual(receipt.payloadDigest(), digest))
+        if ((!operation.equals(CREATE) && !java.util.Objects.equals(receipt.transferId(), transferId))
+                || !MessageDigest.isEqual(receipt.payloadDigest(), digest))
             throw new InventoryFailure(InventoryFailure.Kind.IDEMPOTENCY_CONFLICT);
         return json.readValue(receipt.outcome(), CommandOutcome.class);
     }
@@ -1060,21 +1058,6 @@ public class TransferService {
     private static void expectVersionAndStatus(TransferStatus currentStatus, long currentVersion,
             long expectedVersion, TransferStatus expectedStatus) {
         if (currentVersion != expectedVersion || currentStatus != expectedStatus) throw new TransferWriteConflict();
-    }
-
-    private static byte[] fingerprint(Object... values) {
-        try {
-            var digest = MessageDigest.getInstance("SHA-256");
-            digest.update("stockrescue-transfer-command-v1".getBytes(StandardCharsets.US_ASCII));
-            for (var value : values) {
-                byte[] bytes = value == null ? null : value.toString().getBytes(StandardCharsets.UTF_8);
-                digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes == null ? -1 : bytes.length).array());
-                if (bytes != null) digest.update(bytes);
-            }
-            return digest.digest();
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
     }
 
 }

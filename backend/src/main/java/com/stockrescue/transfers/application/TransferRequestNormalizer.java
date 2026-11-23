@@ -155,7 +155,7 @@ final class TransferRequestNormalizer {
             lines.add(line);
         }
         lines.sort(Comparator.comparing(ReturnRequestLine::lineId));
-        return new RequestReturn(request.requestId(), request.expectedVersion(), text(request.documentReference(), 200),
+        return new RequestReturn(request.requestId(), request.expectedVersion(), text(request.requestReference(), 200),
                 List.copyOf(lines), text(request.reason(), 500), text(request.evidenceReference(), 256));
     }
 
@@ -177,7 +177,8 @@ final class TransferRequestNormalizer {
                     text(line.observedSku(), 64), text(line.observedLotCode(), 128)));
         }
         lines.sort(Comparator.comparing(ConfirmReturnLine::lineId));
-        return new ConfirmReturnRequest(request.requestId(), request.expectedVersion(), text(request.documentReference(), 200),
+        return new ConfirmReturnRequest(request.requestId(), request.expectedVersion(), text(request.requestReference(), 200),
+                text(request.documentReference(), 200),
                 List.copyOf(lines), text(request.reason(), 500), text(request.evidenceReference(), 256));
     }
 

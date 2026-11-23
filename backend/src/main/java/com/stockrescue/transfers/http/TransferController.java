@@ -35,6 +35,7 @@ import com.stockrescue.transfers.persistence.TransferRepository.Page;
 import com.stockrescue.transfers.persistence.TransferRepository.CustodyMovement;
 import com.stockrescue.transfers.persistence.TransferRepository.InTransitLine;
 import com.stockrescue.transfers.persistence.TransferRepository.Discrepancy;
+import com.stockrescue.transfers.persistence.TransferRepository.ActiveReturn;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -205,8 +206,10 @@ public class TransferController {
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferResponse.class)))
     public ResponseEntity<TransferResponse> detail(Authentication actor, @PathVariable UUID organizationId,
             @PathVariable UUID transferId) {
+        UUID actorId = actor(actor);
+        TransferDetail detail = transfers.detail(actorId, organizationId, transferId);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(TransferResponse.from(transfers.detail(actor(actor), organizationId, transferId)));
+                .body(TransferResponse.from(detail, transfers.canCancel(actorId, organizationId, transferId)));
     }
 
     @GetMapping("/{transferId}/custody")
@@ -217,6 +220,16 @@ public class TransferController {
             @RequestParam(defaultValue="50") int limit) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(TransferCustodyPage.from(
                 transfers.custodyTimeline(actor(actor),organizationId,transferId,offset,limit)));
+    }
+
+    @GetMapping("/{transferId}/active-returns")
+    @Operation(operationId = "listActiveTransferReturns", summary = "Read current unsettled physical return requests for one authorized transfer")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = TransferActiveReturnPage.class)))
+    public ResponseEntity<TransferActiveReturnPage> activeReturns(Authentication actor,
+            @PathVariable UUID organizationId, @PathVariable UUID transferId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new TransferActiveReturnPage(
+                transfers.activeReturns(actor(actor), organizationId, transferId).stream()
+                        .map(TransferActiveReturn::from).toList()));
     }
 
     @GetMapping("/in-transit")
@@ -349,20 +362,21 @@ public class TransferController {
             @NotBlank @Size(max=64) String documentLineReference) { }
 
     public record TransferReturnRequest(@NotNull UUID requestId,@NotNull @Min(0) @Max(Long.MAX_VALUE - 1) Long expectedVersion,
-            @NotBlank @Size(max=200) String documentReference,@NotNull @Size(min=1,max=TransferService.MAX_LINES)
+            @NotBlank @Size(max=200) String requestReference,@NotNull @Size(min=1,max=TransferService.MAX_LINES)
             List<@Valid TransferReturnRequestLine> lines,@NotBlank @Size(max=500) String reason,
             @NotBlank @Size(max=256) String evidenceReference) {
-        RequestReturn toService() { return new RequestReturn(requestId,expectedVersion,documentReference,
+        RequestReturn toService() { return new RequestReturn(requestId,expectedVersion,requestReference,
                 lines.stream().map(line -> new ReturnRequestLine(line.lineId())).toList(),reason,evidenceReference); }
     }
 
     public record TransferReturnRequestLine(@NotNull UUID lineId) { }
 
     public record TransferConfirmReturnRequest(@NotNull UUID requestId,@NotNull @Min(0) @Max(Long.MAX_VALUE - 1) Long expectedVersion,
-            @NotBlank @Size(max=200) String documentReference,@NotNull @Size(min=1,max=TransferService.MAX_LINES)
+            @NotBlank @Size(max=200) String requestReference,@NotBlank @Size(max=200) String documentReference,
+            @NotNull @Size(min=1,max=TransferService.MAX_LINES)
             List<@Valid TransferConfirmReturnLineRequest> lines,@NotBlank @Size(max=500) String reason,
             @NotBlank @Size(max=256) String evidenceReference) {
-        ConfirmReturnRequest toService() { return new ConfirmReturnRequest(requestId,expectedVersion,documentReference,
+        ConfirmReturnRequest toService() { return new ConfirmReturnRequest(requestId,expectedVersion,requestReference,documentReference,
                 lines.stream().map(line -> new ConfirmReturnLine(line.lineId(),line.expectedSourceVersion(),
                         line.documentLineReference(),line.observedSku(),line.observedLotCode())).toList(),reason,evidenceReference); }
     }
@@ -441,10 +455,33 @@ public class TransferController {
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String evidenceReference,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String expectedState,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String observedState,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID actorId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean resolved,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) Instant recordedAt) {
         static TransferDiscrepancyRecord from(Discrepancy value) {
             return new TransferDiscrepancyRecord(value.id(), value.transferId(), value.lineId(), value.type(), value.reason(),
-                    value.evidenceReference(), value.expectedState(), value.observedState(), value.recordedAt());
+                    value.evidenceReference(), value.expectedState(), value.observedState(), value.actorId(), value.resolved(), value.recordedAt());
+        }
+    }
+
+    public record TransferActiveReturnPage(@Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferActiveReturn> items) { }
+
+    public record TransferActiveReturn(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID transferId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID lineId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID evidenceId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID requestId,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String requestReference,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long requestedQuantity,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long settledQuantity,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long unsettledQuantity,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String state,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long transferVersion,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) Instant requestedAt) {
+        static TransferActiveReturn from(ActiveReturn value) {
+            return new TransferActiveReturn(value.transferId(), value.lineId(), value.evidenceId(), value.requestId(),
+                    value.requestReference(), value.requestedQuantity(), value.settledQuantity(), value.unsettledQuantity(),
+                    value.state(), value.transferVersion(), value.requestedAt());
         }
     }
 
@@ -493,11 +530,13 @@ public class TransferController {
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) Instant updatedAt,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long lineCount,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) BigInteger outstandingQuantity,
-            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferLineResponse> lines) {
-        static TransferResponse from(TransferDetail value) {
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferLineResponse> lines,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canCancel) {
+        static TransferResponse from(TransferDetail value, boolean canCancel) {
             return new TransferResponse(value.transfer().id(), value.transfer().sourceStoreId(), value.transfer().destinationStoreId(),
                     value.transfer().status(), value.transfer().version(), value.transfer().createdAt(), value.transfer().updatedAt(),
-                    value.transfer().lineCount(), value.transfer().outstandingQuantity(), value.lines().stream().map(TransferLineResponse::from).toList());
+                    value.transfer().lineCount(), value.transfer().outstandingQuantity(), value.lines().stream().map(TransferLineResponse::from).toList(),
+                    canCancel);
         }
     }
 

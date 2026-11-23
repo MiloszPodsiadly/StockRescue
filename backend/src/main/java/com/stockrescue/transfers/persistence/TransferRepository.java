@@ -55,13 +55,18 @@ public class TransferRepository {
             long ageSeconds) { }
 
     public record Discrepancy(UUID id, UUID transferId, UUID lineId, String type, String reason,
-            String evidenceReference, String expectedState, String observedState, Instant recordedAt) { }
+            String evidenceReference, String expectedState, String observedState, UUID actorId,
+            boolean resolved, Instant recordedAt) { }
+
+    public record ActiveReturn(UUID transferId, UUID lineId, UUID evidenceId, UUID requestId,
+            String requestReference, long requestedQuantity, long settledQuantity, long unsettledQuantity,
+            String state, long transferVersion, Instant requestedAt) { }
 
     public record ReconciliationEvidence(UUID id, UUID organizationId, UUID transferId, UUID lineId,
             UUID commandId, UUID actorId, UUID membershipId, String type, String expectedState,
             String observedState, String reason, String evidenceReference) { }
 
-    public record PendingReturn(UUID commandId, UUID lineId, long quantity, String documentReference) { }
+    public record PendingReturn(UUID evidenceId, UUID commandId, UUID lineId, long quantity, String requestReference) { }
 
     public record CustodyAppend(UUID id, UUID organizationId, UUID transferId, UUID lineId, long expectedVersion,
             TransferMovementType type, UUID commandId, UUID actorId, UUID membershipId, long quantity,
@@ -87,7 +92,15 @@ public class TransferRepository {
 
     public record PhysicalDocumentLine(UUID organizationId, UUID transferId, UUID documentId,
             UUID lineId, String documentType, int lineNumber, String lineReference, long quantity,
-            String disposition, String observedSku, String observedLotCode, Long sourcePositionVersion) { }
+            String disposition, String observedSku, String observedLotCode, Long sourcePositionVersion,
+            UUID returnRequestEvidenceId) {
+        public PhysicalDocumentLine(UUID organizationId, UUID transferId, UUID documentId,
+                UUID lineId, String documentType, int lineNumber, String lineReference, long quantity,
+                String disposition, String observedSku, String observedLotCode, Long sourcePositionVersion) {
+            this(organizationId, transferId, documentId, lineId, documentType, lineNumber, lineReference,
+                    quantity, disposition, observedSku, observedLotCode, sourcePositionVersion, null);
+        }
+    }
 
     private final JdbcClient jdbc;
 
@@ -351,17 +364,15 @@ public class TransferRepository {
 
     public Optional<PendingReturn> pendingReturn(UUID organizationId, UUID transferId, UUID lineId) {
         return jdbc.sql("""
-                SELECT e.command_id,e.line_id,(e.expected_state->>'outstanding')::bigint AS quantity,
-                    e.observed_state->>'returnReference' AS document_reference
+                SELECT e.id AS evidence_id,e.command_id,e.line_id,(e.expected_state->>'outstanding')::bigint AS quantity,
+                    e.observed_state->>'requestReference' AS request_reference
                 FROM stockrescue.transfer_reconciliation_evidence e
                 WHERE e.org_id=:org AND e.transfer_id=:transfer AND e.line_id=:line
                     AND e.evidence_type='RETURN_REQUEST'
                     AND NOT EXISTS (
-                        SELECT 1 FROM stockrescue.transfer_physical_document d
-                        JOIN stockrescue.transfer_physical_document_line l
-                          ON l.org_id=d.org_id AND l.transfer_id=d.transfer_id AND l.document_id=d.id
-                        WHERE d.org_id=e.org_id AND d.transfer_id=e.transfer_id AND d.document_type='RETURN'
-                            AND d.document_reference=e.observed_state->>'returnReference' AND l.line_id=e.line_id)
+                        SELECT 1 FROM stockrescue.transfer_physical_document_line l
+                        WHERE l.org_id=e.org_id AND l.transfer_id=e.transfer_id AND l.document_type='RETURN'
+                            AND l.return_request_evidence_id=e.id)
                     AND e.expected_state->'outstanding' = (
                         SELECT to_jsonb(a.outstanding)
                         FROM stockrescue.transfer_custody_account a
@@ -369,8 +380,9 @@ public class TransferRepository {
                 ORDER BY e.recorded_at DESC,e.id DESC LIMIT 1
                 """)
                 .param("org", organizationId).param("transfer", transferId).param("line", lineId)
-                .query((row, index) -> new PendingReturn(row.getObject("command_id", UUID.class),
-                        row.getObject("line_id", UUID.class), row.getLong("quantity"), row.getString("document_reference")))
+                .query((row, index) -> new PendingReturn(row.getObject("evidence_id", UUID.class),
+                        row.getObject("command_id", UUID.class), row.getObject("line_id", UUID.class),
+                        row.getLong("quantity"), row.getString("request_reference")))
                 .optional();
     }
 
@@ -379,15 +391,16 @@ public class TransferRepository {
         jdbc.sql("""
                 INSERT INTO stockrescue.transfer_physical_document_line
                     (org_id,transfer_id,document_id,line_id,document_type,line_number,document_line_reference,
-                     quantity,disposition,observed_sku,observed_lot_code,source_position_version)
+                     quantity,disposition,observed_sku,observed_lot_code,source_position_version,return_request_evidence_id)
                 VALUES (:org,:transfer,:document,:line,:type,:number,:reference,:quantity,:disposition,
-                        :sku,:lot,:sourceVersion)
+                        :sku,:lot,:sourceVersion,:returnRequestEvidence)
                 """)
                 .param("org", line.organizationId()).param("transfer", line.transferId()).param("document", line.documentId())
                 .param("line", line.lineId()).param("type", line.documentType()).param("number", line.lineNumber())
                 .param("reference", text(line.lineReference(), 64)).param("quantity", line.quantity())
                 .param("disposition", line.disposition()).param("sku", line.observedSku())
-                .param("lot", line.observedLotCode()).param("sourceVersion", line.sourcePositionVersion(), Types.BIGINT).update();
+                .param("lot", line.observedLotCode()).param("sourceVersion", line.sourcePositionVersion(), Types.BIGINT)
+                .param("returnRequestEvidence", line.returnRequestEvidenceId(), Types.OTHER).update();
     }
 
     public Optional<PickEvidence> pickEvidence(UUID organizationId, UUID transferId, UUID lineId) {
@@ -722,10 +735,12 @@ public class TransferRepository {
         validatePage(offset, limit);
         var rows = jdbc.sql("""
                 SELECT e.id,e.transfer_id,e.line_id,e.evidence_type,e.reason,e.evidence_reference,
-                    e.expected_state::text AS expected_state,e.observed_state::text AS observed_state,e.recorded_at
+                    e.expected_state::text AS expected_state,e.observed_state::text AS observed_state,
+                    e.actor_user_id,(e.evidence_type='CUSTODY_RECONCILIATION'
+                        OR t.status IN ('RECEIVED','CLOSED_WITH_DISCREPANCY')) AS resolved,e.recorded_at
                 FROM stockrescue.transfer_reconciliation_evidence e
                 JOIN stockrescue.transfer_order t ON t.org_id=e.org_id AND t.id=e.transfer_id
-                WHERE e.org_id=:org AND e.evidence_type IN ('DISCREPANCY','RETURN_REQUEST')
+                WHERE e.org_id=:org AND e.evidence_type IN ('DISCREPANCY','RETURN_REQUEST','CUSTODY_RECONCILIATION')
                     AND (CAST(:store AS uuid) IS NULL OR t.source_store_id=:store OR t.destination_store_id=:store)
                 ORDER BY e.recorded_at DESC,e.id DESC LIMIT :limit OFFSET :offset
                 """)
@@ -735,9 +750,45 @@ public class TransferRepository {
                         row.getObject("transfer_id", UUID.class), row.getObject("line_id", UUID.class),
                         row.getString("evidence_type"), row.getString("reason"), row.getString("evidence_reference"),
                         row.getString("expected_state"), row.getString("observed_state"),
+                        row.getObject("actor_user_id", UUID.class), row.getBoolean("resolved"),
                         row.getTimestamp("recorded_at").toInstant()))
                 .list();
         return page(rows, limit);
+    }
+
+    public List<ActiveReturn> activeReturns(UUID organizationId, UUID transferId) {
+        return jdbc.sql("""
+                SELECT e.transfer_id,e.line_id,e.id AS evidence_id,cr.request_id,
+                    e.observed_state->>'requestReference' AS request_reference,
+                    (e.expected_state->>'outstanding')::bigint AS requested_quantity,
+                    coalesce(sum(dl.quantity),0)::bigint AS settled_quantity,
+                    ((e.expected_state->>'outstanding')::bigint-coalesce(sum(dl.quantity),0))::bigint AS unsettled_quantity,
+                    CASE WHEN coalesce(sum(dl.quantity),0)=0 THEN 'PENDING' ELSE 'PARTIALLY_FULFILLED' END AS state,
+                    t.version AS transfer_version,e.recorded_at
+                FROM stockrescue.transfer_reconciliation_evidence e
+                JOIN stockrescue.transfer_order t ON t.org_id=e.org_id AND t.id=e.transfer_id
+                JOIN stockrescue.transfer_custody_account a
+                  ON a.org_id=e.org_id AND a.transfer_id=e.transfer_id AND a.line_id=e.line_id
+                JOIN stockrescue.transfer_command_receipt cr
+                  ON cr.org_id=e.org_id AND cr.transfer_id=e.transfer_id AND cr.id=e.command_id
+                LEFT JOIN stockrescue.transfer_physical_document_line dl
+                  ON dl.org_id=e.org_id AND dl.transfer_id=e.transfer_id AND dl.line_id=e.line_id
+                    AND dl.document_type='RETURN' AND dl.return_request_evidence_id=e.id
+                WHERE e.org_id=:org AND e.transfer_id=:transfer AND e.evidence_type='RETURN_REQUEST'
+                    AND t.status IN ('IN_TRANSIT','PARTIALLY_RECEIVED','RECONCILIATION_REQUIRED')
+                GROUP BY e.org_id,e.transfer_id,e.line_id,e.id,cr.request_id,e.observed_state,
+                    e.expected_state,e.recorded_at,t.version,a.outstanding
+                HAVING (e.expected_state->>'outstanding')::bigint > coalesce(sum(dl.quantity),0)
+                    AND a.outstanding=((e.expected_state->>'outstanding')::bigint-coalesce(sum(dl.quantity),0))
+                ORDER BY e.recorded_at,e.id
+                """)
+                .param("org",organizationId).param("transfer",transferId)
+                .query((row,index) -> new ActiveReturn(row.getObject("transfer_id",UUID.class),
+                        row.getObject("line_id",UUID.class),row.getObject("evidence_id",UUID.class),
+                        row.getObject("request_id",UUID.class),row.getString("request_reference"),
+                        row.getLong("requested_quantity"),row.getLong("settled_quantity"),
+                        row.getLong("unsettled_quantity"),row.getString("state"),row.getLong("transfer_version"),
+                        row.getTimestamp("recorded_at").toInstant())).list();
     }
 
     public boolean hasReconciliationEvidence(UUID organizationId,UUID transferId) {

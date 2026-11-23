@@ -2451,7 +2451,7 @@ BEGIN
             OLD.payload_fingerprint,OLD.payload,OLD.prepared_at)
         OR OLD.state NOT IN ('PREPARED','SUBMITTED')
         OR NEW.state NOT IN ('PREPARED','SUBMITTED','ACKNOWLEDGED','REJECTED','CONFLICTED')
-        OR OLD.state='PREPARED' AND NEW.state NOT IN ('PREPARED','SUBMITTED','REJECTED','CONFLICTED')
+        OR OLD.state='PREPARED' AND NEW.state NOT IN ('PREPARED','SUBMITTED','ACKNOWLEDGED','REJECTED','CONFLICTED')
         OR OLD.state='SUBMITTED' AND NEW.state NOT IN ('SUBMITTED','ACKNOWLEDGED','REJECTED','CONFLICTED')
         OR NEW.state IN ('PREPARED','SUBMITTED') AND (NEW.resolved_at IS NOT NULL OR NEW.executed_at IS NOT NULL)
         OR NEW.state='ACKNOWLEDGED' AND (NEW.resolved_at IS NULL OR NEW.executed_at IS NULL)
@@ -2492,14 +2492,38 @@ COMMENT ON TABLE stockrescue.transfer_command_intent IS
 
 CREATE FUNCTION stockrescue.guard_transfer_command_receipt_intent() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-DECLARE intent_state VARCHAR(16);
+DECLARE
+    intent_state VARCHAR(16);
+    intent_transfer_id UUID;
+    intent_fingerprint BYTEA;
+    intent_payload JSONB;
 BEGIN
-    SELECT state INTO intent_state FROM stockrescue.transfer_command_intent
+    SELECT state,transfer_id,payload_fingerprint,payload
+    INTO intent_state,intent_transfer_id,intent_fingerprint,intent_payload
+    FROM stockrescue.transfer_command_intent
     WHERE org_id=NEW.org_id AND actor_user_id=NEW.actor_user_id
       AND operation=NEW.operation AND request_id=NEW.request_id
     FOR UPDATE;
+    IF intent_state IS NULL THEN
+        RETURN NEW;
+    END IF;
     IF intent_state IN ('REJECTED','CONFLICTED') THEN
         RAISE EXCEPTION 'A resolved transfer command intent cannot later commit' USING ERRCODE='23514';
+    END IF;
+    IF intent_fingerprint IS DISTINCT FROM NEW.payload_digest THEN
+        RAISE EXCEPTION 'Transfer command receipt differs from its prepared intent' USING ERRCODE='23514';
+    END IF;
+    IF NEW.operation='CREATE' THEN
+        IF intent_transfer_id IS NOT NULL OR NOT EXISTS (
+            SELECT 1 FROM stockrescue.transfer_order t
+            WHERE t.org_id=NEW.org_id AND t.id=NEW.transfer_id
+              AND t.source_store_id=(intent_payload->>'sourceStoreId')::UUID
+              AND t.destination_store_id=(intent_payload->>'destinationStoreId')::UUID
+        ) THEN
+            RAISE EXCEPTION 'Transfer creation target differs from its prepared intent' USING ERRCODE='23514';
+        END IF;
+    ELSIF intent_transfer_id IS DISTINCT FROM NEW.transfer_id THEN
+        RAISE EXCEPTION 'Transfer command target differs from its prepared intent' USING ERRCODE='23514';
     END IF;
     RETURN NEW;
 END;
@@ -2672,6 +2696,7 @@ CREATE TABLE stockrescue.transfer_physical_document_line (
     observed_sku VARCHAR(64) COLLATE "C",
     observed_lot_code VARCHAR(128) COLLATE "C",
     source_position_version BIGINT CHECK (source_position_version>0),
+    return_request_evidence_id UUID,
     PRIMARY KEY (org_id,document_id,line_number),
     CONSTRAINT transfer_document_line_reference_unique UNIQUE (org_id,document_id,document_line_reference),
     CONSTRAINT transfer_document_line_header_fk FOREIGN KEY (org_id,transfer_id,document_id,document_type)
@@ -2679,20 +2704,27 @@ CREATE TABLE stockrescue.transfer_physical_document_line (
     CONSTRAINT transfer_document_line_transfer_line_fk FOREIGN KEY (org_id,transfer_id,line_id)
         REFERENCES stockrescue.transfer_line(org_id,transfer_id,id) ON DELETE RESTRICT,
     CONSTRAINT transfer_document_line_evidence CHECK (
-        (document_type='PICK' AND disposition='PICKED' AND source_position_version IS NOT NULL
-            AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
-        OR (document_type='PUT_BACK' AND disposition='AVAILABLE' AND source_position_version IS NOT NULL
-            AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
-        OR (document_type='DISPATCH' AND disposition='COUNTED' AND source_position_version IS NULL
-            AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
-        OR (document_type='RECEIPT' AND disposition IN ('AVAILABLE','QUARANTINED') AND source_position_version IS NULL
-            AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
-        OR (document_type='DAMAGE' AND disposition='DAMAGED' AND source_position_version IS NULL
-            AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
-        OR (document_type='LOSS' AND disposition='LOST' AND source_position_version IS NULL
-            AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
-        OR (document_type='RETURN' AND disposition='RETURNED' AND source_position_version IS NULL
-            AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL))
+        (
+            (document_type='PICK' AND disposition='PICKED' AND source_position_version IS NOT NULL
+                AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
+            OR (document_type='PUT_BACK' AND disposition='AVAILABLE' AND source_position_version IS NOT NULL
+                AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
+            OR (document_type='DISPATCH' AND disposition='COUNTED' AND source_position_version IS NULL
+                AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
+            OR (document_type='RECEIPT' AND disposition IN ('AVAILABLE','QUARANTINED') AND source_position_version IS NULL
+                AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
+            OR (document_type='DAMAGE' AND disposition='DAMAGED' AND source_position_version IS NULL
+                AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
+            OR (document_type='LOSS' AND disposition='LOST' AND source_position_version IS NULL
+                AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL)
+            OR (document_type='RETURN' AND disposition='RETURNED' AND source_position_version IS NULL
+                AND observed_sku IS NOT NULL AND observed_lot_code IS NOT NULL AND return_request_evidence_id IS NOT NULL)
+        )
+        AND (
+            (document_type='RETURN' AND return_request_evidence_id IS NOT NULL)
+            OR (document_type<>'RETURN' AND return_request_evidence_id IS NULL)
+        )
+    )
 );
 CREATE INDEX transfer_document_line_transfer_idx
     ON stockrescue.transfer_physical_document_line(org_id,transfer_id,line_id,document_id);
@@ -2702,6 +2734,9 @@ CREATE UNIQUE INDEX transfer_put_back_line_once_idx
     ON stockrescue.transfer_physical_document_line(org_id,transfer_id,line_id) WHERE document_type='PUT_BACK';
 CREATE UNIQUE INDEX transfer_dispatch_document_once_idx
     ON stockrescue.transfer_physical_document(org_id,transfer_id) WHERE document_type='DISPATCH';
+CREATE UNIQUE INDEX transfer_return_request_line_once_idx
+    ON stockrescue.transfer_physical_document_line(org_id,transfer_id,return_request_evidence_id)
+    WHERE document_type='RETURN';
 
 CREATE FUNCTION stockrescue.validate_transfer_document_line() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog AS $$
@@ -2758,6 +2793,16 @@ BEGIN
             RAISE EXCEPTION 'Put-back evidence requires a matching immutable physical pick record' USING ERRCODE='23514';
         END IF;
     END IF;
+    IF NEW.document_type='RETURN' AND NOT EXISTS (
+        SELECT 1 FROM stockrescue.transfer_reconciliation_evidence e
+        WHERE e.org_id=NEW.org_id AND e.transfer_id=NEW.transfer_id AND e.id=NEW.return_request_evidence_id
+            AND e.line_id=NEW.line_id AND e.evidence_type='RETURN_REQUEST'
+            AND coalesce(btrim(e.observed_state->>'requestReference'),'')<>''
+            AND (e.expected_state->>'outstanding')::bigint=NEW.quantity
+            AND (e.observed_state->>'requestedQuantity')::bigint=NEW.quantity
+    ) THEN
+        RAISE EXCEPTION 'Physical return line must fulfill its exact outstanding request line' USING ERRCODE='23514';
+    END IF;
     RETURN NEW;
 END;
 $$;
@@ -2811,9 +2856,14 @@ CREATE TABLE stockrescue.transfer_reconciliation_evidence (
         REFERENCES stockrescue.transfer_line(org_id,transfer_id,id) ON DELETE RESTRICT,
     CONSTRAINT transfer_reconciliation_command_fk FOREIGN KEY (org_id,transfer_id,command_id)
         REFERENCES stockrescue.transfer_command_receipt(org_id,transfer_id,id) ON DELETE RESTRICT,
+    CONSTRAINT transfer_reconciliation_line_identity UNIQUE (org_id,transfer_id,line_id,id),
     CONSTRAINT transfer_reconciliation_actor_fk FOREIGN KEY (org_id,membership_id,actor_user_id)
         REFERENCES stockrescue.membership(org_id,id,user_id) ON DELETE RESTRICT
 );
+ALTER TABLE stockrescue.transfer_physical_document_line
+    ADD CONSTRAINT transfer_document_line_return_request_fk
+    FOREIGN KEY (org_id,transfer_id,line_id,return_request_evidence_id)
+    REFERENCES stockrescue.transfer_reconciliation_evidence(org_id,transfer_id,line_id,id) ON DELETE RESTRICT;
 CREATE INDEX transfer_reconciliation_timeline_idx
     ON stockrescue.transfer_reconciliation_evidence(org_id,transfer_id,recorded_at DESC,id DESC);
 CREATE INDEX transfer_reconciliation_open_idx
@@ -3188,11 +3238,13 @@ BEGIN
                 WHERE d.org_id=NEW.org_id AND d.transfer_id=NEW.transfer_id AND d.command_id=NEW.command_id
                     AND d.document_type='RETURN' AND d.document_store_id=line_row.source_store_id
                     AND l.line_id=NEW.line_id AND l.quantity=NEW.quantity AND l.disposition='RETURNED'
+                    AND l.return_request_evidence_id IS NOT NULL
                     AND l.observed_sku=source_position.sku AND l.observed_lot_code=source_position.lot_code
                     AND EXISTS (SELECT 1 FROM stockrescue.transfer_reconciliation_evidence e
-                        WHERE e.org_id=d.org_id AND e.transfer_id=d.transfer_id AND e.line_id=l.line_id
+                        WHERE e.org_id=d.org_id AND e.transfer_id=d.transfer_id AND e.id=l.return_request_evidence_id
+                            AND e.line_id=l.line_id
                             AND e.evidence_type='RETURN_REQUEST'
-                            AND e.observed_state->>'returnReference'=d.document_reference
+                            AND coalesce(btrim(e.observed_state->>'requestReference'),'')<>''
                             AND (e.expected_state->>'outstanding')::bigint=NEW.quantity)) THEN
             RAISE EXCEPTION 'Return custody must match physical stock returned to its source position' USING ERRCODE='23514';
         END IF;

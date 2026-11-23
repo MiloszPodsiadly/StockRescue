@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { AppLink } from '@/components/app-link'
 import { Button } from '@/components/ui/button'
@@ -16,7 +16,7 @@ import { listProducts } from '@/api/products'
 import { lookupLane } from '@/api/configuration'
 import {
   acknowledgeTransferCommandIntent, executeTransferCommand, getTransfer, inspectTransferCommandIntent,
-  isTransferCommandIntent, listPendingTransferCommandIntents, listTransferCustody, listTransferDiscrepancies,
+  isTransferCommandIntent, listActiveTransferReturns, listPendingTransferCommandIntents, listTransferCustody, listTransferDiscrepancies,
   listTransfers, listTransfersInTransit, markTransferCommandIntentSubmitted, prepareTransferCommandIntent,
   resolveFailedTransferCommandIntent,
 } from '@/api/transfers'
@@ -29,37 +29,12 @@ import { useOrganization } from '../organizations/organization-context'
 import { useTenantKey } from '../organizations/tenant-requests'
 import { formatTransferAge, transferStatusLabel, transferStatusOptions } from './transfer-format'
 
-type QueueSnapshot = { items: TransferQueueItem[], transit: TransferInTransitLine[], discrepancies: TransferDiscrepancyRecord[] }
 type DraftTransferLine = { id: string, sourcePositionId: string, destinationLocationId: string, quantity: string }
-type PendingReturnLine = { lineId: string, documentReference: string, requestedQuantity: number }
+type PendingReturnLine = { lineId: string, requestId: string, requestReference: string, requestedQuantity: number, settledQuantity: number, unsettledQuantity: number }
 const newDraftTransferLine = (): DraftTransferLine => ({ id: crypto.randomUUID(), sourcePositionId: '', destinationLocationId: '', quantity: '' })
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function parseEvidenceState(value: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(value)
-    return isRecord(parsed) ? parsed : null
-  } catch { return null }
-}
-
-function pendingReturnLines(transfer: Transfer, evidence: TransferDiscrepancyRecord[]): PendingReturnLine[] {
-  return transfer.lines.flatMap(line => {
-    const outstandingQuantity = outstanding(line)
-    if (outstandingQuantity <= 0) return []
-    const pending = evidence.filter(item => item.type === 'RETURN_REQUEST' && item.lineId === line.id)
-      .map(item => ({ expected: parseEvidenceState(item.expectedState), observed: parseEvidenceState(item.observedState) }))
-      .find(item => item.expected?.outstanding === outstandingQuantity
-        && typeof item.observed?.returnReference === 'string'
-        && typeof item.observed?.requestedQuantity === 'number'
-        && item.observed.requestedQuantity === outstandingQuantity)
-    const documentReference = pending?.observed?.returnReference
-    return typeof documentReference === 'string'
-      ? [{ lineId: line.id, documentReference, requestedQuantity: outstandingQuantity }]
-      : []
-  })
+function uniqueBy<T>(values: T[], key: (value: T) => string): T[] {
+  return [...new Map(values.map(value => [key(value), value])).values()]
 }
 
 function uncertainOutcome(error: unknown) {
@@ -96,21 +71,34 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
   const stores = useQuery({ queryKey: [...scope, 'stores', 'transfer-workspace'], queryFn: ({ signal }) => listStores(organizationId, 'ACTIVE', '', 0, signal), refetchOnWindowFocus: true, staleTime: 0 })
   const readableStores = (stores.data?.items ?? []).filter(store => store.active && store.allowedActions.includes('READ_TRANSFERS'))
   const queueStoreIds = (storeFilter ? readableStores.filter(store => store.id === storeFilter) : readableStores).map(store => store.id)
-  const queue = useQuery({
+  const queue = useInfiniteQuery({
     queryKey: [...scope, 'transfers', 'queue', status, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
-    queryFn: async ({ signal }): Promise<QueueSnapshot> => {
-      const pages = await Promise.all(queueStoreIds.map(storeId => listTransfers(organizationId, storeId, status, signal)))
-      const items = [...new Map(pages.flatMap(page => page.items).map(item => [item.id, item])).values()]
-      const activeTransfers = items.filter(item => ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(item.status))
-      const involvedStores = [...new Set(activeTransfers.flatMap(item => [item.sourceStoreId, item.destinationStoreId]).filter(id => queueStoreIds.includes(id)))]
-      const [transitPages, discrepancyPages] = await Promise.all([
-        Promise.all(involvedStores.map(storeId => listTransfersInTransit(organizationId, storeId, signal))),
-        Promise.all(involvedStores.map(storeId => listTransferDiscrepancies(organizationId, storeId, signal))),
-      ])
-      return { items: items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
-        transit: transitPages.flatMap(page => page.items), discrepancies: discrepancyPages.flatMap(page => page.items) }
-    }, refetchOnWindowFocus: true, staleTime: 0,
+    initialPageParam: 0,
+    queryFn: async ({ signal, pageParam }) => {
+      const pages = await Promise.all(queueStoreIds.map(storeId => listTransfers(organizationId, storeId, status, signal, pageParam, 50)))
+      return { items: pages.flatMap(page => page.items), hasMore: pages.some(page => page.hasMore), offset: pageParam }
+    }, getNextPageParam: page => page.hasMore ? page.offset + 50 : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
+  const transit = useInfiniteQuery({
+    queryKey: [...scope, 'transfers', 'in-transit', queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
+    initialPageParam: 0,
+    queryFn: async ({ signal, pageParam }) => {
+      const pages = await Promise.all(queueStoreIds.map(storeId => listTransfersInTransit(organizationId, storeId, signal, pageParam, 50)))
+      return { items: pages.flatMap(page => page.items), hasMore: pages.some(page => page.hasMore), offset: pageParam }
+    }, getNextPageParam: page => page.hasMore ? page.offset + 50 : undefined, refetchOnWindowFocus: true, staleTime: 0,
+  })
+  const evidence = useInfiniteQuery({
+    queryKey: [...scope, 'transfers', 'evidence', queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
+    initialPageParam: 0,
+    queryFn: async ({ signal, pageParam }) => {
+      const pages = await Promise.all(queueStoreIds.map(storeId => listTransferDiscrepancies(organizationId, storeId, signal, pageParam, 50)))
+      return { items: pages.flatMap(page => page.items), hasMore: pages.some(page => page.hasMore), offset: pageParam }
+    }, getNextPageParam: page => page.hasMore ? page.offset + 50 : undefined, refetchOnWindowFocus: true, staleTime: 0,
+  })
+  const queueItems = uniqueBy((queue.data?.pages ?? []).flatMap(page => page.items), item => item.id)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id))
+  const transitItems = uniqueBy((transit.data?.pages ?? []).flatMap(page => page.items), item => `${item.transferId}:${item.lineId}`)
+  const evidenceItems = uniqueBy((evidence.data?.pages ?? []).flatMap(page => page.items), item => item.id)
   const detail = useQuery({ queryKey: [...scope, 'transfers', 'detail', transferId], enabled: Boolean(transferId), queryFn: ({ signal }) => getTransfer(organizationId, transferId!, signal), refetchOnWindowFocus: true, staleTime: 0 })
 
   async function refreshTransferData() {
@@ -174,6 +162,19 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
     setCommandBusy(true); setCommandError(''); setCommandNotice('Checking the saved server outcome without repeating the stock operation.')
     try {
       const result = await inspectTransferCommandIntent(organizationId, pendingCommand.id, new AbortController().signal)
+      if (result.redacted) {
+        if (result.executionStatus === 'COMMITTED_AWAITING_ACKNOWLEDGEMENT') {
+          await acknowledgeTransferCommandIntent(organizationId, pendingCommand.id, new AbortController().signal)
+          setPendingInspection(null); setRecoveryMissing(false)
+          setCommandNotice('The saved command committed and was safely acknowledged. Transfer details are hidden because access changed.')
+          await refreshPendingIntents()
+        } else {
+          setPendingInspection(result)
+          setRecoveryMissing(false)
+          setCommandNotice('Access to this transfer changed. The server can safely resolve the saved command without showing its payload or transfer details.')
+        }
+        return
+      }
       if (result.committedOutcome) {
         await acknowledgeTransferCommandIntent(organizationId, pendingCommand.id, new AbortController().signal)
         setPendingInspection(null); setRecoveryMissing(false)
@@ -194,7 +195,7 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
   }
 
   async function retrySavedCommand() {
-    if (!pendingCommand || !pendingInspection || commandBusy) return
+    if (!pendingCommand || !pendingInspection || pendingInspection.redacted || commandBusy) return
     const intent = { operation: pendingInspection.operation, transferId: pendingInspection.transferId, body: pendingInspection.payload }
     if (!isTransferCommandIntent(intent)) {
       setCommandError('The saved transfer command has an unsupported shape. Contact support before making another stock change.')
@@ -222,16 +223,35 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
     } finally { setCommandBusy(false) }
   }
 
+  async function resolveRedactedCommand() {
+    if (!pendingCommand || !pendingInspection?.redacted || commandBusy) return
+    setCommandBusy(true); setCommandError(''); setCommandNotice('Checking and resolving the saved command under the server transaction lock.')
+    const resolution = pendingInspection.executionStatus === 'PREPARED' ? 'REJECTED' : 'CONFLICTED'
+    try {
+      await resolveFailedTransferCommandIntent(organizationId, pendingCommand.id, resolution, new AbortController().signal)
+      setPendingInspection(null); setRecoveryMissing(false)
+      setCommandNotice('The server confirmed that no command committed and released the blocked request. Transfer details remain hidden.')
+      await refreshPendingIntents()
+    } catch (error) {
+      setCommandError(errorMessage(error))
+      setCommandNotice('The server could not safely resolve this request yet. Keep it for recovery and inspect its status again.')
+      await refreshPendingIntents()
+    } finally { setCommandBusy(false) }
+  }
+
   const storeMap = useMemo(() => new Map((stores.data?.items ?? []).map(store => [store.id, store])), [stores.data])
   const transfersHref = `/organizations/${organizationId}/transfers`
   return <section className="space-y-7">
     <header className="space-y-2"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Stock movement between stores</p><h2 className="text-3xl font-semibold">Stock transfers</h2><p className="max-w-3xl text-sm text-muted-foreground">Review each request, physical handoff and receiving event against its saved stock and custody records.</p></header>
     {pendingIntents.isError && <div role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">The server could not confirm whether a transfer command is awaiting recovery. New transfer commands are paused until this check succeeds. <Button variant="outline" onClick={() => { void pendingIntents.refetch() }}>Check saved commands again</Button></div>}
     {pendingCommand && <section aria-label="Recover saved transfer command" className="space-y-3 rounded-2xl border border-amber-500/50 bg-card p-5">
-      <div><h3 className="text-lg font-semibold">A transfer command needs review</h3><p className="mt-2 text-sm text-muted-foreground">{pendingCommand.operation} · request key {pendingCommand.requestId}. The exact command is stored on the server for this account and organization, so recovery can continue after this tab closes.</p></div>
+      <div><h3 className="text-lg font-semibold">A transfer command needs review</h3><p className="mt-2 text-sm text-muted-foreground">{pendingCommand.redacted
+        ? 'Your access changed. The command is still recoverable, with transfer details and its saved request hidden.'
+        : `${pendingCommand.operation} · request key ${pendingCommand.requestId}. The exact command is stored on the server for this account and organization, so recovery can continue after this tab closes.`}</p></div>
       {commandNotice && <p role="status" className="text-sm">{commandNotice}</p>}{commandError && <p role="alert" className="text-sm text-destructive">{commandError}</p>}
       <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={commandBusy} onClick={() => { void inspectSavedOutcome() }}>{commandBusy ? 'Checking saved outcome…' : 'Inspect saved outcome'}</Button>
-        {recoveryMissing && pendingInspection && <Button disabled={commandBusy} onClick={() => { void retrySavedCommand() }}>{commandBusy ? 'Retrying saved command…' : 'Retry exact saved command'}</Button>}</div>
+        {pendingInspection?.redacted && <Button disabled={commandBusy} onClick={() => { void resolveRedactedCommand() }}>{commandBusy ? 'Resolving saved command…' : 'Resolve without transfer details'}</Button>}
+        {recoveryMissing && pendingInspection && !pendingInspection.redacted && <Button disabled={commandBusy} onClick={() => { void retrySavedCommand() }}>{commandBusy ? 'Retrying saved command…' : 'Retry exact saved command'}</Button>}</div>
     </section>}
     {!pendingCommand && commandNotice && <p role="status" className="rounded-xl border border-border p-4 text-sm">{commandNotice}</p>}
     {!pendingCommand && commandError && <p role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">{commandError}</p>}
@@ -239,7 +259,7 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
       : stores.isError ? <div className="space-y-4"><StateMessage state={stores.error instanceof ApiError && stores.error.status === 403 ? 'forbidden' : 'unavailable'} title="Transfer workspace unavailable" description={errorMessage(stores.error)} /><Button variant="outline" onClick={() => { void stores.refetch() }}>Retry store access</Button></div>
         : transferId ? detail.isPending ? <StateMessage state="loading" title="Loading transfer record" description="Confirming the current transfer and your participating-store access." />
           : detail.isError ? <div className="space-y-4"><StateMessage state={detail.error instanceof ApiError && detail.error.status === 403 ? 'forbidden' : 'unavailable'} title="Transfer unavailable" description={errorMessage(detail.error)} /><Button variant="outline" onClick={() => { void detail.refetch() }}>Retry transfer read</Button><AppLink href={transfersHref} className="inline-flex text-primary underline">Back to transfers</AppLink></div>
-            : <TransferDetailView organizationId={organizationId} transfer={detail.data} stores={[...storeMap.values()]} queueStores={readableStores} discrepancies={queue.data?.discrepancies ?? []} onCommand={runIntent} busy={commandBlocked} onRefresh={refreshTransferData} />
+            : <TransferDetailView organizationId={organizationId} transfer={detail.data} stores={[...storeMap.values()]} queueStores={readableStores} onCommand={runIntent} busy={commandBlocked} onRefresh={refreshTransferData} />
           : readableStores.length === 0 ? <StateMessage state="forbidden" title="No transfer access for these stores" description="Ask an organization administrator to grant transfer reading and the actions needed for your role." />
             : <>
               <div className="grid gap-4 rounded-2xl border border-border bg-card p-5 sm:grid-cols-2">
@@ -248,22 +268,37 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
               </div>
               {queue.isPending ? <StateMessage state="loading" title="Loading transfer queue" description="Reading only stores where you currently have transfer access." />
                 : queue.isError ? <div className="space-y-4"><StateMessage state={queue.error instanceof ApiError && queue.error.status === 403 ? 'forbidden' : 'unavailable'} title="Transfer queue unavailable" description={errorMessage(queue.error)} /><Button variant="outline" onClick={() => { void queue.refetch() }}>Retry queue</Button></div>
-                  : queue.data.items.length === 0 ? <StateMessage state="empty" title="No transfers in this view" description="Change the store or status filter, or create a request from verified available source stock." />
-                    : <TransferQueue items={queue.data.items} stores={storeMap} transit={queue.data.transit} discrepancies={queue.data.discrepancies} organizationId={organizationId} onReload={() => { void queue.refetch() }} loading={queue.isFetching} />}
+                  : queueItems.length === 0 && transitItems.length === 0 && evidenceItems.length === 0 ? <StateMessage state="empty" title="No transfers in this view" description="Change the store or status filter, or create a request from verified available source stock." />
+                    : <TransferQueue items={queueItems} stores={storeMap} transit={transitItems} discrepancies={evidenceItems} organizationId={organizationId}
+                      onReload={() => { void queue.refetch() }} loading={queue.isFetching}
+                      canLoadTransfers={Boolean(queue.hasNextPage)} loadingTransfers={queue.isFetchingNextPage} onLoadTransfers={() => { void queue.fetchNextPage() }}
+                      canLoadTransit={Boolean(transit.hasNextPage)} loadingTransit={transit.isFetchingNextPage} onLoadTransit={() => { void transit.fetchNextPage() }}
+                      transitPending={transit.isPending} transitError={transit.isError} retryTransit={() => { void transit.refetch() }}
+                      canLoadEvidence={Boolean(evidence.hasNextPage)} loadingEvidence={evidence.isFetchingNextPage} onLoadEvidence={() => { void evidence.fetchNextPage() }}
+                      evidencePending={evidence.isPending} evidenceError={evidence.isError} retryEvidence={() => { void evidence.refetch() }} />}
               {readableStores.some(store => store.active && store.allowedActions.includes('REQUEST_TRANSFER')) && <CreateTransferPanel organizationId={organizationId} stores={stores.data.items} administrator={organization.role === 'ORG_ADMIN'} onCommand={runIntent} busy={commandBlocked} />}
             </>}
   </section>
 }
 
-function TransferQueue({ items, stores, transit, discrepancies, organizationId, onReload, loading }: {
+function TransferQueue({ items, stores, transit, discrepancies, organizationId, onReload, loading,
+  canLoadTransfers, loadingTransfers, onLoadTransfers, canLoadTransit, loadingTransit, onLoadTransit,
+  transitPending, transitError, retryTransit, canLoadEvidence, loadingEvidence, onLoadEvidence,
+  evidencePending, evidenceError, retryEvidence }: {
   items: TransferQueueItem[], stores: Map<string, Store>, transit: TransferInTransitLine[], discrepancies: TransferDiscrepancyRecord[],
   organizationId: string, onReload: () => void, loading: boolean,
+  canLoadTransfers: boolean, loadingTransfers: boolean, onLoadTransfers: () => void,
+  canLoadTransit: boolean, loadingTransit: boolean, onLoadTransit: () => void,
+  transitPending: boolean, transitError: boolean, retryTransit: () => void,
+  canLoadEvidence: boolean, loadingEvidence: boolean, onLoadEvidence: () => void,
+  evidencePending: boolean, evidenceError: boolean, retryEvidence: () => void,
 }) {
   const transitByTransfer = new Map<string, TransferInTransitLine[]>()
   for (const line of transit) transitByTransfer.set(line.transferId, [...(transitByTransfer.get(line.transferId) ?? []), line])
   const discrepancyTransfers = new Set(discrepancies.map(item => item.transferId))
   return <section aria-label="Transfer queue" className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-xl font-semibold">Transfer queue</h3><Button variant="outline" disabled={loading} onClick={onReload}>{loading ? 'Refreshing…' : 'Refresh queue'}</Button></div>
+    {items.length === 0 && <p className="text-sm text-muted-foreground">No transfers match the selected queue filters.</p>}
     <ul className="grid gap-4">{items.map(item => {
       const age = Math.max(0, ...(transitByTransfer.get(item.id) ?? []).map(line => line.ageSeconds))
       const source = stores.get(item.sourceStoreId); const destination = stores.get(item.destinationStoreId)
@@ -273,6 +308,23 @@ function TransferQueue({ items, stores, transit, discrepancies, organizationId, 
         <AppLink href={`/organizations/${organizationId}/transfers/${item.id}`} className="mt-4 inline-flex min-h-11 items-center rounded-lg text-primary underline underline-offset-4">Open transfer and evidence</AppLink>
       </li>
     })}</ul>
+    {canLoadTransfers && <Button variant="outline" disabled={loadingTransfers} onClick={onLoadTransfers}>{loadingTransfers ? 'Loading transfers…' : 'Load more transfers'}</Button>}
+    <section aria-label="In-transit lines" className="space-y-3 rounded-2xl border border-border p-5">
+      <h4 className="text-lg font-semibold">In-transit lines</h4>
+      {transitPending && <p role="status" className="text-sm">Loading outstanding custody lines…</p>}
+      {transitError && <p role="alert" className="text-sm text-destructive">In-transit records could not be loaded. <Button variant="outline" onClick={retryTransit}>Retry in-transit records</Button></p>}
+      {!transitPending && !transitError && transit.length === 0 && <p className="text-sm text-muted-foreground">No outstanding in-transit lines are visible for these stores.</p>}
+      {transit.length > 0 && <ul className="space-y-2">{transit.map(line => <li key={`${line.transferId}:${line.lineId}`} className="flex flex-wrap items-center justify-between gap-3 text-sm"><span>Line {line.lineId.slice(0, 8)} · {line.outstanding} units · {formatTransferAge(line.ageSeconds)}</span><AppLink href={`/organizations/${organizationId}/transfers/${line.transferId}`} className="text-primary underline">Open transfer</AppLink></li>)}</ul>}
+      {canLoadTransit && <Button variant="outline" disabled={loadingTransit} onClick={onLoadTransit}>{loadingTransit ? 'Loading in-transit lines…' : 'Load more in-transit lines'}</Button>}
+    </section>
+    <section aria-label="Transfer evidence history" className="space-y-3 rounded-2xl border border-border p-5">
+      <h4 className="text-lg font-semibold">Transfer evidence history</h4>
+      {evidencePending && <p role="status" className="text-sm">Loading reconciliation evidence…</p>}
+      {evidenceError && <p role="alert" className="text-sm text-destructive">Transfer evidence could not be loaded. <Button variant="outline" onClick={retryEvidence}>Retry evidence history</Button></p>}
+      {!evidencePending && !evidenceError && discrepancies.length === 0 && <p className="text-sm text-muted-foreground">No transfer reconciliation evidence is visible for these stores.</p>}
+      {discrepancies.length > 0 && <ul className="space-y-2">{discrepancies.map(item => <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 text-sm"><span>{item.type} · {new Date(item.recordedAt).toLocaleString()} · {item.resolved ? 'Resolved' : 'Open'}</span><AppLink href={`/organizations/${organizationId}/transfers/${item.transferId}`} className="text-primary underline">Open evidence</AppLink></li>)}</ul>}
+      {canLoadEvidence && <Button variant="outline" disabled={loadingEvidence} onClick={onLoadEvidence}>{loadingEvidence ? 'Loading evidence…' : 'Load more evidence'}</Button>}
+    </section>
   </section>
 }
 
@@ -417,9 +469,9 @@ export function CreateTransferPanel({ organizationId, stores, administrator, onC
   </section>
 }
 
-export function TransferDetailView({ organizationId, transfer, stores, queueStores, discrepancies, onCommand, busy, onRefresh }: {
+export function TransferDetailView({ organizationId, transfer, stores, queueStores, onCommand, busy, onRefresh }: {
   organizationId: string, transfer: Transfer, stores: Store[], queueStores: Store[],
-  discrepancies: TransferDiscrepancyRecord[], onCommand: (intent: TransferCommandIntent) => Promise<void>, busy: boolean,
+  onCommand: (intent: TransferCommandIntent) => Promise<void>, busy: boolean,
   onRefresh: () => Promise<void>,
 }) {
   const scope = useTenantKey()
@@ -428,17 +480,32 @@ export function TransferDetailView({ organizationId, transfer, stores, queueStor
   const destination = storeMap.get(transfer.destinationStoreId)
   const sourceActions = source?.allowedActions ?? []
   const destinationActions = destination?.allowedActions ?? []
-  const custody = useQuery({ queryKey: [...scope, 'transfers', 'custody', transfer.id], queryFn: ({ signal }) => listTransferCustody(organizationId, transfer.id, signal), refetchOnWindowFocus: true, staleTime: 0 })
   const partyStores = queueStores.filter(store => store.id === transfer.sourceStoreId || store.id === transfer.destinationStoreId)
-  const transitQuery = useQuery({ queryKey: [...scope, 'transfers', 'detail-transit', transfer.id], enabled: partyStores.length > 0,
-    queryFn: async ({ signal }) => (await Promise.all(partyStores.map(store => listTransfersInTransit(organizationId, store.id, signal)))).flatMap(page => page.items).filter(line => line.transferId === transfer.id), staleTime: 0 })
-  const discrepancyQuery = useQuery({ queryKey: [...scope, 'transfers', 'detail-discrepancies', transfer.id], enabled: partyStores.length > 0,
-    queryFn: async ({ signal }) => {
-      const pages = await Promise.all(partyStores.map(store => listTransferDiscrepancies(organizationId, store.id, signal)))
-      return [...new Map(pages.flatMap(page => page.items).filter(item => item.transferId === transfer.id).map(item => [item.id, item])).values()]
-    }, staleTime: 0 })
-  const detailDiscrepancies = discrepancyQuery.data ?? discrepancies.filter(item => item.transferId === transfer.id)
-  const pendingReturns = pendingReturnLines(transfer, detailDiscrepancies)
+  const partyStoreIds = partyStores.map(store => store.id).sort()
+  const custody = useInfiniteQuery({ queryKey: [...scope, 'transfers', 'custody', transfer.id], initialPageParam: 0,
+    queryFn: ({ signal, pageParam }) => listTransferCustody(organizationId, transfer.id, signal, pageParam, 50),
+    getNextPageParam: (page, pages) => page.hasMore ? pages.length * 50 : undefined, refetchOnWindowFocus: true, staleTime: 0 })
+  const transitQuery = useInfiniteQuery({ queryKey: [...scope, 'transfers', 'detail-transit', transfer.id, partyStoreIds], enabled: partyStores.length > 0, initialPageParam: 0,
+    queryFn: async ({ signal, pageParam }) => {
+      const pages = await Promise.all(partyStores.map(store => listTransfersInTransit(organizationId, store.id, signal, pageParam, 50)))
+      return { items: uniqueBy(pages.flatMap(page => page.items).filter(line => line.transferId === transfer.id), line => `${line.transferId}:${line.lineId}`),
+        hasMore: pages.some(page => page.hasMore) }
+    }, getNextPageParam: (page, pages) => page.hasMore ? pages.length * 50 : undefined, staleTime: 0 })
+  const discrepancyQuery = useInfiniteQuery({ queryKey: [...scope, 'transfers', 'detail-discrepancies', transfer.id, partyStoreIds], enabled: partyStores.length > 0, initialPageParam: 0,
+    queryFn: async ({ signal, pageParam }) => {
+      const pages = await Promise.all(partyStores.map(store => listTransferDiscrepancies(organizationId, store.id, signal, pageParam, 50)))
+      return { items: uniqueBy(pages.flatMap(page => page.items).filter(item => item.transferId === transfer.id), item => item.id),
+        hasMore: pages.some(page => page.hasMore) }
+    }, getNextPageParam: (page, pages) => page.hasMore ? pages.length * 50 : undefined, staleTime: 0 })
+  const activeReturnQuery = useQuery({ queryKey: [...scope, 'transfers', 'active-returns', transfer.id], enabled: partyStores.length > 0,
+    queryFn: ({ signal }) => listActiveTransferReturns(organizationId, transfer.id, signal), refetchOnWindowFocus: true, staleTime: 0 })
+  const custodyItems = (custody.data?.pages ?? []).flatMap(page => page.items)
+  const transitItems = uniqueBy((transitQuery.data?.pages ?? []).flatMap(page => page.items), line => `${line.transferId}:${line.lineId}`)
+  const detailDiscrepancies = uniqueBy((discrepancyQuery.data?.pages ?? []).flatMap(page => page.items), item => item.id)
+  const pendingReturns: PendingReturnLine[] = (activeReturnQuery.data?.items ?? []).map(item => ({
+    lineId: item.lineId, requestId: item.requestId, requestReference: item.requestReference,
+    requestedQuantity: item.unsettledQuantity, settledQuantity: item.settledQuantity, unsettledQuantity: item.unsettledQuantity,
+  }))
   const sourceCanConfirmReturn = sourceActions.includes('RECEIVE_STOCK') && sourceActions.includes('READ_INVENTORY')
   const returnPositionQueries = useQueries({ queries: pendingReturns.map(item => {
     const line = transfer.lines.find(candidate => candidate.id === item.lineId)!
@@ -455,8 +522,8 @@ export function TransferDetailView({ organizationId, transfer, stores, queueStor
       }))
       return new Map(records)
     }, staleTime: 0 })
-  const ageSeconds = Math.max(0, ...(transitQuery.data ?? []).map(line => line.ageSeconds))
-  const firstDispatchAt = [...(transitQuery.data ?? [])].sort((left, right) => left.dispatchedAt.localeCompare(right.dispatchedAt))[0]?.dispatchedAt
+  const ageSeconds = Math.max(0, ...transitItems.map(line => line.ageSeconds))
+  const firstDispatchAt = [...transitItems].sort((left, right) => left.dispatchedAt.localeCompare(right.dispatchedAt))[0]?.dispatchedAt
   const nowVersion = transfer.version
 
   function command(operation: Extract<TransferCommandIntent['operation'], 'APPROVE' | 'REJECT' | 'START_PICK' | 'CLOSE'>, reason: string, evidenceReference: string) {
@@ -467,7 +534,6 @@ export function TransferDetailView({ organizationId, transfer, stores, queueStor
   return <section className="space-y-7">
     <div className="flex flex-wrap items-start justify-between gap-3"><div><AppLink href={`/organizations/${organizationId}/transfers`} className="text-sm text-primary underline">Back to transfer queue</AppLink><h3 className="mt-3 break-all text-2xl font-semibold">Transfer {transfer.id}</h3><p className="mt-2">{source ? `${source.code} · ${source.name}` : `Source ${transfer.sourceStoreId}`} <span aria-hidden="true">→</span> {destination ? `${destination.code} · ${destination.name}` : `Destination ${transfer.destinationStoreId}`}</p><p className="mt-2 text-sm text-muted-foreground">{transferStatusLabel(transfer.status)} · version {transfer.version} · outstanding custody {transfer.outstandingQuantity} units</p></div><Button variant="outline" disabled={busy} onClick={() => { void onRefresh() }}>Refresh saved record</Button></div>
     {transfer.status === 'RECONCILIATION_REQUIRED' && transfer.outstandingQuantity === 0 && <p role="status" className="rounded-xl border border-border p-4 text-sm">All units are accounted for. A manager must review the recorded evidence and confirm reconciliation before this transfer is finalized.</p>}
-    {transitQuery.isError && <p role="status" className="rounded-xl border border-border p-4 text-sm">Transit age is temporarily unavailable. <Button variant="outline" onClick={() => { void transitQuery.refetch() }}>Retry transit read</Button></p>}
     {ageSeconds > 0 && firstDispatchAt && <p className="rounded-xl border border-border p-4 text-sm">Outstanding goods have been in custody for {formatTransferAge(ageSeconds)}. First dispatch: {new Date(firstDispatchAt).toLocaleString()}.</p>}
     <section aria-labelledby="transfer-lines-heading" className="space-y-3"><h4 id="transfer-lines-heading" className="text-lg font-semibold">Lines and stock custody</h4><ul className="grid gap-3">{transfer.lines.map(line => <li key={line.id} className="space-y-3 rounded-xl border border-border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold">Line {line.lineNumber} · {line.sku} · lot {line.lotCode}</p><p className="mt-1 break-all text-sm text-muted-foreground">{line.requestedQuantity} {line.unit} requested · source position {line.sourcePositionId.slice(0, 8)} · destination location {line.destinationLocationId.slice(0, 8)}</p></div><span className="text-sm">{line.picked ? 'Physical pick recorded' : transfer.status === 'PICKING' ? 'Awaiting full-line pick' : 'Not picked'}</span></div><dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-5"><Quantity label="Dispatched" value={line.quantities.dispatched ?? 0} unit={line.unit} /><Quantity label="Received" value={line.quantities.physicallyReceived ?? 0} unit={line.unit} /><Quantity label="Confirmed loss" value={line.quantities.confirmedLoss ?? 0} unit={line.unit} /><Quantity label="Returned" value={line.quantities.physicallyReturned ?? 0} unit={line.unit} /><Quantity label="Outstanding" value={line.quantities.outstanding ?? 0} unit={line.unit} /></dl></li>)}</ul></section>
 
@@ -476,25 +542,47 @@ export function TransferDetailView({ organizationId, transfer, stores, queueStor
     {transfer.status === 'APPROVED' && sourceActions.includes('PICK_TRANSFER') && <DecisionAction title="Begin physical picking" primaryLabel="Start picking" onSubmit={(reason, evidence) => { command('START_PICK', reason, evidence) }} busy={busy} />}
     {transfer.status === 'PICKING' && sourceActions.includes('PICK_TRANSFER') && transfer.lines.filter(line => !line.picked).map(line => <PickAction key={line.id} transfer={transfer} line={line} busy={busy} onCommand={onCommand} />)}
     {transfer.status === 'PICKED' && sourceActions.includes('DISPATCH_TRANSFER') && <DispatchAction transfer={transfer} busy={busy} onCommand={onCommand} />}
-    {['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('RECEIVE_STOCK') && (canReadDestinationStock
+    {activeReturnQuery.isPending && <p role="status" className="rounded-xl border border-border p-4 text-sm">Checking current unsettled physical return requests before enabling stock actions…</p>}
+    {activeReturnQuery.isError && <p role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">Current physical return state could not be verified, so stock and return actions are unavailable. {errorMessage(activeReturnQuery.error)} <Button variant="outline" onClick={() => { void activeReturnQuery.refetch() }}>Retry return state</Button></p>}
+    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('RECEIVE_STOCK') && (canReadDestinationStock
       ? transfer.lines.filter(line => outstanding(line) > 0 && !pendingReturns.some(item => item.lineId === line.id)).map(line => <ReceiveAction key={line.id} transfer={transfer} line={line} position={receivingPositions.data?.get(line.id)} busy={busy} onCommand={onCommand} />)
       : <StateMessage state="forbidden" title="Destination inventory version unavailable" description="Receiving requires current inventory read access at the destination so stale stock cannot be overwritten." />)}
     {receivingPositions.isError && canReadDestinationStock && <p role="alert" className="text-sm text-destructive">Destination stock version could not be read. Refresh inventory access before receiving: {errorMessage(receivingPositions.error)} <Button variant="outline" onClick={() => { void receivingPositions.refetch() }}>Retry stock read</Button></p>}
-    {['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES') && transfer.lines.some(line => outstanding(line) > 0 && !pendingReturns.some(item => item.lineId === line.id)) && <DamageAction transfer={transfer} excludedLineIds={new Set(pendingReturns.map(item => item.lineId))} busy={busy} onCommand={onCommand} />}
-    {['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('REQUEST_TRANSFER_RETURN') && discrepancyQuery.isSuccess && transfer.lines.some(line => outstanding(line) > 0 && !pendingReturns.some(item => item.lineId === line.id)) && <RequestReturnAction key={`${transfer.id}:${transfer.version}`} transfer={transfer} pendingLineIds={new Set(pendingReturns.map(item => item.lineId))} busy={busy} onCommand={onCommand} />}
-    {pendingReturns.length > 0 && <section aria-label="Return requests" className="space-y-4 rounded-2xl border border-border p-5"><h4 className="text-lg font-semibold">Physical return requests</h4>{pendingReturns.map(item => {
+    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES') && transfer.lines.some(line => outstanding(line) > 0 && !pendingReturns.some(item => item.lineId === line.id)) && <DamageAction transfer={transfer} excludedLineIds={new Set(pendingReturns.map(item => item.lineId))} busy={busy} onCommand={onCommand} />}
+    {activeReturnQuery.isSuccess && ['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('REQUEST_TRANSFER_RETURN') && transfer.lines.some(line => outstanding(line) > 0 && !pendingReturns.some(item => item.lineId === line.id)) && <RequestReturnAction key={`${transfer.id}:${transfer.version}`} transfer={transfer} pendingLineIds={new Set(pendingReturns.map(item => item.lineId))} busy={busy} onCommand={onCommand} />}
+    {activeReturnQuery.isSuccess && pendingReturns.length > 0 && <section aria-label="Return requests" className="space-y-4 rounded-2xl border border-border p-5"><h4 className="text-lg font-semibold">Physical return requests</h4>{pendingReturns.map(item => {
       const line = transfer.lines.find(candidate => candidate.id === item.lineId)!
-      return <p key={item.lineId} className="text-sm">Line {line.lineNumber}: {item.requestedQuantity} {line.unit} requested for return under document {item.documentReference}. This is a logical request; the goods remain in transit custody until the source confirms physical receipt.</p>
+      return <p key={`${item.requestId}:${item.lineId}`} className="text-sm">Line {line.lineNumber}: {item.unsettledQuantity} {line.unit} remain unsettled under return request {item.requestReference}. This is a logical request; the goods remain in transit custody until the source confirms physical receipt.</p>
     })}</section>}
-    {pendingReturns.length > 0 && sourceCanConfirmReturn && discrepancyQuery.isSuccess && <ConfirmReturnAction key={`${transfer.id}:${transfer.version}:${pendingReturns.map(item => item.documentReference).join('|')}`} transfer={transfer} returns={pendingReturns} positionQueries={returnPositionQueries} busy={busy} onCommand={onCommand} />}
+    {pendingReturns.length > 0 && sourceCanConfirmReturn && activeReturnQuery.isSuccess && <ConfirmReturnAction key={`${transfer.id}:${transfer.version}:${pendingReturns.map(item => item.requestId).join('|')}`} transfer={transfer} returns={pendingReturns} positionQueries={returnPositionQueries} busy={busy} onCommand={onCommand} />}
     {transfer.status === 'RECONCILIATION_REQUIRED' && transfer.outstandingQuantity === 0 && (sourceActions.includes('MANAGE_TRANSFER_DISCREPANCIES') || destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES')) && <DecisionAction title="Confirm final reconciliation" primaryLabel="Confirm reconciliation" onSubmit={(reason, evidence) => { command('CLOSE', reason, evidence) }} busy={busy} />}
     {['IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECONCILIATION_REQUIRED'].includes(transfer.status) && destinationActions.includes('MANAGE_TRANSFER_DISCREPANCIES') && <OpenDiscrepancyAction transfer={transfer} busy={busy} onCommand={onCommand} />}
-    {['REQUESTED', 'APPROVED', 'PICKING', 'PICKED'].includes(transfer.status) && sourceActions.includes('CANCEL_TRANSFER') && <CancelAction transfer={transfer} onCommand={onCommand} busy={busy} />}
+    {transfer.canCancel && ['REQUESTED', 'APPROVED', 'PICKING', 'PICKED'].includes(transfer.status) && <CancelAction transfer={transfer} onCommand={onCommand} busy={busy} />}
 
-    <section aria-labelledby="custody-heading" className="space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><div><h4 id="custody-heading" className="text-lg font-semibold">Custody and physical evidence</h4><p className="mt-1 text-sm text-muted-foreground">Every entry links the responsible actor, quantity, remaining custody and any stock ledger movement.</p></div><Button variant="outline" disabled={custody.isFetching} onClick={() => { void custody.refetch() }}>Refresh timeline</Button></div>
-      {custody.isPending ? <p role="status">Loading immutable custody entries…</p> : custody.isError ? <p role="alert" className="text-sm text-destructive">Custody history unavailable: {errorMessage(custody.error)} <Button variant="outline" onClick={() => { void custody.refetch() }}>Retry timeline read</Button></p> : custody.data.items.length === 0 ? <p className="rounded-xl border border-border p-4 text-sm">No physical custody movement is recorded. Approval and picking do not mean goods have been dispatched.</p> : <ol className="space-y-3">{custody.data.items.map((movement: TransferCustodyMovement) => <li key={movement.id} className="rounded-xl border border-border p-4"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{movement.type} · {movement.quantity} units</p><time className="text-sm text-muted-foreground" dateTime={movement.recordedAt}>{new Date(movement.recordedAt).toLocaleString()}</time></div><p className="mt-2 text-sm">Actor {movement.actorId} · outstanding {movement.outstandingBefore} → {movement.outstandingAfter} · line {movement.lineId.slice(0, 8)}</p><p className="mt-2 break-all text-sm">Reason: {movement.reason} · evidence: {movement.evidenceReference}</p>{movement.stockMovementId && <p className="mt-2 break-all text-xs text-muted-foreground">Stock movement {movement.stockMovementId} · position {movement.stockPositionId} · store {movement.stockStoreId}</p>}</li>)}</ol>}
+    <section aria-label="Outstanding in-transit lines" className="space-y-3 rounded-2xl border border-border p-5">
+      <h4 className="text-lg font-semibold">Outstanding in-transit lines</h4>
+      {transitQuery.isPending && <p role="status">Loading current custody lines…</p>}
+      {transitQuery.isError && <p role="alert" className="text-sm text-destructive">Transit records are unavailable. <Button variant="outline" onClick={() => { void transitQuery.refetch() }}>Retry transit read</Button></p>}
+      {!transitQuery.isPending && !transitQuery.isError && transitItems.length === 0 && <p className="text-sm text-muted-foreground">No goods remain in transit.</p>}
+      {transitItems.length > 0 && <ul className="space-y-2">{transitItems.map(line => <li key={line.lineId} className="flex flex-wrap justify-between gap-2 text-sm"><span>Line {line.lineId.slice(0, 8)} · {line.outstanding} units · dispatched {new Date(line.dispatchedAt).toLocaleString()}</span><span>{formatTransferAge(line.ageSeconds)} in transit</span></li>)}</ul>}
+      {transitQuery.hasNextPage && <Button variant="outline" disabled={transitQuery.isFetchingNextPage} onClick={() => { void transitQuery.fetchNextPage() }}>{transitQuery.isFetchingNextPage ? 'Loading in-transit lines…' : 'Load more in-transit lines'}</Button>}
     </section>
-    <section aria-labelledby="discrepancy-heading" className="space-y-3"><h4 id="discrepancy-heading" className="text-lg font-semibold">Discrepancy evidence</h4>{discrepancyQuery.isPending ? <p role="status">Checking discrepancy records…</p> : discrepancyQuery.isError ? <p role="alert" className="text-sm text-destructive">Discrepancy records unavailable: {errorMessage(discrepancyQuery.error)} <Button variant="outline" onClick={() => { void discrepancyQuery.refetch() }}>Retry discrepancy read</Button></p> : (discrepancyQuery.data ?? discrepancies.filter(item => item.transferId === transfer.id)).length === 0 ? <p className="text-sm text-muted-foreground">No discrepancy has been recorded.</p> : <ul className="space-y-3">{(discrepancyQuery.data ?? discrepancies.filter(item => item.transferId === transfer.id)).map(item => <li key={item.id} className="rounded-xl border border-border p-4"><p className="font-semibold">{item.type} · {new Date(item.recordedAt).toLocaleString()}</p><p className="mt-2 text-sm">Expected: {item.expectedState} · observed: {item.observedState}</p><p className="mt-1 text-sm">{item.reason} · evidence: {item.evidenceReference}</p></li>)}</ul>}</section>
+    <section aria-labelledby="custody-heading" className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3"><div><h4 id="custody-heading" className="text-lg font-semibold">Custody and physical evidence</h4><p className="mt-1 text-sm text-muted-foreground">Every entry links the responsible actor, quantity, remaining custody and any stock ledger movement.</p></div><Button variant="outline" disabled={custody.isFetching} onClick={() => { void custody.refetch() }}>Refresh timeline</Button></div>
+      {custody.isPending ? <p role="status">Loading immutable custody entries…</p>
+        : custody.isError ? <p role="alert" className="text-sm text-destructive">Custody history unavailable: {errorMessage(custody.error)} <Button variant="outline" onClick={() => { void custody.refetch() }}>Retry timeline read</Button></p>
+          : custodyItems.length === 0 ? <p className="rounded-xl border border-border p-4 text-sm">No physical custody movement is recorded. Approval and picking do not mean goods have been dispatched.</p>
+            : <ol className="space-y-3">{custodyItems.map((movement: TransferCustodyMovement) => <li key={movement.id} className="rounded-xl border border-border p-4"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{movement.type} · {movement.quantity} units</p><time className="text-sm text-muted-foreground" dateTime={movement.recordedAt}>{new Date(movement.recordedAt).toLocaleString()}</time></div><p className="mt-2 text-sm">Actor {movement.actorId} · outstanding {movement.outstandingBefore} → {movement.outstandingAfter} · line {movement.lineId.slice(0, 8)}</p><p className="mt-2 break-all text-sm">Reason: {movement.reason} · evidence: {movement.evidenceReference}</p>{movement.stockMovementId && <p className="mt-2 break-all text-xs text-muted-foreground">Stock movement {movement.stockMovementId} · position {movement.stockPositionId} · store {movement.stockStoreId}</p>}</li>)}</ol>}
+      {custody.hasNextPage && <Button variant="outline" disabled={custody.isFetchingNextPage} onClick={() => { void custody.fetchNextPage() }}>{custody.isFetchingNextPage ? 'Loading custody entries…' : 'Load more custody entries'}</Button>}
+    </section>
+    <section aria-labelledby="discrepancy-heading" className="space-y-3">
+      <h4 id="discrepancy-heading" className="text-lg font-semibold">Discrepancy and reconciliation evidence</h4>
+      {discrepancyQuery.isPending ? <p role="status">Checking reconciliation records…</p>
+        : discrepancyQuery.isError ? <p role="alert" className="text-sm text-destructive">Reconciliation history unavailable: {errorMessage(discrepancyQuery.error)} <Button variant="outline" onClick={() => { void discrepancyQuery.refetch() }}>Retry reconciliation read</Button></p>
+          : detailDiscrepancies.length === 0 ? <p className="text-sm text-muted-foreground">No reconciliation evidence has been recorded.</p>
+            : <ul className="space-y-3">{detailDiscrepancies.map(item => <li key={item.id} className="rounded-xl border border-border p-4"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{item.type} · {new Date(item.recordedAt).toLocaleString()}</p><span className="text-sm">{item.resolved ? 'Resolved' : 'Open'}</span></div><p className="mt-2 text-sm">Actor {item.actorId} · expected: {item.expectedState} · observed: {item.observedState}</p><p className="mt-1 text-sm">{item.reason} · source reference: {item.evidenceReference}</p></li>)}</ul>}
+      {discrepancyQuery.hasNextPage && <Button variant="outline" disabled={discrepancyQuery.isFetchingNextPage} onClick={() => { void discrepancyQuery.fetchNextPage() }}>{discrepancyQuery.isFetchingNextPage ? 'Loading reconciliation records…' : 'Load more reconciliation records'}</Button>}
+    </section>
   </section>
 }
 
@@ -503,7 +591,7 @@ function RequestReturnAction({ transfer, pendingLineIds, busy, onCommand }: {
 }) {
   const eligibleLines = transfer.lines.filter(line => outstanding(line) > 0 && !pendingLineIds.has(line.id))
   const [selectedLineIds, setSelectedLineIds] = useState<string[]>(() => eligibleLines.map(line => line.id))
-  const [documentReference, setDocumentReference] = useState('')
+  const [requestReference, setRequestReference] = useState('')
   const [reason, setReason] = useState('')
   const [evidenceReference, setEvidenceReference] = useState('')
   const [confirmed, setConfirmed] = useState(false)
@@ -511,17 +599,17 @@ function RequestReturnAction({ transfer, pendingLineIds, busy, onCommand }: {
   return <form aria-label="Request physical return" className="grid min-w-0 gap-4 rounded-2xl border border-border p-5 sm:grid-cols-2" onSubmit={event => {
     event.preventDefault()
     if (!selectedLines.length || !confirmed) return
-    const body = { requestId: crypto.randomUUID(), expectedVersion: transfer.version, documentReference: documentReference.trim(),
+    const body = { requestId: crypto.randomUUID(), expectedVersion: transfer.version, requestReference: requestReference.trim(),
       lines: selectedLines.map(line => ({ lineId: line.id })), reason: reason.trim(), evidenceReference: evidenceReference.trim() }
     void onCommand({ operation: 'REQUEST_RETURN', transferId: transfer.id, body })
   }}>
     <div className="min-w-0 sm:col-span-2"><h4 className="text-lg font-semibold">Request physical return</h4><p className="mt-1 text-sm text-muted-foreground">This records which outstanding goods should return and why. It does not move stock or reduce custody; the source store must confirm physical receipt.</p></div>
     <fieldset className="grid gap-3 sm:col-span-2"><legend className="font-medium">Select outstanding lines</legend>{eligibleLines.map(line => <label key={line.id} className="flex min-w-0 items-start gap-3 rounded-lg border border-border p-3 text-sm"><input type="checkbox" checked={selectedLineIds.includes(line.id)} onChange={event => { setSelectedLineIds(current => event.target.checked ? [...new Set([...current, line.id])] : current.filter(id => id !== line.id)) }} className="mt-1" /><span className="min-w-0 break-words">Line {line.lineNumber}: {outstanding(line)} {line.unit} outstanding · {line.sku} · lot {line.lotCode}</span></label>)}</fieldset>
-    <Field label="Return request document reference">{id => <input id={id} required maxLength={200} value={documentReference} onChange={event => { setDocumentReference(event.target.value) }} className={inputClass} />}</Field>
+    <Field label="Return request reference">{id => <input id={id} required maxLength={200} value={requestReference} onChange={event => { setRequestReference(event.target.value) }} className={inputClass} />}</Field>
     <Field label="Reason for return request">{id => <textarea id={id} required maxLength={500} value={reason} onChange={event => { setReason(event.target.value) }} className={inputClass} />}</Field>
     <Field label="Evidence reference">{id => <input id={id} required maxLength={256} value={evidenceReference} onChange={event => { setEvidenceReference(event.target.value) }} className={inputClass} />}</Field>
     <label className="flex min-w-0 items-start gap-3 text-sm sm:col-span-2"><input type="checkbox" required checked={confirmed} onChange={event => { setConfirmed(event.target.checked) }} className="mt-1" /><span>I understand this request records intent only and the returned quantities stay in transit custody until physically received at the source.</span></label>
-    <Button type="submit" disabled={busy || !selectedLines.length || !documentReference.trim() || !reason.trim() || !evidenceReference.trim() || !confirmed} className="sm:col-span-2">{busy ? 'Saving return request…' : 'Record return request'}</Button>
+    <Button type="submit" disabled={busy || !selectedLines.length || !requestReference.trim() || !reason.trim() || !evidenceReference.trim() || !confirmed} className="sm:col-span-2">{busy ? 'Saving return request…' : 'Record return request'}</Button>
   </form>
 }
 
@@ -532,54 +620,60 @@ function ConfirmReturnAction({ transfer, returns, positionQueries, busy, onComma
   busy: boolean, onCommand: (intent: TransferCommandIntent) => Promise<void>,
 }) {
   const positionByLineId = new Map(returns.map((item, index) => [item.lineId, positionQueries[index]!]))
-  const groups = [...new Set(returns.map(item => item.documentReference))].map(reference => ({
-    reference, lines: returns.filter(item => item.documentReference === reference),
+  const groups = [...new Set(returns.map(item => item.requestId))].map(requestId => ({
+    requestId, reference: returns.find(item => item.requestId === requestId)!.requestReference,
+    lines: returns.filter(item => item.requestId === requestId),
   }))
   return <section aria-label="Confirm physical return" className="space-y-4">
     <h4 className="text-lg font-semibold">Confirm physical return at source</h4>
-    {groups.map(group => <ConfirmReturnGroup key={group.reference} transfer={transfer} documentReference={group.reference}
+    {groups.map(group => <ConfirmReturnGroup key={group.requestId} transfer={transfer} requestId={group.requestId} requestReference={group.reference}
       returns={group.lines} positionByLineId={positionByLineId} busy={busy} onCommand={onCommand} />)}
   </section>
 }
 
-function ConfirmReturnGroup({ transfer, documentReference, returns, positionByLineId, busy, onCommand }: {
-  transfer: Transfer, documentReference: string, returns: PendingReturnLine[], positionByLineId: Map<string, ReturnPositionQuery>,
+function ConfirmReturnGroup({ transfer, requestId, requestReference, returns, positionByLineId, busy, onCommand }: {
+  transfer: Transfer, requestId: string, requestReference: string, returns: PendingReturnLine[], positionByLineId: Map<string, ReturnPositionQuery>,
   busy: boolean, onCommand: (intent: TransferCommandIntent) => Promise<void>,
 }) {
+  const [documentReference, setDocumentReference] = useState('')
   const [reason, setReason] = useState('')
   const [evidenceReference, setEvidenceReference] = useState('')
   const [lineReferences, setLineReferences] = useState<Record<string, string>>({})
+  const [selectedLineIds, setSelectedLineIds] = useState<string[]>(() => returns.map(item => item.lineId))
   const [confirmed, setConfirmed] = useState(false)
-  const positionsReady = returns.every(item => Boolean(positionByLineId.get(item.lineId)?.data && !positionByLineId.get(item.lineId)?.isError))
-  const positionsFailed = returns.some(item => positionByLineId.get(item.lineId)?.isError)
-  const canSubmit = Boolean(positionsReady && confirmed && reason.trim() && evidenceReference.trim()
-    && returns.every(item => Boolean(lineReferences[item.lineId]?.trim())) && !busy)
-  return <form aria-label={`Confirm physical return ${documentReference}`} className="grid min-w-0 gap-4 rounded-2xl border border-border p-5 sm:grid-cols-2" onSubmit={event => {
+  const selectedReturns = returns.filter(item => selectedLineIds.includes(item.lineId))
+  const positionsReady = selectedReturns.every(item => Boolean(positionByLineId.get(item.lineId)?.data && !positionByLineId.get(item.lineId)?.isError))
+  const positionsFailed = selectedReturns.some(item => positionByLineId.get(item.lineId)?.isError)
+  const canSubmit = Boolean(selectedReturns.length && positionsReady && confirmed && requestReference.trim()
+    && documentReference.trim() && reason.trim() && evidenceReference.trim()
+    && selectedReturns.every(item => Boolean(lineReferences[item.lineId]?.trim())) && !busy)
+  return <form aria-label={`Confirm physical return request ${requestReference}`} className="grid min-w-0 gap-4 rounded-2xl border border-border p-5 sm:grid-cols-2" onSubmit={event => {
     event.preventDefault()
     if (!canSubmit) return
-    const body = { requestId: crypto.randomUUID(), expectedVersion: transfer.version, documentReference,
-      lines: returns.map(item => {
+    const body = { requestId: crypto.randomUUID(), expectedVersion: transfer.version, requestReference: requestReference.trim(), documentReference: documentReference.trim(),
+      lines: selectedReturns.map(item => {
         const line = transfer.lines.find(candidate => candidate.id === item.lineId)!
         const position = positionByLineId.get(item.lineId)!.data!
         return { lineId: line.id, expectedSourceVersion: position.version, documentLineReference: lineReferences[line.id]!.trim(), observedSku: line.sku, observedLotCode: line.lotCode }
       }), reason: reason.trim(), evidenceReference: evidenceReference.trim() }
     void onCommand({ operation: 'CONFIRM_RETURN', transferId: transfer.id, body })
   }}>
-    <div className="min-w-0 sm:col-span-2"><p className="mt-1 break-words text-sm text-muted-foreground">Verify each returned SKU and lot. This will post the actual source inventory receipt and close the corresponding transit custody.</p></div>
-    <p className="break-all text-sm sm:col-span-2">Return document: {documentReference}</p>
+    <div className="min-w-0 sm:col-span-2"><p className="mt-1 break-words text-sm text-muted-foreground">Request reference: {requestReference} · request {requestId}. Choose only the lines physically received now; later receipts use a new physical reference.</p></div>
+    <Field label="Physical receipt reference">{id => <input id={id} required maxLength={200} value={documentReference} onChange={event => { setDocumentReference(event.target.value) }} className={inputClass} />}</Field>
     {returns.map(item => {
       const line = transfer.lines.find(candidate => candidate.id === item.lineId)!
       const query = positionByLineId.get(item.lineId)
       return <fieldset key={line.id} className="grid min-w-0 gap-3 rounded-lg border border-border p-3 sm:grid-cols-2"><legend className="px-2 font-medium">Line {line.lineNumber} · {item.requestedQuantity} {line.unit}</legend>
+        <label className="flex items-start gap-3 text-sm sm:col-span-2"><input type="checkbox" checked={selectedLineIds.includes(item.lineId)} onChange={event => { setSelectedLineIds(current => event.target.checked ? [...new Set([...current, item.lineId])] : current.filter(id => id !== item.lineId)) }} className="mt-1" />Include line {line.lineNumber} in this physical receipt</label>
         <p className="break-words text-sm">Expected SKU {line.sku} · lot {line.lotCode}. Current source position version: {query?.data?.version ?? (query?.isPending ? 'checking…' : 'unavailable')}.</p>
-        <Field label={`Return document line for line ${line.lineNumber}`}>{id => <input id={id} required maxLength={64} value={lineReferences[line.id] ?? ''} onChange={event => { setLineReferences(current => ({ ...current, [line.id]: event.target.value })) }} className={inputClass} />}</Field>
-        {query?.isError && <p role="alert" className="text-sm text-destructive sm:col-span-2">Source position version failed to load. <Button type="button" variant="outline" onClick={() => { void query.refetch() }}>Retry source version</Button></p>}
+        {selectedLineIds.includes(item.lineId) && <Field label={`Return document line for line ${line.lineNumber}`}>{id => <input id={id} required maxLength={64} value={lineReferences[line.id] ?? ''} onChange={event => { setLineReferences(current => ({ ...current, [line.id]: event.target.value })) }} className={inputClass} />}</Field>}
+        {selectedLineIds.includes(item.lineId) && query?.isError && <p role="alert" className="text-sm text-destructive sm:col-span-2">Source position version failed to load. <Button type="button" variant="outline" onClick={() => { void query.refetch() }}>Retry source version</Button></p>}
       </fieldset>
     })}
     {positionsFailed && <p role="alert" className="text-sm text-destructive sm:col-span-2">Current source inventory versions could not be read. Refresh the source inventory access and retry.</p>}
     <Field label="Reason for physical return">{id => <textarea id={id} required maxLength={500} value={reason} onChange={event => { setReason(event.target.value) }} className={inputClass} />}</Field>
     <Field label="Evidence reference">{id => <input id={id} required maxLength={256} value={evidenceReference} onChange={event => { setEvidenceReference(event.target.value) }} className={inputClass} />}</Field>
-    <label className="flex min-w-0 items-start gap-3 text-sm sm:col-span-2"><input type="checkbox" required checked={confirmed} onChange={event => { setConfirmed(event.target.checked) }} className="mt-1" /><span>I physically received and verified every listed quantity, SKU and lot at the source store.</span></label>
+    <label className="flex min-w-0 items-start gap-3 text-sm sm:col-span-2"><input type="checkbox" required checked={confirmed} onChange={event => { setConfirmed(event.target.checked) }} className="mt-1" /><span>I physically received and verified every selected quantity, SKU and lot at the source store.</span></label>
     <Button type="submit" disabled={!canSubmit} className="sm:col-span-2">{busy ? 'Saving physical return…' : 'Confirm physical return received'}</Button>
   </form>
 }

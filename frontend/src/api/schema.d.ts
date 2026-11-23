@@ -1434,6 +1434,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/transfers/{transferId}/active-returns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read current unsettled physical return requests for one authorized transfer */
+        get: operations["listActiveTransferReturns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/transfers/{transferId}/approve": {
         parameters: {
             query?: never;
@@ -2454,6 +2471,34 @@ export interface components {
             reason: string;
             storeGrants: components["schemas"]["PlannedGrantRequest"][];
         };
+        JsonNode: {
+            array?: boolean;
+            bigDecimal?: boolean;
+            bigInteger?: boolean;
+            binary?: boolean;
+            boolean?: boolean;
+            container?: boolean;
+            double?: boolean;
+            embeddedValue?: boolean;
+            empty?: boolean;
+            float?: boolean;
+            floatingPointNumber?: boolean;
+            int?: boolean;
+            integralNumber?: boolean;
+            long?: boolean;
+            missingNode?: boolean;
+            /** @enum {string} */
+            nodeType?: "ARRAY" | "BINARY" | "BOOLEAN" | "MISSING" | "NULL" | "NUMBER" | "OBJECT" | "POJO" | "STRING";
+            null?: boolean;
+            number?: boolean;
+            object?: boolean;
+            pojo?: boolean;
+            short?: boolean;
+            string?: boolean;
+            /** @deprecated */
+            textual?: boolean;
+            valueNode?: boolean;
+        };
         LaneLookupResponse: {
             /**
              * Format: date-time
@@ -3192,6 +3237,31 @@ export interface components {
             version: number;
             zoneId: string;
         };
+        TransferActiveReturn: {
+            /** Format: uuid */
+            evidenceId: string;
+            /** Format: uuid */
+            lineId: string;
+            /** Format: uuid */
+            requestId: string;
+            requestReference: string;
+            /** Format: date-time */
+            requestedAt: string;
+            /** Format: int64 */
+            requestedQuantity: number;
+            /** Format: int64 */
+            settledQuantity: number;
+            state: string;
+            /** Format: uuid */
+            transferId: string;
+            /** Format: int64 */
+            transferVersion: number;
+            /** Format: int64 */
+            unsettledQuantity: number;
+        };
+        TransferActiveReturnPage: {
+            items: components["schemas"]["TransferActiveReturn"][];
+        };
         TransferCancelRequest: {
             evidenceReference: string;
             /** Format: int64 */
@@ -3210,15 +3280,16 @@ export interface components {
             executionStatus: "PREPARED" | "SUBMITTED_AWAITING_OUTCOME" | "COMMITTED_AWAITING_ACKNOWLEDGEMENT" | "ACKNOWLEDGED" | "REJECTED" | "CONFLICTED";
             /** Format: uuid */
             id: string;
-            operation: string;
-            payload: string;
+            operation?: string | null;
+            payload?: components["schemas"]["JsonNode"] | null;
             /** Format: date-time */
             preparedAt: string;
+            redacted: boolean;
             /** Format: uuid */
-            requestId: string;
+            requestId?: string | null;
             state: string;
             /** Format: uuid */
-            transferId?: string;
+            transferId?: string | null;
         };
         TransferCommandIntentPage: {
             items: components["schemas"]["TransferCommandIntentSummary"][];
@@ -3226,14 +3297,15 @@ export interface components {
         TransferCommandIntentSummary: {
             /** Format: uuid */
             id: string;
-            operation: string;
+            operation?: string | null;
             /** Format: date-time */
             preparedAt: string;
+            redacted: boolean;
             /** Format: uuid */
-            requestId: string;
+            requestId?: string | null;
             state: string;
             /** Format: uuid */
-            transferId?: string;
+            transferId?: string | null;
         };
         TransferConfirmReturnLineRequest: {
             documentLineReference: string;
@@ -3253,6 +3325,7 @@ export interface components {
             reason: string;
             /** Format: uuid */
             requestId: string;
+            requestReference: string;
         };
         TransferCustodyMovement: {
             /** Format: uuid */
@@ -3319,6 +3392,8 @@ export interface components {
             items: components["schemas"]["TransferDiscrepancyRecord"][];
         };
         TransferDiscrepancyRecord: {
+            /** Format: uuid */
+            actorId: string;
             evidenceReference: string;
             expectedState: string;
             /** Format: uuid */
@@ -3329,6 +3404,7 @@ export interface components {
             reason: string;
             /** Format: date-time */
             recordedAt: string;
+            resolved: boolean;
             /** Format: uuid */
             transferId: string;
             type: string;
@@ -3548,6 +3624,7 @@ export interface components {
             requestId: string;
         };
         TransferResponse: {
+            canCancel: boolean;
             /** Format: date-time */
             createdAt: string;
             /** Format: uuid */
@@ -3568,7 +3645,6 @@ export interface components {
             version: number;
         };
         TransferReturnRequest: {
-            documentReference: string;
             evidenceReference: string;
             /** Format: int64 */
             expectedVersion: number;
@@ -3576,6 +3652,7 @@ export interface components {
             reason: string;
             /** Format: uuid */
             requestId: string;
+            requestReference: string;
         };
         TransferReturnRequestLine: {
             /** Format: uuid */
@@ -12847,6 +12924,83 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TransferResponse"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listActiveTransferReturns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                transferId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferActiveReturnPage"];
                 };
             };
             /** @description Invalid transfer request */

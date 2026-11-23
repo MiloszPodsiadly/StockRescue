@@ -41,6 +41,7 @@ type PageOf<T> = { items: T[], hasMore: boolean }
 export type TransferCustodyMovement = JsonResponse<'getTransferCustodyTimeline'> extends PageOf<infer Item> ? Item : never
 export type TransferInTransitLine = JsonResponse<'listTransfersInTransit'> extends PageOf<infer Item> ? Item : never
 export type TransferDiscrepancyRecord = JsonResponse<'listTransferDiscrepancies'> extends PageOf<infer Item> ? Item : never
+export type TransferActiveReturn = JsonResponse<'listActiveTransferReturns'> extends { items: (infer Item)[] } ? Item : never
 
 const base = '/api/v1/organizations/{organizationId}/transfers' as const
 const intentsBase = '/api/v1/organizations/{organizationId}/transfer-command-intents' as const
@@ -107,9 +108,10 @@ export async function resolveFailedTransferCommandIntent(organizationId: string,
   return data
 }
 
-export async function listTransfers(organizationId: string, storeId: string, status: TransferStatus | '', signal: AbortSignal) {
+export async function listTransfers(organizationId: string, storeId: string, status: TransferStatus | '', signal: AbortSignal,
+  offset = 0, limit = 50) {
   const { data, error, response } = await api.GET(base, { params: {
-    path: { organizationId }, query: { storeId, ...(status ? { status } : {}), offset: 0, limit: 100 },
+    path: { organizationId }, query: { storeId, ...(status ? { status } : {}), offset, limit },
   }, signal: requestSignal(signal) })
   if (!data) throw new ApiError(response, error)
   return data
@@ -121,20 +123,31 @@ export async function getTransfer(organizationId: string, transferId: string, si
   return data
 }
 
-export async function listTransferCustody(organizationId: string, transferId: string, signal: AbortSignal) {
-  const { data, error, response } = await api.GET(`${base}/{transferId}/custody`, { params: { path: { organizationId, transferId }, query: { offset: 0, limit: 100 } }, signal: requestSignal(signal) })
+export async function listTransferCustody(organizationId: string, transferId: string, signal: AbortSignal,
+  offset = 0, limit = 50) {
+  const { data, error, response } = await api.GET(`${base}/{transferId}/custody`, { params: { path: { organizationId, transferId }, query: { offset, limit } }, signal: requestSignal(signal) })
   if (!data) throw new ApiError(response, error)
   return data
 }
 
-export async function listTransfersInTransit(organizationId: string, storeId: string, signal: AbortSignal) {
-  const { data, error, response } = await api.GET(`${base}/in-transit`, { params: { path: { organizationId }, query: { storeId, offset: 0, limit: 100 } }, signal: requestSignal(signal) })
+export async function listActiveTransferReturns(organizationId: string, transferId: string, signal: AbortSignal) {
+  const { data, error, response } = await api.GET(`${base}/{transferId}/active-returns`, {
+    params: { path: { organizationId, transferId } }, signal: requestSignal(signal),
+  })
   if (!data) throw new ApiError(response, error)
   return data
 }
 
-export async function listTransferDiscrepancies(organizationId: string, storeId: string, signal: AbortSignal) {
-  const { data, error, response } = await api.GET(`${base}/discrepancies`, { params: { path: { organizationId }, query: { storeId, offset: 0, limit: 100 } }, signal: requestSignal(signal) })
+export async function listTransfersInTransit(organizationId: string, storeId: string, signal: AbortSignal,
+  offset = 0, limit = 50) {
+  const { data, error, response } = await api.GET(`${base}/in-transit`, { params: { path: { organizationId }, query: { storeId, offset, limit } }, signal: requestSignal(signal) })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function listTransferDiscrepancies(organizationId: string, storeId: string, signal: AbortSignal,
+  offset = 0, limit = 50) {
+  const { data, error, response } = await api.GET(`${base}/discrepancies`, { params: { path: { organizationId }, query: { storeId, offset, limit } }, signal: requestSignal(signal) })
   if (!data) throw new ApiError(response, error)
   return data
 }

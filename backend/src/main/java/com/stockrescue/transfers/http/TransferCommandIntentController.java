@@ -81,7 +81,7 @@ public class TransferCommandIntentController {
                 : TransferController.CommandResponse.from(inspection.outcome());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new IntentInspectionResponse(
                 inspection.id(), inspection.operation(), inspection.transferId(), inspection.requestId(), inspection.state(),
-                inspection.preparedAt(), inspection.executionStatus(), inspection.payload(), outcome));
+                inspection.preparedAt(), inspection.executionStatus(), inspection.payload(), outcome, inspection.redacted()));
     }
 
     @PostMapping("/{intentId}/submitted")
@@ -114,15 +114,20 @@ public class TransferCommandIntentController {
     @Schema(name = "TransferCommandIntentPage")
     public record PendingIntentsResponse(@NotNull List<@Valid IntentSummary> items) { }
     @Schema(name = "TransferCommandIntentSummary")
-    public record IntentSummary(@NotNull UUID id, @NotBlank String operation, UUID transferId, @NotNull UUID requestId,
-            @NotBlank String state, @NotNull Instant preparedAt) {
+    public record IntentSummary(@NotNull UUID id, @Schema(types = {"string", "null"}) String operation,
+            @Schema(types = {"string", "null"}) UUID transferId,
+            @Schema(types = {"string", "null"}) UUID requestId, @NotBlank String state, @NotNull Instant preparedAt,
+            @NotNull boolean redacted) {
         static IntentSummary from(TransferCommandIntentService.Summary summary) {
-            return new IntentSummary(summary.id(), summary.operation(), summary.transferId(), summary.requestId(), summary.state(), summary.preparedAt());
+            return new IntentSummary(summary.id(), summary.operation(), summary.transferId(), summary.requestId(),
+                    summary.state(), summary.preparedAt(), summary.redacted());
         }
     }
     @Schema(name = "TransferCommandIntentInspection")
-    public record IntentInspectionResponse(@NotNull UUID id, @NotBlank String operation, UUID transferId,
-            @NotNull UUID requestId, @NotBlank String state, @NotNull Instant preparedAt,
-            @NotNull InspectionStatus executionStatus, @NotNull @Schema(type = "object") JsonNode payload,
-            @Schema(types = {"object", "null"}) TransferController.CommandResponse committedOutcome) { }
+    public record IntentInspectionResponse(@NotNull UUID id, @Schema(types = {"string", "null"}) String operation,
+            @Schema(types = {"string", "null"}) UUID transferId,
+            @Schema(types = {"string", "null"}) UUID requestId, @NotBlank String state, @NotNull Instant preparedAt,
+            @NotNull InspectionStatus executionStatus, @Schema(types = {"object", "null"}) JsonNode payload,
+            @Schema(types = {"object", "null"}) TransferController.CommandResponse committedOutcome,
+            @NotNull boolean redacted) { }
 }

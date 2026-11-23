@@ -8496,6 +8496,71 @@ paths:
         store
       tags:
       - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/{transferId}/active-returns:
+    get:
+      operationId: listActiveTransferReturns
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: transferId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferActiveReturnPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: Read current unsettled physical return requests for one authorized
+        transfer
+      tags:
+      - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/{transferId}/approve:
     post:
       operationId: approveTransfer
@@ -12137,6 +12202,68 @@ components:
       - email
       - reason
       - storeGrants
+    JsonNode:
+      type: object
+      properties:
+        array:
+          type: boolean
+        bigDecimal:
+          type: boolean
+        bigInteger:
+          type: boolean
+        binary:
+          type: boolean
+        boolean:
+          type: boolean
+        container:
+          type: boolean
+        double:
+          type: boolean
+        embeddedValue:
+          type: boolean
+        empty:
+          type: boolean
+        float:
+          type: boolean
+        floatingPointNumber:
+          type: boolean
+        int:
+          type: boolean
+        integralNumber:
+          type: boolean
+        long:
+          type: boolean
+        missingNode:
+          type: boolean
+        nodeType:
+          type: string
+          enum:
+          - ARRAY
+          - BINARY
+          - BOOLEAN
+          - MISSING
+          - "NULL"
+          - NUMBER
+          - OBJECT
+          - POJO
+          - STRING
+        "null":
+          type: boolean
+        number:
+          type: boolean
+        object:
+          type: boolean
+        pojo:
+          type: boolean
+        short:
+          type: boolean
+        string:
+          type: boolean
+        textual:
+          type: boolean
+          deprecated: true
+        valueNode:
+          type: boolean
     LaneLookupResponse:
       type: object
       properties:
@@ -14190,6 +14317,61 @@ components:
       - updatedAt
       - version
       - zoneId
+    TransferActiveReturn:
+      type: object
+      properties:
+        evidenceId:
+          type: string
+          format: uuid
+        lineId:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+        requestReference:
+          type: string
+        requestedAt:
+          type: string
+          format: date-time
+        requestedQuantity:
+          type: integer
+          format: int64
+        settledQuantity:
+          type: integer
+          format: int64
+        state:
+          type: string
+        transferId:
+          type: string
+          format: uuid
+        transferVersion:
+          type: integer
+          format: int64
+        unsettledQuantity:
+          type: integer
+          format: int64
+      required:
+      - evidenceId
+      - lineId
+      - requestId
+      - requestReference
+      - requestedAt
+      - requestedQuantity
+      - settledQuantity
+      - state
+      - transferId
+      - transferVersion
+      - unsettledQuantity
+    TransferActiveReturnPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferActiveReturn"
+      required:
+      - items
     TransferCancelRequest:
       type: object
       properties:
@@ -14244,29 +14426,36 @@ components:
           type: string
           format: uuid
         operation:
-          type: string
-          minLength: 1
+          type:
+          - string
+          - "null"
         payload:
-          type: string
+          anyOf:
+          - $ref: "#/components/schemas/JsonNode"
+          - type: "null"
         preparedAt:
           type: string
           format: date-time
+        redacted:
+          type: boolean
         requestId:
-          type: string
+          type:
+          - string
+          - "null"
           format: uuid
         state:
           type: string
           minLength: 1
         transferId:
-          type: string
+          type:
+          - string
+          - "null"
           format: uuid
       required:
       - executionStatus
       - id
-      - operation
-      - payload
       - preparedAt
-      - requestId
+      - redacted
       - state
     TransferCommandIntentPage:
       type: object
@@ -14284,25 +14473,31 @@ components:
           type: string
           format: uuid
         operation:
-          type: string
-          minLength: 1
+          type:
+          - string
+          - "null"
         preparedAt:
           type: string
           format: date-time
+        redacted:
+          type: boolean
         requestId:
-          type: string
+          type:
+          - string
+          - "null"
           format: uuid
         state:
           type: string
           minLength: 1
         transferId:
-          type: string
+          type:
+          - string
+          - "null"
           format: uuid
       required:
       - id
-      - operation
       - preparedAt
-      - requestId
+      - redacted
       - state
     TransferConfirmReturnLineRequest:
       type: object
@@ -14362,6 +14557,10 @@ components:
         requestId:
           type: string
           format: uuid
+        requestReference:
+          type: string
+          maxLength: 200
+          minLength: 0
       required:
       - documentReference
       - evidenceReference
@@ -14369,6 +14568,7 @@ components:
       - lines
       - reason
       - requestId
+      - requestReference
     TransferCustodyMovement:
       type: object
       properties:
@@ -14551,6 +14751,9 @@ components:
     TransferDiscrepancyRecord:
       type: object
       properties:
+        actorId:
+          type: string
+          format: uuid
         evidenceReference:
           type: string
         expectedState:
@@ -14570,12 +14773,15 @@ components:
         recordedAt:
           type: string
           format: date-time
+        resolved:
+          type: boolean
         transferId:
           type: string
           format: uuid
         type:
           type: string
       required:
+      - actorId
       - evidenceReference
       - expectedState
       - id
@@ -14583,6 +14789,7 @@ components:
       - observedState
       - reason
       - recordedAt
+      - resolved
       - transferId
       - type
     TransferDiscrepancyRequest:
@@ -15111,6 +15318,8 @@ components:
     TransferResponse:
       type: object
       properties:
+        canCancel:
+          type: boolean
         createdAt:
           type: string
           format: date-time
@@ -15153,6 +15362,7 @@ components:
           type: integer
           format: int64
       required:
+      - canCancel
       - createdAt
       - destinationStoreId
       - id
@@ -15166,10 +15376,6 @@ components:
     TransferReturnRequest:
       type: object
       properties:
-        documentReference:
-          type: string
-          maxLength: 200
-          minLength: 0
         evidenceReference:
           type: string
           maxLength: 256
@@ -15192,13 +15398,17 @@ components:
         requestId:
           type: string
           format: uuid
+        requestReference:
+          type: string
+          maxLength: 200
+          minLength: 0
       required:
-      - documentReference
       - evidenceReference
       - expectedVersion
       - lines
       - reason
       - requestId
+      - requestReference
     TransferReturnRequestLine:
       type: object
       properties:

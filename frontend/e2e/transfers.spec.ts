@@ -204,7 +204,7 @@ test('store operators complete, recover and reconcile a physical stock transfer 
       await expect(recipientPage.getByRole('form', { name: /^Receive line / })).toHaveCount(0)
       await expect(recipientPage.getByRole('form', { name: 'Request physical return' })).toHaveCount(0)
       const unauthorizedReturn = await write<{ code: string }>(recipient!.context, `${transferPath}/request-return`, {
-        requestId: randomUUID(), expectedVersion: transfer.version, documentReference: `UNAUTHORIZED-RETURN-${suffix}`,
+        requestId: randomUUID(), expectedVersion: transfer.version, requestReference: `UNAUTHORIZED-RETURN-${suffix}`,
         lines: [{ lineId: line.id }], reason: 'Attempted a return request without destination authorization',
         evidenceReference: `unauthorized-return:${suffix}`,
       }, 403)
@@ -230,30 +230,58 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     const returnRequest = page.getByRole('form', { name: 'Request physical return' })
     await expect(returnRequest.getByText(new RegExp(`Line ${twentyUnitLine.lineNumber}: 2 EA outstanding`))).toBeVisible()
     await expect(returnRequest.getByText(new RegExp(`Line ${fiveUnitLine.lineNumber}: 5 EA outstanding`))).toBeVisible()
-    await returnRequest.getByLabel('Return request document reference').fill(`RETURN-${suffix}`)
+    await returnRequest.getByLabel('Return request reference').fill(`RETURN-${suffix}`)
     await returnRequest.getByLabel('Reason for return request').fill('Return the two packages that remained with the carrier after partial destination receipt')
     await returnRequest.getByLabel('Evidence reference').fill(`return-request:${suffix}`)
     await returnRequest.getByRole('checkbox', { name: /I understand this request records intent only/ }).check()
     await expect(returnRequest.getByRole('button', { name: 'Record return request' })).toBeEnabled()
     await returnRequest.getByRole('button', { name: 'Record return request' }).click()
-    await expect(page.getByText(/2 EA requested for return under document RETURN-/)).toBeVisible()
+    await expect(page.getByText(/2 EA remain unsettled under return request RETURN-/)).toBeVisible()
+    const activeAfterRequest = await read<{ items: { lineId: string, requestReference: string, requestedQuantity: number, unsettledQuantity: number }[] }>(
+      recipient!.context, `${transferPath}/active-returns`)
+    expect(activeAfterRequest.items).toHaveLength(2)
+    expect(activeAfterRequest.items.map(item => [item.lineId, item.requestReference, item.requestedQuantity, item.unsettledQuantity]))
+      .toEqual(expect.arrayContaining([
+        [twentyUnitLine.id, `RETURN-${suffix}`, 2, 2],
+        [fiveUnitLine.id, `RETURN-${suffix}`, 5, 5],
+      ]))
 
     await recipientPage.reload()
-    const physicalReturn = recipientPage.getByRole('form', { name: /^Confirm physical return RETURN-/ })
-    await expect(physicalReturn).toBeVisible()
+    const firstPhysicalReturn = recipientPage.getByRole('form', { name: `Confirm physical return request RETURN-${suffix}` })
+    await expect(firstPhysicalReturn).toBeVisible()
     await expect(recipientPage.getByRole('form', { name: 'Request physical return' })).toHaveCount(0)
-    await physicalReturn.getByLabel(`Return document line for line ${twentyUnitLine.lineNumber}`).fill(`return-line-${suffix}-1`)
-    await physicalReturn.getByLabel(`Return document line for line ${fiveUnitLine.lineNumber}`).fill(`return-line-${suffix}-2`)
-    await physicalReturn.getByLabel('Reason for physical return').fill('Physically counted and received two returned packages at the source store')
-    await physicalReturn.getByLabel('Evidence reference').fill(`source-return-receipt:${suffix}`)
-    await physicalReturn.getByRole('checkbox').check()
-    await expect(physicalReturn.getByRole('button', { name: 'Confirm physical return received' })).toBeEnabled()
+    await firstPhysicalReturn.getByLabel('Physical receipt reference').fill(`RETURN-${suffix}-A`)
+    await firstPhysicalReturn.getByLabel(`Include line ${fiveUnitLine.lineNumber} in this physical receipt`).uncheck()
+    await firstPhysicalReturn.getByLabel(`Return document line for line ${twentyUnitLine.lineNumber}`).fill(`return-line-${suffix}-A`)
+    await firstPhysicalReturn.getByLabel('Reason for physical return').fill('Physically counted the two returned packages for line A at the source store')
+    await firstPhysicalReturn.getByLabel('Evidence reference').fill(`source-return-receipt:${suffix}:A`)
+    await firstPhysicalReturn.getByRole('checkbox', { name: /I physically received and verified every selected/ }).check()
+    await expect(firstPhysicalReturn.getByRole('button', { name: 'Confirm physical return received' })).toBeEnabled()
     await recoverCommittedTransferCommand(recipientPage, `${transferPath}/confirm-return`,
-      () => physicalReturn.getByRole('button', { name: 'Confirm physical return received' }).click(), 'Reconciliation required')
+      () => firstPhysicalReturn.getByRole('button', { name: 'Confirm physical return received' }).click(), 'Reconciliation required')
     await expect.poll(async () => {
       const current = await read<Transfer>(recipient!.context, transferPath)
-      return current.lines.map(item => [item.requestedQuantity, item.quantities.physicallyReturned]).sort((left, right) => left[0]! - right[0]!)
-    }).toEqual([[5, 5], [20, 2]])
+      return current.lines.map(item => [item.requestedQuantity, item.quantities.physicallyReturned, item.quantities.outstanding]).sort((left, right) => left[0]! - right[0]!)
+    }).toEqual([[5, 0, 5], [20, 2, 0]])
+    const activeAfterFirstReceipt = await read<{ items: { lineId: string, unsettledQuantity: number }[] }>(
+      recipient!.context, `${transferPath}/active-returns`)
+    expect(activeAfterFirstReceipt.items).toEqual([{ lineId: fiveUnitLine.id, unsettledQuantity: 5 }])
+    await recipientPage.reload()
+    const secondPhysicalReturn = recipientPage.getByRole('form', { name: `Confirm physical return request RETURN-${suffix}` })
+    await expect(secondPhysicalReturn).toBeVisible()
+    await secondPhysicalReturn.getByLabel('Physical receipt reference').fill(`RETURN-${suffix}-B`)
+    await secondPhysicalReturn.getByLabel(`Return document line for line ${fiveUnitLine.lineNumber}`).fill(`return-line-${suffix}-B`)
+    await secondPhysicalReturn.getByLabel('Reason for physical return').fill('Physically counted the five returned packages for line B the following day')
+    await secondPhysicalReturn.getByLabel('Evidence reference').fill(`source-return-receipt:${suffix}:B`)
+    await secondPhysicalReturn.getByRole('checkbox', { name: /I physically received and verified every selected/ }).check()
+    await expect(secondPhysicalReturn.getByRole('button', { name: 'Confirm physical return received' })).toBeEnabled()
+    await recoverCommittedTransferCommand(recipientPage, `${transferPath}/confirm-return`,
+      () => secondPhysicalReturn.getByRole('button', { name: 'Confirm physical return received' }).click(), 'Reconciliation required')
+    await expect.poll(async () => {
+      const current = await read<Transfer>(recipient!.context, transferPath)
+      return current.lines.map(item => [item.requestedQuantity, item.quantities.physicallyReturned, item.quantities.outstanding]).sort((left, right) => left[0]! - right[0]!)
+    }).toEqual([[5, 5, 0], [20, 2, 0]])
+    expect((await read<{ items: unknown[] }>(recipient!.context, `${transferPath}/active-returns`)).items).toHaveLength(0)
     await expect(recipientPage.getByText(/RETURN.*2 units/)).toBeVisible()
     await expect(recipientPage.getByText(/RETURN.*5 units/)).toBeVisible()
     await page.reload()
@@ -293,23 +321,25 @@ test('store operators complete, recover and reconcile a physical stock transfer 
         payload: { requestId: randomUUID(), expectedVersion: closedBeforeRetry.version,
           reason: 'Keep an owner-only command draft for account boundary verification', evidenceReference: `owner-only:${suffix}` },
       }, 200)
+    const isolatedRequestId = isolatedPending.requestId
+    if (isolatedPending.redacted || !isolatedRequestId) throw new Error('Owner command summary was unexpectedly redacted')
     expect((await read<components['schemas']['TransferCommandIntentPage']>(recipient!.context,
       `${organizationPath}/transfer-command-intents`)).items).toHaveLength(0)
     if (!recoveryContext) throw new Error('Owner recovery session was not created')
     await page.evaluate(({ organizationId, intent }) => {
       sessionStorage.setItem(`stockrescue.transfer-command.${organizationId}`, JSON.stringify({ intent, savedAt: new Date().toISOString() }))
     }, { organizationId: organization, intent: { operation: 'CLOSE', transferId,
-      body: { requestId: isolatedPending.requestId, expectedVersion: closedBeforeRetry.version,
+      body: { requestId: isolatedRequestId, expectedVersion: closedBeforeRetry.version,
         reason: 'Legacy browser-only transfer draft', evidenceReference: `legacy:${suffix}` } } })
     await switchSession(page, recipient!.context, `/organizations/${organization}/transfers/${transferId}`)
     await expect(page.getByRole('heading', { name: /^Transfer [0-9a-f-]+$/i })).toBeVisible()
     await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toHaveCount(0)
-    await expect(page.getByText(isolatedPending.requestId)).toHaveCount(0)
+    await expect(page.getByText(isolatedRequestId)).toHaveCount(0)
     expect(await page.evaluate(() => Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
       .filter(key => key?.startsWith('stockrescue.transfer-command.')))).toHaveLength(0)
     await switchSession(page, owner.context, `/organizations/${organization}/transfers/${transferId}`)
     await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toBeVisible()
-    await expect(page.getByText(isolatedPending.requestId)).toBeVisible()
+    await expect(page.getByText(isolatedRequestId)).toBeVisible()
 
     await expect(page.getByText(/Closed with discrepancy · version/)).toBeVisible()
     await expect(page.getByText(/Actor .* outstanding 2 → 0/)).toBeVisible()

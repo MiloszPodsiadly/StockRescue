@@ -367,6 +367,38 @@ class TransferPersistenceTest {
                 """, discrepancyCommand));
     }
 
+    @Test
+    void transferQueueAndInTransitReadModelsReturnStablePagesBeyondOneHundredRows() {
+        var fixture = fixture();
+        for (int index = 0; index < 101; index++) seedDispatchedTransfer(fixture, 1);
+
+        var queueFirst = transfers.page(fixture.organizationId(), fixture.sourceStoreId(), null, 0, 50);
+        var queueSecond = transfers.page(fixture.organizationId(), fixture.sourceStoreId(), null, 50, 50);
+        var queueThird = transfers.page(fixture.organizationId(), fixture.sourceStoreId(), null, 100, 50);
+        assertThat(queueFirst.items()).hasSize(50);
+        assertThat(queueFirst.hasMore()).isTrue();
+        assertThat(queueSecond.items()).hasSize(50);
+        assertThat(queueSecond.hasMore()).isTrue();
+        assertThat(queueThird.items()).hasSize(1);
+        assertThat(queueThird.hasMore()).isFalse();
+        var transferIds = java.util.stream.Stream.of(queueFirst, queueSecond, queueThird)
+                .flatMap(page -> page.items().stream()).map(TransferRepository.TransferSummary::id).toList();
+        assertThat(transferIds).hasSize(101).doesNotHaveDuplicates();
+
+        var transitFirst = transfers.inTransitAging(fixture.organizationId(), fixture.sourceStoreId(), 0, 50);
+        var transitSecond = transfers.inTransitAging(fixture.organizationId(), fixture.sourceStoreId(), 50, 50);
+        var transitThird = transfers.inTransitAging(fixture.organizationId(), fixture.sourceStoreId(), 100, 50);
+        assertThat(transitFirst.items()).hasSize(50);
+        assertThat(transitFirst.hasMore()).isTrue();
+        assertThat(transitSecond.items()).hasSize(50);
+        assertThat(transitSecond.hasMore()).isTrue();
+        assertThat(transitThird.items()).hasSize(1);
+        assertThat(transitThird.hasMore()).isFalse();
+        var lineKeys = java.util.stream.Stream.of(transitFirst, transitSecond, transitThird)
+                .flatMap(page -> page.items().stream()).map(item -> item.transferId() + ":" + item.lineId()).toList();
+        assertThat(lineKeys).hasSize(101).doesNotHaveDuplicates();
+    }
+
     private static boolean settleConcurrently(Fixture fixture, TransferSeed dispatched, UUID commandId,
             CountDownLatch ready, CountDownLatch release) throws Exception {
         ready.countDown();
@@ -415,7 +447,7 @@ class TransferPersistenceTest {
             var pick = recordTransferCommand(fixture, transfer.transferId(), "PICK", null);
             var pickedVersion = inventory.position(fixture.organizationId(), fixture.sourceStoreId(),
                     fixture.sourcePositionId(), true).orElseThrow().version();
-            insertPhysicalDocument(fixture, transfer, "PICK", "SOURCE", "pick-doc", "PICKED", quantity,
+            insertPhysicalDocument(fixture, transfer, "PICK", "SOURCE", "pick-doc-" + transfer.transferId(), "PICKED", quantity,
                     pick, pickedVersion);
             transfers.advanceStatus(fixture.organizationId(), transfer.transferId(), 2, TransferStatus.PICKED,
                     pick, fixture.actorId(), fixture.membershipId(), "Confirm full line pick", "pick-doc");
@@ -433,7 +465,7 @@ class TransferPersistenceTest {
             transfers.appendCustodyMovement(custody(fixture, transfer, dispatch, 0,
                     TransferMovementType.DISPATCH, quantity, new StockLink(fixture.sourceStoreId(),
                             out.movementId(), fixture.sourcePositionId())));
-            insertPhysicalDocument(fixture, transfer, "DISPATCH", "SOURCE", "dispatch-doc", "COUNTED", quantity,
+            insertPhysicalDocument(fixture, transfer, "DISPATCH", "SOURCE", "dispatch-doc-" + transfer.transferId(), "COUNTED", quantity,
                     dispatch, null);
             transfers.advanceStatus(fixture.organizationId(), transfer.transferId(), 3, TransferStatus.IN_TRANSIT,
                     dispatch, fixture.actorId(), fixture.membershipId(), "Dispatch full transfer", "dispatch-doc");

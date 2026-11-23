@@ -14,7 +14,13 @@ public class TransferCommandIntentRepository {
             String operation, UUID requestId, byte[] fingerprint, String payload, String state,
             Instant preparedAt, Instant executedAt, Instant resolvedAt) { }
 
-    public record Pending(UUID id, String operation, UUID transferId, UUID requestId, String state, Instant preparedAt) { }
+    public record CommandBinding(UUID transferId, byte[] fingerprint, String state) {
+        public CommandBinding { fingerprint = fingerprint.clone(); }
+        @Override public byte[] fingerprint() { return fingerprint.clone(); }
+    }
+
+    public record Pending(UUID id, String operation, UUID transferId, UUID requestId, String state, Instant preparedAt,
+            String payload) { }
 
     private final JdbcClient jdbc;
 
@@ -46,6 +52,18 @@ public class TransferCommandIntentRepository {
                 .query((row, index) -> map(row)).optional();
     }
 
+    public Optional<CommandBinding> lockCommandIntent(UUID organizationId, UUID actorId, String operation, UUID requestId) {
+        return jdbc.sql("""
+                SELECT transfer_id,payload_fingerprint,state
+                FROM stockrescue.transfer_command_intent
+                WHERE org_id=:org AND actor_user_id=:actor AND operation=:operation AND request_id=:request
+                FOR UPDATE
+                """)
+                .param("org", organizationId).param("actor", actorId).param("operation", operation).param("request", requestId)
+                .query((row, index) -> new CommandBinding(row.getObject("transfer_id", UUID.class),
+                        row.getBytes("payload_fingerprint"), row.getString("state"))).optional();
+    }
+
     public Optional<Intent> activeByActor(UUID organizationId, UUID actorId) {
         return jdbc.sql("SELECT * FROM stockrescue.transfer_command_intent WHERE org_id=:org AND actor_user_id=:actor AND state IN ('PREPARED','SUBMITTED')")
                 .param("org", organizationId).param("actor", actorId)
@@ -54,7 +72,7 @@ public class TransferCommandIntentRepository {
 
     public List<Pending> pending(UUID organizationId, UUID actorId) {
         return jdbc.sql("""
-                SELECT id,operation,transfer_id,request_id,state,prepared_at
+                SELECT id,operation,transfer_id,request_id,state,prepared_at,payload::text AS payload
                 FROM stockrescue.transfer_command_intent
                 WHERE org_id=:org AND actor_user_id=:actor AND state IN ('PREPARED','SUBMITTED')
                 ORDER BY prepared_at,id LIMIT 2
@@ -62,16 +80,19 @@ public class TransferCommandIntentRepository {
                 .param("org", organizationId).param("actor", actorId)
                 .query((row, index) -> new Pending(row.getObject("id", UUID.class), row.getString("operation"),
                         row.getObject("transfer_id", UUID.class), row.getObject("request_id", UUID.class),
-                        row.getString("state"), row.getTimestamp("prepared_at").toInstant())).list();
+                        row.getString("state"), row.getTimestamp("prepared_at").toInstant(), row.getString("payload"))).list();
     }
 
     public boolean hasCommittedCommand(Intent intent) {
-        return jdbc.sql("""
+        String targetClause = intent.transferId() == null ? "" : " AND transfer_id=:transfer";
+        var query = jdbc.sql("""
                 SELECT EXISTS (SELECT 1 FROM stockrescue.transfer_command_receipt
-                WHERE org_id=:org AND actor_user_id=:actor AND operation=:operation AND request_id=:request)
-                """)
+                WHERE org_id=:org AND actor_user_id=:actor AND operation=:operation AND request_id=:request
+                """ + targetClause + ")")
                 .param("org", intent.organizationId()).param("actor", intent.actorId()).param("operation", intent.operation())
-                .param("request", intent.requestId()).query(Boolean.class).single();
+                .param("request", intent.requestId());
+        if (intent.transferId() != null) query = query.param("transfer", intent.transferId());
+        return query.query(Boolean.class).single();
     }
 
     public boolean hasCommittedCommand(UUID organizationId, UUID actorId, String operation, UUID requestId) {
@@ -89,7 +110,7 @@ public class TransferCommandIntentRepository {
         return jdbc.sql("""
                 UPDATE stockrescue.transfer_command_intent i
                 SET state='ACKNOWLEDGED',executed_at=clock_timestamp(),resolved_at=clock_timestamp()
-                WHERE i.org_id=:org AND i.actor_user_id=:actor AND i.id=:id AND i.state='SUBMITTED'
+                WHERE i.org_id=:org AND i.actor_user_id=:actor AND i.id=:id AND i.state IN ('PREPARED','SUBMITTED')
                   AND EXISTS (SELECT 1 FROM stockrescue.transfer_command_receipt c
                     WHERE c.org_id=i.org_id AND c.actor_user_id=i.actor_user_id
                       AND c.operation=i.operation AND c.request_id=i.request_id
