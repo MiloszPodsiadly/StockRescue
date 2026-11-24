@@ -212,14 +212,23 @@ test('store operators complete, recover and reconcile a physical stock transfer 
     })
 
     const receiving = page.getByRole('form', { name: `Receive line ${twentyUnitLine.lineNumber}` })
+    let receiptPayload: Record<string, unknown> | undefined
+    page.on('request', request => {
+      if (request.method() === 'POST' && request.url().endsWith(`/transfers/${transferId}/receive`)) {
+        receiptPayload = request.postDataJSON() as Record<string, unknown>
+      }
+    })
     await receiving.getByLabel('Physical quantity received (EA)').fill('10')
     await receiving.getByLabel('Receiving document reference').fill(`RECEIVE-${suffix}`)
     await receiving.getByLabel('Document line reference').fill(`receive-line-${suffix}`)
     await receiving.getByLabel('Reason for receipt').fill('Counted ten sound packages at the destination dock')
     await receiving.getByLabel('Evidence reference').fill(`receiving-proof:${suffix}`)
     await receiving.getByRole('checkbox').check()
+    await page.clock.setFixedTime(new Date(Date.now() + 2 * 60_000))
     await recoverCommittedTransferCommand(page, `${transferPath}/receive`,
       () => receiving.getByRole('button', { name: 'Record 10 physical units received' }).click(), 'Partially received')
+    expect(receiptPayload).toBeDefined()
+    expect(receiptPayload).not.toHaveProperty('physicallyReceivedAt')
     const twentyUnitLineView = page.getByRole('listitem').filter({
       hasText: `Line ${twentyUnitLine.lineNumber} · ${twentyUnitLine.sku} · lot ${twentyUnitLine.lotCode}`,
     })
@@ -540,8 +549,17 @@ async function exerciseArchivedDestinationReturnRecovery(page: Page, context: Br
   expect(transfer.status).toBe('IN_TRANSIT')
 
   setStoreActiveInCompose(organization, destination.id, false)
-  await page.goto(`/organizations/${organization}/transfers/${transfer.id}`)
+  await page.goto(`/organizations/${organization}/transfers/historical`)
+  await expect(page.getByRole('heading', { name: 'Historical transfers', exact: true })).toBeVisible()
+  const historicalRecord = page.getByRole('listitem').filter({ hasText: `Transfer ${created.transferId}` })
+  await expect(historicalRecord).toHaveCount(1)
+  await expect(historicalRecord).toContainText(`${destination.code} · ${destination.name}`)
+  await expect(historicalRecord).toContainText('Archived')
+  await historicalRecord.getByRole('link', { name: 'Open historical transfer' }).click()
   await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toHaveCount(0)
+  await expect(page.getByText(`${source.code} · ${source.name}`)).toBeVisible()
+  await expect(page.getByText(`${destination.code} · ${destination.name}`)).toBeVisible()
+  await expect(page.getByText('Archived')).toHaveCount(1)
   await expect(page.getByRole('note', { name: 'Administrative historical settlement' })).toBeVisible()
   const returnRequest = page.getByRole('form', { name: 'Request physical return' })
   await expect(returnRequest).toBeVisible()

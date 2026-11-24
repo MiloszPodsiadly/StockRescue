@@ -2672,6 +2672,10 @@ CREATE TABLE stockrescue.transfer_physical_document (
     recorded_by_user_id UUID NOT NULL,
     membership_id UUID NOT NULL,
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp() CHECK (isfinite(recorded_at)),
+    physical_event_at TIMESTAMPTZ CHECK (physical_event_at IS NULL OR isfinite(physical_event_at)),
+    CONSTRAINT transfer_document_physical_event_time CHECK (
+        (document_type='RECEIPT' AND physical_event_at IS NOT NULL)
+        OR (document_type<>'RECEIPT' AND physical_event_at IS NULL)),
     CONSTRAINT transfer_document_store_side CHECK (
         (store_side='SOURCE' AND document_store_id=source_store_id)
         OR (store_side='DESTINATION' AND document_store_id=destination_store_id)),

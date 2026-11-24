@@ -89,7 +89,7 @@ final class TransferRequestNormalizer {
 
     static ReceiveRequest normalize(ReceiveRequest request) {
         if (request == null || request.requestId() == null || request.expectedVersion() < 0
-                || request.expectedVersion() == Long.MAX_VALUE || request.physicallyReceivedAt() == null
+                || request.expectedVersion() == Long.MAX_VALUE
                 || request.lines() == null || request.lines().isEmpty() || request.lines().size() > MAX_LINES)
             throw new InventoryFailure(InventoryFailure.Kind.INVALID_REQUEST);
         var ids = new java.util.HashSet<UUID>();
@@ -106,7 +106,8 @@ final class TransferRequestNormalizer {
         }
         lines.sort(Comparator.comparing(ReceiveLine::lineId));
         return new ReceiveRequest(request.requestId(), request.expectedVersion(), text(request.documentReference(), 200),
-                request.physicallyReceivedAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS), List.copyOf(lines),
+                request.physicallyReceivedAt() == null ? null
+                        : request.physicallyReceivedAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS), List.copyOf(lines),
                 text(request.reason(), 500), text(request.evidenceReference(), 256));
     }
 

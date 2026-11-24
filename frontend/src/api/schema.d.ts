@@ -1372,6 +1372,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/{organizationId}/transfers/historical": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List historical transfers involving archived stores
+         * @description Organization administrators only. Includes transfers with at least one archived participant across all lifecycle states; the optional status filter is bound to the organization-scoped keyset cursor.
+         */
+        get: operations["listHistoricalTransfers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/{organizationId}/transfers/in-transit": {
         parameters: {
             query?: never;
@@ -2389,6 +2409,17 @@ export interface components {
             matches: components["schemas"]["GtinMatchResponse"][];
             /** Format: int32 */
             offset: number;
+        };
+        HistoricalTransferQueueItem: {
+            destination: components["schemas"]["TransferParticipantMetadata"];
+            source: components["schemas"]["TransferParticipantMetadata"];
+            transfer: components["schemas"]["TransferQueueItem"];
+        };
+        HistoricalTransferQueuePage: {
+            hasMore: boolean;
+            items: components["schemas"]["HistoricalTransferQueueItem"][];
+            /** @description Cursor for the next historical page, or null when complete */
+            nextCursor: string | null;
         };
         IntentInspectionResponse: {
             committedOutcome: components["schemas"]["InventoryCommandResponse"] | null;
@@ -3543,6 +3574,10 @@ export interface components {
             /** Format: uuid */
             requestId: string;
         };
+        TransferHistoricalParticipants: {
+            destination: components["schemas"]["TransferParticipantMetadata"];
+            source: components["schemas"]["TransferParticipantMetadata"];
+        };
         TransferInTransitLine: {
             /** Format: int64 */
             ageSeconds: number;
@@ -3657,6 +3692,14 @@ export interface components {
             hasMore?: boolean;
             items?: components["schemas"]["TransferParkedDiagnostic"][];
         };
+        TransferParticipantMetadata: {
+            /** @description False when the participant store is archived */
+            active: boolean;
+            code: string;
+            /** Format: uuid */
+            id: string;
+            name: string;
+        };
         TransferPickRequest: {
             documentReference: string;
             evidenceReference: string;
@@ -3728,7 +3771,7 @@ export interface components {
             expectedVersion: number;
             lines: components["schemas"]["TransferReceiveLineRequest"][];
             /** Format: date-time */
-            physicallyReceivedAt: string;
+            physicallyReceivedAt?: string;
             reason: string;
             /** Format: uuid */
             requestId: string;
@@ -3739,6 +3782,7 @@ export interface components {
             createdAt: string;
             /** Format: uuid */
             destinationStoreId: string;
+            historicalParticipants?: components["schemas"]["TransferHistoricalParticipants"] | null;
             /** Format: uuid */
             id: string;
             /** Format: int64 */
@@ -12838,6 +12882,87 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TransferDiscrepancyPage"];
+                };
+            };
+            /** @description Invalid transfer request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Current transfer action or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Transfer or current store context unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Stale state, stock conflict or changed retry payload */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+            /** @description Invalid evidence, stock safety or transfer context */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ApiProblem"];
+                };
+            };
+        };
+    };
+    listHistoricalTransfers: {
+        parameters: {
+            query?: {
+                status?: "REQUESTED" | "REJECTED" | "CANCELLED" | "APPROVED" | "PICKING" | "PICKED" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECONCILIATION_REQUIRED" | "RECEIVED" | "CLOSED_WITH_DISCREPANCY";
+                limit?: number;
+                /** @description Opaque cursor for this organization's archived-participant filter and optional status */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Historical transfers with authorized store labels */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistoricalTransferQueuePage"];
                 };
             };
             /** @description Invalid transfer request */

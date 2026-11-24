@@ -17,18 +17,19 @@ import { lookupLane } from '@/api/configuration'
 import {
   acknowledgeTransferCommandIntent, executeTransferCommand, getTransfer, inspectTransferCommandIntent,
   getTransferCapabilities, isTransferCommandIntent, listActiveTransferReturns, listPendingTransferCommandIntents, listTransferCustody, listTransferDiscrepancies,
-  getTransferSettlementPositions, listTransferInTransit, listTransferScopedDiscrepancies, listTransfers, listTransfersInTransit, markTransferCommandIntentSubmitted, prepareTransferCommandIntent,
+  getTransferSettlementPositions, listHistoricalTransfers, listTransferInTransit, listTransferScopedDiscrepancies, listTransfers, listTransfersInTransit, markTransferCommandIntentSubmitted, prepareTransferCommandIntent,
   resolveFailedTransferCommandIntent,
 } from '@/api/transfers'
 import type {
   Transfer, TransferCommandIntent, TransferCommandIntentInspection, TransferCustodyMovement, TransferDiscrepancyRecord,
-  TransferInTransitLine, TransferQueueItem, TransferStatus,
+  HistoricalTransferQueueItem, TransferInTransitLine, TransferQueueItem, TransferStatus,
 } from '@/api/transfers'
 import { OrganizationPage } from '../organizations/organization-page'
 import { useOrganization } from '../organizations/organization-context'
 import { useTenantKey } from '../organizations/tenant-requests'
 import { formatTransferAge, transferStatusLabel, transferStatusOptions } from './transfer-format'
 import { loadStoreCursorPages, TransferRequestScheduler } from './transfer-pagination'
+import { reconcileTransferSummaries } from './transfer-summary-reconciliation'
 import type { StoreCursorStates } from './transfer-pagination'
 
 type DraftTransferLine = { id: string, sourcePositionId: string, destinationLocationId: string, quantity: string }
@@ -53,12 +54,27 @@ function uncertainOutcome(error: unknown) {
 
 function outstanding(line: Transfer['lines'][number]) { return line.quantities.outstanding ?? 0 }
 
+async function hasAnyTransferReadAccess(organizationId: string, signal: AbortSignal): Promise<boolean | null> {
+  const pageSize = 100
+  for (let offset = 0; offset <= 10_000; offset += pageSize) {
+    const page = await listStores(organizationId, 'ACTIVE', '', offset, signal, pageSize)
+    if (page.items.some(store => store.active && store.allowedActions.includes('READ_TRANSFERS'))) return true
+    if (!page.hasMore) return false
+  }
+  return null
+}
+
 export function TransfersPage() {
   const { organizationId, transferId } = useParams({ strict: false })
   return <OrganizationPage organizationId={organizationId}>{organizationId && <TransferWorkspace key={organizationId} organizationId={organizationId} transferId={transferId} />}</OrganizationPage>
 }
 
-function TransferWorkspace({ organizationId, transferId }: { organizationId: string, transferId?: string }) {
+export function HistoricalTransfersPage() {
+  const { organizationId } = useParams({ strict: false })
+  return <OrganizationPage organizationId={organizationId}>{organizationId && <TransferWorkspace key={organizationId} organizationId={organizationId} historicalOnly />}</OrganizationPage>
+}
+
+function TransferWorkspace({ organizationId, transferId, historicalOnly = false }: { organizationId: string, transferId?: string, historicalOnly?: boolean }) {
   const client = useQueryClient()
   const navigate = useNavigate()
   const scope = useTenantKey()
@@ -76,20 +92,24 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
   const pendingIntents = useQuery({
     queryKey: pendingIntentKey,
     queryFn: ({ signal }) => listPendingTransferCommandIntents(organizationId, signal),
-    retry: false, refetchOnWindowFocus: true, staleTime: 0, gcTime: 0,
+    enabled: !historicalOnly, retry: false, refetchOnWindowFocus: true, staleTime: 0, gcTime: 0,
   })
   const pendingCommand = pendingIntents.data?.items[0]
   const commandBlocked = commandBusy || Boolean(pendingCommand) || pendingIntents.isPending || pendingIntents.isError
   const stores = useInfiniteQuery({
-    queryKey: [...scope, 'stores', 'transfer-workspace', storeSearch], enabled: !transferId, initialPageParam: 0,
+    queryKey: [...scope, 'stores', 'transfer-workspace', storeSearch], enabled: !transferId && !historicalOnly, initialPageParam: 0,
     queryFn: ({ signal, pageParam }) => listStores(organizationId, 'ACTIVE', storeSearch, pageParam, signal),
     getNextPageParam: (page, pages) => page.hasMore ? pages.length * 25 : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
   const storeItems = (stores.data?.pages ?? []).flatMap(page => page.items)
   const readableStores = uniqueBy(storeItems.filter(store => store.active && store.allowedActions.includes('READ_TRANSFERS')), store => store.id)
   const queueStoreIds = (storeFilter ? readableStores.filter(store => store.id === storeFilter) : readableStores).map(store => store.id)
+  const transferReadAccess = useQuery({
+    queryKey: [...scope, 'stores', 'transfer-read-access'], enabled: !transferId && !historicalOnly && readableStores.length === 0,
+    queryFn: ({ signal }) => hasAnyTransferReadAccess(organizationId, signal), retry: false, refetchOnWindowFocus: true, staleTime: 0,
+  })
   const queue = useInfiniteQuery({
-    queryKey: [...scope, 'transfers', 'queue', storeSearch, status, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
+    queryKey: [...scope, 'transfers', 'queue', storeSearch, status, queueStoreIds], enabled: !transferId && !historicalOnly && queueStoreIds.length > 0,
     initialPageParam: {} as StoreCursorStates,
     queryFn: ({ signal, pageParam }) => loadStoreCursorPages(queueStoreIds, pageParam,
       (storeId, cursor, requestSignal) => listTransfers(organizationId, storeId, status, requestSignal ?? signal, cursor, 50),
@@ -97,7 +117,7 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
     getNextPageParam: page => page.hasMore ? page.nextCursors : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
   const transit = useInfiniteQuery({
-    queryKey: [...scope, 'transfers', 'in-transit', storeSearch, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
+    queryKey: [...scope, 'transfers', 'in-transit', storeSearch, queueStoreIds], enabled: !transferId && !historicalOnly && queueStoreIds.length > 0,
     initialPageParam: {} as StoreCursorStates,
     queryFn: ({ signal, pageParam }) => loadStoreCursorPages(queueStoreIds, pageParam,
       (storeId, cursor, requestSignal) => listTransfersInTransit(organizationId, storeId, requestSignal ?? signal, cursor, 50),
@@ -105,17 +125,23 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
     getNextPageParam: page => page.hasMore ? page.nextCursors : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
   const evidence = useInfiniteQuery({
-    queryKey: [...scope, 'transfers', 'evidence', storeSearch, queueStoreIds], enabled: !transferId && queueStoreIds.length > 0,
+    queryKey: [...scope, 'transfers', 'evidence', storeSearch, queueStoreIds], enabled: !transferId && !historicalOnly && queueStoreIds.length > 0,
     initialPageParam: {} as StoreCursorStates,
     queryFn: ({ signal, pageParam }) => loadStoreCursorPages(queueStoreIds, pageParam,
       (storeId, cursor, requestSignal) => listTransferDiscrepancies(organizationId, storeId, requestSignal ?? signal, cursor, 50),
       transferRequestScheduler, signal),
     getNextPageParam: page => page.hasMore ? page.nextCursors : undefined, refetchOnWindowFocus: true, staleTime: 0,
   })
-  const queueItems = uniqueBy((queue.data?.pages ?? []).flatMap(page => page.items), item => item.id)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id))
+  const queueItems = reconcileTransferSummaries((queue.data?.pages ?? []).flatMap(page => page.items))
   const transitItems = uniqueBy((transit.data?.pages ?? []).flatMap(page => page.items), item => `${item.transferId}:${item.lineId}`)
   const evidenceItems = uniqueBy((evidence.data?.pages ?? []).flatMap(page => page.items), item => item.id)
+  const historical = useInfiniteQuery({
+    queryKey: [...scope, 'transfers', 'historical', status], enabled: historicalOnly && organization.role === 'ORG_ADMIN',
+    initialPageParam: null as string | null,
+    queryFn: ({ signal, pageParam }) => listHistoricalTransfers(organizationId, status, signal, pageParam, 50),
+    getNextPageParam: page => page.hasMore ? page.nextCursor ?? undefined : undefined, refetchOnWindowFocus: true, staleTime: 0,
+  })
+  const historicalItems = (historical.data?.pages ?? []).flatMap(page => page.items)
   const detail = useQuery({ queryKey: [...scope, 'transfers', 'detail', transferId], enabled: Boolean(transferId), queryFn: ({ signal }) => getTransfer(organizationId, transferId!, signal), refetchOnWindowFocus: true, staleTime: 0 })
 
   async function refreshTransferData() {
@@ -259,9 +285,9 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
   const storeMap = useMemo(() => new Map(storeItems.map(store => [store.id, store])), [storeItems])
   const transfersHref = `/organizations/${organizationId}/transfers`
   return <section className="space-y-7">
-    <header className="space-y-2"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Stock movement between stores</p><h2 className="text-3xl font-semibold">Stock transfers</h2><p className="max-w-3xl text-sm text-muted-foreground">Review each request, physical handoff and receiving event against its saved stock and custody records.</p></header>
-    {pendingIntents.isError && <div role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">The server could not confirm whether a transfer command is awaiting recovery. New transfer commands are paused until this check succeeds. <Button variant="outline" onClick={() => { void pendingIntents.refetch() }}>Check saved commands again</Button></div>}
-    {pendingCommand && <section aria-label="Recover saved transfer command" className="space-y-3 rounded-2xl border border-amber-500/50 bg-card p-5">
+    <header className="space-y-2"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">{historicalOnly ? 'Administrative transfer history' : 'Stock movement between stores'}</p><h2 className="text-3xl font-semibold">{historicalOnly ? 'Historical transfers' : 'Stock transfers'}</h2><p className="max-w-3xl text-sm text-muted-foreground">{historicalOnly ? 'Find existing transfers that involve an archived store, review their custody history, and continue only with settlement actions authorized by the server.' : 'Review each request, physical handoff and receiving event against its saved stock and custody records.'}</p></header>
+    {!historicalOnly && pendingIntents.isError && <div role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">The server could not confirm whether a transfer command is awaiting recovery. New transfer commands are paused until this check succeeds. <Button variant="outline" onClick={() => { void pendingIntents.refetch() }}>Check saved commands again</Button></div>}
+    {!historicalOnly && pendingCommand && <section aria-label="Recover saved transfer command" className="space-y-3 rounded-2xl border border-amber-500/50 bg-card p-5">
       <div><h3 className="text-lg font-semibold">A transfer command needs review</h3><p className="mt-2 text-sm text-muted-foreground">{pendingCommand.redacted
         ? 'Your access changed. The command is still recoverable, with transfer details and its saved request hidden.'
         : `${pendingCommand.operation} · request key ${pendingCommand.requestId}. The exact command is stored on the server for this account and organization, so recovery can continue after this tab closes.`}</p></div>
@@ -270,22 +296,32 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
         {pendingInspection?.redacted && <Button disabled={commandBusy} onClick={() => { void resolveRedactedCommand() }}>{commandBusy ? 'Resolving saved command…' : 'Resolve without transfer details'}</Button>}
         {recoveryMissing && pendingInspection && !pendingInspection.redacted && <Button disabled={commandBusy} onClick={() => { void retrySavedCommand() }}>{commandBusy ? 'Retrying saved command…' : 'Retry exact saved command'}</Button>}</div>
     </section>}
-    {!pendingCommand && commandNotice && <p role="status" className="rounded-xl border border-border p-4 text-sm">{commandNotice}</p>}
-    {!pendingCommand && commandError && <p role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">{commandError}</p>}
+    {!historicalOnly && !pendingCommand && commandNotice && <p role="status" className="rounded-xl border border-border p-4 text-sm">{commandNotice}</p>}
+    {!historicalOnly && !pendingCommand && commandError && <p role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">{commandError}</p>}
     {transferId ? detail.isPending ? <StateMessage state="loading" title="Loading transfer record" description="Confirming the current transfer and your participating-store access." />
       : detail.isError ? <div className="space-y-4"><StateMessage state={detail.error instanceof ApiError && detail.error.status === 403 ? 'forbidden' : 'unavailable'} title="Transfer unavailable" description={errorMessage(detail.error)} /><Button variant="outline" onClick={() => { void detail.refetch() }}>Retry transfer read</Button><AppLink href={transfersHref} className="inline-flex text-primary underline">Back to transfers</AppLink></div>
         : <TransferDetailView organizationId={organizationId} transfer={detail.data} stores={[...storeMap.values()]} onCommand={runIntent} busy={commandBlocked} onRefresh={refreshTransferData} />
-      : stores.isPending ? <StateMessage state="loading" title="Checking transfer access" description="Resolving your current store permissions." />
-        : stores.isError ? <div className="space-y-4"><StateMessage state={stores.error instanceof ApiError && stores.error.status === 403 ? 'forbidden' : 'unavailable'} title="Transfer workspace unavailable" description={errorMessage(stores.error)} /><Button variant="outline" onClick={() => { void stores.refetch() }}>Retry store access</Button></div>
-          : readableStores.length === 0 ? <StateMessage state="forbidden" title="No transfer access for these stores" description="Ask an organization administrator to grant transfer reading and the actions needed for your role." />
-            : <>
+      : historicalOnly ? organization.role !== 'ORG_ADMIN' ? <StateMessage state="forbidden" title="Historical transfers are restricted" description="Only organization administrators can find transfers involving archived stores." />
+        : historical.isPending ? <StateMessage state="loading" title="Loading historical transfers" description="Finding existing transfers that involve archived stores." />
+          : historical.isError ? <div className="space-y-4"><StateMessage state="unavailable" title="Historical transfers unavailable" description={errorMessage(historical.error)} /><Button variant="outline" onClick={() => { void historical.refetch() }}>Retry historical transfer search</Button></div>
+            : <div className="space-y-5"><AppLink href={transfersHref} className="inline-flex text-sm text-primary underline">Back to current transfer workspace</AppLink><Field label="Historical transfer status">{id => <select id={id} value={status} onChange={event => { setStatus(event.target.value as TransferStatus | '') }} className={inputClass}>{transferStatusOptions.map(option => <option key={option.value || 'all'} value={option.value}>{option.label}</option>)}</select>}</Field><HistoricalTransferQueue items={historicalItems} organizationId={organizationId} loading={historical.isFetching} onReload={() => { void historical.refetch() }} canLoadMore={Boolean(historical.hasNextPage)} loadingMore={historical.isFetchingNextPage} onLoadMore={() => { void historical.fetchNextPage() }} /></div>
+      : <>
               <div className="grid gap-4 rounded-2xl border border-border bg-card p-5 sm:grid-cols-2">
-                <Field label="Find a store">{id => <input id={id} type="search" value={storeSearch} onChange={event => { setStoreSearch(event.target.value); setStoreFilter('') }} className={inputClass} placeholder="Search accessible stores" />}</Field>
+                <Field label="Find a store">{id => <div className="flex gap-2"><input id={id} type="search" value={storeSearch} onChange={event => { setStoreSearch(event.target.value); setStoreFilter('') }} className={inputClass} placeholder="Search accessible stores" />{storeSearch && <Button type="button" variant="outline" onClick={() => { setStoreSearch(''); setStoreFilter('') }}>Clear search</Button>}</div>}</Field>
                 <Field label="Store queue">{id => <select id={id} value={storeFilter} onChange={event => { setStoreFilter(event.target.value) }} className={inputClass}><option value="">All matching stores loaded below</option>{readableStores.map(store => <option key={store.id} value={store.id}>{store.code} · {store.name}</option>)}</select>}</Field>
                 <Field label="Transfer status">{id => <select id={id} value={status} onChange={event => { setStatus(event.target.value as TransferStatus | '') }} className={inputClass}>{transferStatusOptions.map(option => <option key={option.value || 'all'} value={option.value}>{option.label}</option>)}</select>}</Field>
-                {stores.hasNextPage && <Button variant="outline" disabled={stores.isFetchingNextPage} onClick={() => { void stores.fetchNextPage() }}>{stores.isFetchingNextPage ? 'Loading stores…' : 'Load more accessible stores'}</Button>}
+                {!stores.isPending && !stores.isError && stores.hasNextPage && <Button type="button" variant="outline" disabled={stores.isFetchingNextPage} onClick={() => { void stores.fetchNextPage() }}>{stores.isFetchingNextPage ? 'Loading stores…' : 'Load more accessible stores'}</Button>}
               </div>
-              {queue.isPending ? <StateMessage state="loading" title="Loading transfer queue" description="Reading only stores where you currently have transfer access." />
+              {stores.isPending ? <StateMessage state="loading" title="Checking transfer access" description="Resolving your current store permissions." />
+                : stores.isError ? <div className="space-y-4"><StateMessage state={stores.error instanceof ApiError && stores.error.status === 403 ? 'forbidden' : 'unavailable'} title="Transfer workspace unavailable" description={errorMessage(stores.error)} /><Button variant="outline" onClick={() => { void stores.refetch() }}>Retry store access</Button></div>
+                : readableStores.length === 0 ? transferReadAccess.isPending ? <StateMessage state="loading" title="Checking transfer access" description="Checking your active store assignments before reporting that no transfers are available." />
+                : transferReadAccess.isError ? <div className="space-y-4"><StateMessage state="unavailable" title="Transfer access unavailable" description={errorMessage(transferReadAccess.error)} /><Button variant="outline" onClick={() => { void transferReadAccess.refetch() }}>Retry transfer access check</Button></div>
+                  : transferReadAccess.data === false ? <div className="space-y-3"><StateMessage state="forbidden" title="No transfer access for any active store" description="Ask an organization administrator to grant transfer reading for an active store." />{storeSearch && <Button type="button" variant="outline" onClick={() => { setStoreSearch(''); setStoreFilter('') }}>Clear search</Button>}</div>
+                    : transferReadAccess.data === null ? <StateMessage state="unavailable" title="Transfer access could not be confirmed" description="The store list exceeded the supported search range. Refine the store search or ask an organization administrator to review your access." />
+                      : storeSearch.trim() ? <div className="space-y-3"><StateMessage state="empty" title="No accessible stores match this search" description="Your account can read transfers in another active store. Clear the search or try a different store code or name." />{stores.hasNextPage && <p className="text-sm text-muted-foreground">More matching store results are available on the next page.</p>}</div>
+                        : stores.hasNextPage ? <StateMessage state="empty" title="No transfer access on this store page" description="Load more active stores to check whether your transfer access is assigned on a later page." />
+                          : <StateMessage state="forbidden" title="No transfer access for any active store" description="Ask an organization administrator to grant transfer reading for an active store." />
+                : queue.isPending ? <StateMessage state="loading" title="Loading transfer queue" description="Reading only stores where you currently have transfer access." />
                 : queue.isError ? <div className="space-y-4"><StateMessage state={queue.error instanceof ApiError && queue.error.status === 403 ? 'forbidden' : 'unavailable'} title="Transfer queue unavailable" description={errorMessage(queue.error)} /><Button variant="outline" onClick={() => { void queue.refetch() }}>Retry queue</Button></div>
                   : queueItems.length === 0 && transitItems.length === 0 && evidenceItems.length === 0 ? <StateMessage state="empty" title="No transfers in this view" description="Change the store or status filter, or create a request from verified available source stock." />
                     : <TransferQueue items={queueItems} stores={storeMap} transit={transitItems} discrepancies={evidenceItems} organizationId={organizationId}
@@ -297,6 +333,23 @@ function TransferWorkspace({ organizationId, transferId }: { organizationId: str
                       evidencePending={evidence.isPending} evidenceError={evidence.isError} retryEvidence={() => { void evidence.refetch() }} />}
               {readableStores.some(store => store.active && store.allowedActions.includes('REQUEST_TRANSFER')) && <CreateTransferPanel organizationId={organizationId} administrator={organization.role === 'ORG_ADMIN'} onCommand={runIntent} busy={commandBlocked} />}
             </>}
+  </section>
+}
+
+function HistoricalTransferQueue({ items, organizationId, loading, onReload, canLoadMore, loadingMore, onLoadMore }: {
+  items: HistoricalTransferQueueItem[], organizationId: string, loading: boolean, onReload: () => void,
+  canLoadMore: boolean, loadingMore: boolean, onLoadMore: () => void,
+}) {
+  const participantLabel = (participant: HistoricalTransferQueueItem['source']) => `${participant.code} · ${participant.name}`
+  return <section aria-label="Historical transfer queue" className="space-y-4">
+    <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-xl font-semibold">Historical settlement queue</h3><Button variant="outline" disabled={loading} onClick={onReload}>{loading ? 'Refreshing…' : 'Refresh historical transfers'}</Button></div>
+    {items.length === 0 && <p className="text-sm text-muted-foreground">No historical transfers match this status.</p>}
+    <ul className="grid gap-4">{items.map(({ transfer, source, destination }) => <li key={transfer.id} className="min-w-0 rounded-2xl border border-border bg-card p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><p className="font-semibold">{participantLabel(source)}{!source.active && <span className="ml-2 rounded-full border border-border px-2 py-0.5 text-xs">Archived</span>} <span aria-hidden="true">→</span> {participantLabel(destination)}{!destination.active && <span className="ml-2 rounded-full border border-border px-2 py-0.5 text-xs">Archived</span>}</p><p className="mt-2 break-all text-xs text-muted-foreground">Transfer {transfer.id} · updated {new Date(transfer.updatedAt).toLocaleString()}</p></div><span className="rounded-full border border-border px-3 py-1 text-sm">{transferStatusLabel(transfer.status)}</span></div>
+      <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm"><span>{transfer.lineCount} {transfer.lineCount === 1 ? 'line' : 'lines'}</span>{transfer.outstandingQuantity > 0 && <span>{transfer.outstandingQuantity} units outstanding</span>}</div>
+      <AppLink href={`/organizations/${organizationId}/transfers/${transfer.id}`} className="mt-4 inline-flex min-h-11 items-center rounded-lg text-primary underline underline-offset-4">Open historical transfer</AppLink>
+    </li>)}</ul>
+    {canLoadMore && <Button variant="outline" disabled={loadingMore} onClick={onLoadMore}>{loadingMore ? 'Loading historical transfers…' : 'Load more historical transfers'}</Button>}
   </section>
 }
 
@@ -352,26 +405,53 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
   onCommand: (intent: TransferCommandIntent) => Promise<void>, busy: boolean,
 }) {
   const scope = useTenantKey()
-  const [storeSearch, setStoreSearch] = useState('')
+  const [sourceStoreSearch, setSourceStoreSearch] = useState('')
+  const [destinationStoreSearch, setDestinationStoreSearch] = useState('')
   const [sourceStoreId, setSourceStoreId] = useState('')
   const [destinationStoreId, setDestinationStoreId] = useState('')
+  const [sourceStoreSelection, setSourceStoreSelection] = useState<Store | null>(null)
+  const [destinationStoreSelection, setDestinationStoreSelection] = useState<Store | null>(null)
   const [destinationLocationSearch, setDestinationLocationSearch] = useState('')
   const [lines, setLines] = useState<DraftTransferLine[]>([newDraftTransferLine()])
   const [reason, setReason] = useState('')
   const [evidenceReference, setEvidenceReference] = useState('')
   const [showForm, setShowForm] = useState(false)
-  const storesQuery = useInfiniteQuery({
-    queryKey: [...scope, 'transfer-create', 'stores', storeSearch], initialPageParam: 0,
-    queryFn: ({ signal, pageParam }) => listStores(organizationId, 'ACTIVE', storeSearch, pageParam, signal),
+  const sourceStoresQuery = useInfiniteQuery({
+    queryKey: [...scope, 'transfer-create', 'source-stores', sourceStoreSearch], initialPageParam: 0,
+    queryFn: ({ signal, pageParam }) => listStores(organizationId, 'ACTIVE', sourceStoreSearch, pageParam, signal),
     getNextPageParam: (page, pages) => page.hasMore ? pages.length * 25 : undefined, staleTime: 0,
   })
-  const stores = uniqueBy((storesQuery.data?.pages ?? []).flatMap(page => page.items), store => store.id)
-  const sourceStores = stores.filter(store => store.active && store.allowedActions.includes('REQUEST_TRANSFER') && store.allowedActions.includes('READ_INVENTORY'))
-  const selectedSourceStoreId = sourceStores.some(store => store.id === sourceStoreId) ? sourceStoreId : sourceStores[0]?.id ?? ''
-  const sourceStore = sourceStores.find(store => store.id === selectedSourceStoreId)
-  const destinations = stores.filter(store => store.active && store.id !== selectedSourceStoreId && store.allowedActions.includes('READ_STORE'))
-  const selectedDestinationStoreId = destinations.some(store => store.id === destinationStoreId) ? destinationStoreId : ''
-  const destinationStore = destinations.find(store => store.id === selectedDestinationStoreId)
+  const destinationStoresQuery = useInfiniteQuery({
+    queryKey: [...scope, 'transfer-create', 'destination-stores', destinationStoreSearch], initialPageParam: 0,
+    queryFn: ({ signal, pageParam }) => listStores(organizationId, 'ACTIVE', destinationStoreSearch, pageParam, signal),
+    getNextPageParam: (page, pages) => page.hasMore ? pages.length * 25 : undefined, staleTime: 0,
+  })
+  const sourceStores = uniqueBy((sourceStoresQuery.data?.pages ?? []).flatMap(page => page.items), store => store.id)
+    .filter(store => store.active && store.allowedActions.includes('REQUEST_TRANSFER') && store.allowedActions.includes('READ_INVENTORY'))
+  const destinationStores = uniqueBy((destinationStoresQuery.data?.pages ?? []).flatMap(page => page.items), store => store.id)
+    .filter(store => store.active && store.id !== sourceStoreId && store.allowedActions.includes('READ_STORE'))
+  const sourceStoreCandidates = uniqueBy([...sourceStores, ...(sourceStoreSelection?.id === sourceStoreId ? [sourceStoreSelection] : [])], store => store.id)
+  const destinationStoreCandidates = uniqueBy([...destinationStores, ...(destinationStoreSelection?.id === destinationStoreId ? [destinationStoreSelection] : [])], store => store.id)
+  const sourceSelection = useQuery({
+    queryKey: [...scope, 'transfer-create', 'source-store-selection', sourceStoreId], enabled: showForm && Boolean(sourceStoreId), retry: false, staleTime: 0,
+    queryFn: async ({ signal }) => {
+      const page = await listStores(organizationId, 'ACTIVE', sourceStoreSelection?.code ?? '', 0, signal, 100)
+      return page.items.find(store => store.id === sourceStoreId) ?? null
+    },
+  })
+  const destinationSelection = useQuery({
+    queryKey: [...scope, 'transfer-create', 'destination-store-selection', destinationStoreId], enabled: showForm && Boolean(destinationStoreId), retry: false, staleTime: 0,
+    queryFn: async ({ signal }) => {
+      const page = await listStores(organizationId, 'ACTIVE', destinationStoreSelection?.code ?? '', 0, signal, 100)
+      return page.items.find(store => store.id === destinationStoreId) ?? null
+    },
+  })
+  const sourceStore = sourceSelection.data?.active && sourceSelection.data.allowedActions.includes('REQUEST_TRANSFER')
+      && sourceSelection.data.allowedActions.includes('READ_INVENTORY') ? sourceSelection.data : undefined
+  const destinationStore = destinationSelection.data?.active && destinationSelection.data.id !== sourceStoreId
+      && destinationSelection.data.allowedActions.includes('READ_STORE') ? destinationSelection.data : undefined
+  const selectedSourceStoreId = sourceStore?.id ?? ''
+  const selectedDestinationStoreId = destinationStore?.id ?? ''
   const positions = useInfiniteQuery({ queryKey: [...scope, 'transfer-create', 'positions', selectedSourceStoreId], enabled: Boolean(selectedSourceStoreId), initialPageParam: 0,
     queryFn: ({ signal, pageParam }) => listInventoryAvailableByLot(organizationId, selectedSourceStoreId, { offset: pageParam, limit: 100 }, signal),
     getNextPageParam: (page, pages) => page.hasMore ? pages.length * 100 : undefined, staleTime: 0 })
@@ -458,10 +538,28 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
         reason: reason.trim(), evidenceReference: evidenceReference.trim() }
       void onCommand({ operation: 'CREATE', transferId: null, body })
     }}>
-      <Field label="Find a source or destination store">{id => <input id={id} type="search" value={storeSearch} onChange={event => { setStoreSearch(event.target.value); setSourceStoreId(''); setDestinationStoreId(''); setLines([newDraftTransferLine()]) }} className={inputClass} placeholder="Search stores you can access" />}</Field>
-      <div className="flex flex-wrap items-end gap-3"><Field label="Source store">{id => <select id={id} required value={selectedSourceStoreId} onChange={event => { const nextStoreId = event.target.value; setSourceStoreId(nextStoreId); setLines([newDraftTransferLine()]); if (nextStoreId === destinationStoreId) setDestinationStoreId('') }} className={inputClass}><option value="">Choose a source</option>{sourceStores.map(store => <option key={store.id} value={store.id}>{store.code} · {store.name}</option>)}</select>}</Field><Field label="Destination store">{id => <select id={id} required value={selectedDestinationStoreId} onChange={event => { setDestinationStoreId(event.target.value); setLines(current => current.map(line => ({ ...line, destinationLocationId: '' }))) }} className={inputClass}><option value="">Choose a destination</option>{destinations.map(store => <option key={store.id} value={store.id}>{store.code} · {store.name}</option>)}</select>}</Field></div>
-      {storesQuery.hasNextPage && <Button type="button" variant="outline" disabled={storesQuery.isFetchingNextPage} onClick={() => { void storesQuery.fetchNextPage() }}>{storesQuery.isFetchingNextPage ? 'Loading stores…' : 'Load more stores'}</Button>}
-      {storesQuery.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">Store access could not be checked. {errorMessage(storesQuery.error)} <Button type="button" variant="outline" onClick={() => { void storesQuery.refetch() }}>Retry stores</Button></p>}
+      <Field label="Find a source store">{id => <div className="flex gap-2"><input id={id} type="search" value={sourceStoreSearch} onChange={event => { setSourceStoreSearch(event.target.value) }} className={inputClass} placeholder="Search source stores by code or name" />{sourceStoreSearch && <Button type="button" variant="outline" onClick={() => { setSourceStoreSearch('') }}>Clear source search</Button>}</div>}</Field>
+      <Field label="Find a destination store">{id => <div className="flex gap-2"><input id={id} type="search" value={destinationStoreSearch} onChange={event => { setDestinationStoreSearch(event.target.value) }} className={inputClass} placeholder="Search destination stores by code or name" />{destinationStoreSearch && <Button type="button" variant="outline" onClick={() => { setDestinationStoreSearch('') }}>Clear destination search</Button>}</div>}</Field>
+      <div className="flex flex-wrap items-end gap-3"><Field label="Source store">{id => <select id={id} required value={sourceStoreId} onChange={event => {
+        const nextStoreId = event.target.value
+        const selected = sourceStoreCandidates.find(store => store.id === nextStoreId) ?? null
+        setSourceStoreId(nextStoreId); setSourceStoreSelection(selected); setLines([newDraftTransferLine()])
+        if (nextStoreId === destinationStoreId) { setDestinationStoreId(''); setDestinationStoreSelection(null); setLines([newDraftTransferLine()]) }
+      }} className={inputClass}><option value="">Choose a source</option>{sourceStoreCandidates.map(store => <option key={store.id} value={store.id}>{store.code} · {store.name}</option>)}</select>}</Field><Field label="Destination store">{id => <select id={id} required value={destinationStoreId} onChange={event => {
+        const nextStoreId = event.target.value
+        setDestinationStoreId(nextStoreId); setDestinationStoreSelection(destinationStoreCandidates.find(store => store.id === nextStoreId) ?? null)
+        setLines(current => current.map(line => ({ ...line, destinationLocationId: '' })))
+      }} className={inputClass}><option value="">Choose a destination</option>{destinationStoreCandidates.filter(store => store.active && store.id !== sourceStoreId && store.allowedActions.includes('READ_STORE')).map(store => <option key={store.id} value={store.id}>{store.code} · {store.name}</option>)}</select>}</Field></div>
+      {sourceStoresQuery.hasNextPage && <Button type="button" variant="outline" disabled={sourceStoresQuery.isFetchingNextPage} onClick={() => { void sourceStoresQuery.fetchNextPage() }}>{sourceStoresQuery.isFetchingNextPage ? 'Loading source stores…' : 'Load more source stores'}</Button>}
+      {destinationStoresQuery.hasNextPage && <Button type="button" variant="outline" disabled={destinationStoresQuery.isFetchingNextPage} onClick={() => { void destinationStoresQuery.fetchNextPage() }}>{destinationStoresQuery.isFetchingNextPage ? 'Loading destination stores…' : 'Load more destination stores'}</Button>}
+      {sourceStores.length === 0 && !sourceStoresQuery.isPending && !sourceStoresQuery.isError && <div role="status" className="sm:col-span-2 text-sm">{sourceStoreSearch ? 'No eligible source stores match this search.' : 'No active store currently has both transfer request and inventory read access.'} {sourceStoreSearch && <Button type="button" variant="outline" onClick={() => { setSourceStoreSearch('') }}>Clear source search</Button>}</div>}
+      {destinationStores.length === 0 && !destinationStoresQuery.isPending && !destinationStoresQuery.isError && <div role="status" className="sm:col-span-2 text-sm">{destinationStoreSearch ? 'No eligible destination stores match this search.' : 'No active destination stores with store read access are available.'} {destinationStoreSearch && <Button type="button" variant="outline" onClick={() => { setDestinationStoreSearch('') }}>Clear destination search</Button>}</div>}
+      {sourceStoresQuery.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">Source store access could not be checked. {errorMessage(sourceStoresQuery.error)} <Button type="button" variant="outline" onClick={() => { void sourceStoresQuery.refetch() }}>Retry source stores</Button></p>}
+      {destinationStoresQuery.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">Destination store access could not be checked. {errorMessage(destinationStoresQuery.error)} <Button type="button" variant="outline" onClick={() => { void destinationStoresQuery.refetch() }}>Retry destination stores</Button></p>}
+      {sourceStoreId && sourceSelection.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected source store could not be revalidated. {errorMessage(sourceSelection.error)} <Button type="button" variant="outline" onClick={() => { void sourceSelection.refetch() }}>Retry source access</Button></p>}
+      {sourceStoreId && !sourceSelection.isPending && !sourceSelection.isError && !sourceStore && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected source store is no longer active or you no longer have the required transfer and inventory access. Choose an eligible source again.</p>}
+      {destinationStoreId && destinationSelection.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected destination store could not be revalidated. {errorMessage(destinationSelection.error)} <Button type="button" variant="outline" onClick={() => { void destinationSelection.refetch() }}>Retry destination access</Button></p>}
+      {destinationStoreId && !destinationSelection.isPending && !destinationSelection.isError && !destinationStore && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected destination store is no longer active, readable or distinct from the source. Choose an eligible destination again.</p>}
       <div className="space-y-4 sm:col-span-2" aria-label="Transfer lines">
         {lines.map((line, index) => {
           const position = positionById.get(line.sourcePositionId)
@@ -520,6 +618,7 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
 }) {
   const scope = useTenantKey()
   const storeMap = new Map(stores.map(store => [store.id, store]))
+  const historicalParticipants = transfer.historicalParticipants
   const capabilities = useQuery({ queryKey: [...scope, 'transfers', 'capabilities', transfer.id],
     queryFn: ({ signal }) => getTransferCapabilities(organizationId, transfer.id, signal), refetchOnWindowFocus: true, staleTime: 0 })
   const sourceActions = capabilities.data?.sourceActions ?? []
@@ -530,8 +629,8 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
   const destinationMetadata = useQuery({ queryKey: [...scope, 'transfers', 'participant-store', transfer.destinationStoreId],
     enabled: !storeMap.has(transfer.destinationStoreId) && destinationActions.includes('READ_STORE'),
     queryFn: ({ signal }) => getStore(organizationId, transfer.destinationStoreId, signal), staleTime: 0 })
-  const source = storeMap.get(transfer.sourceStoreId) ?? sourceMetadata.data
-  const destination = storeMap.get(transfer.destinationStoreId) ?? destinationMetadata.data
+  const source = historicalParticipants?.source ?? storeMap.get(transfer.sourceStoreId) ?? sourceMetadata.data
+  const destination = historicalParticipants?.destination ?? storeMap.get(transfer.destinationStoreId) ?? destinationMetadata.data
   const custody = useInfiniteQuery({ queryKey: [...scope, 'transfers', 'custody', transfer.id], initialPageParam: null as string | null,
     queryFn: ({ signal, pageParam }) => listTransferCustody(organizationId, transfer.id, signal, pageParam, 50),
     getNextPageParam: page => page.hasMore ? page.nextCursor ?? undefined : undefined, refetchOnWindowFocus: true, staleTime: 0 })
@@ -598,7 +697,7 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
   }
 
   return <section className="space-y-7">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><AppLink href={`/organizations/${organizationId}/transfers`} className="text-sm text-primary underline">Back to transfer queue</AppLink><h3 className="mt-3 break-all text-2xl font-semibold">Transfer {transfer.id}</h3><p className="mt-2">{source ? `${source.code} · ${source.name}` : `Source ${transfer.sourceStoreId}`} <span aria-hidden="true">→</span> {destination ? `${destination.code} · ${destination.name}` : `Destination ${transfer.destinationStoreId}`}</p><p className="mt-2 text-sm text-muted-foreground">{transferStatusLabel(transfer.status)} · version {transfer.version} · outstanding custody {transfer.outstandingQuantity} units</p></div><Button variant="outline" disabled={busy} onClick={() => { void onRefresh() }}>Refresh saved record</Button></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><AppLink href={`/organizations/${organizationId}/transfers`} className="text-sm text-primary underline">Back to transfer queue</AppLink><h3 className="mt-3 break-all text-2xl font-semibold">Transfer {transfer.id}</h3><p className="mt-2"><span>{source ? `${source.code} · ${source.name}` : `Source ${transfer.sourceStoreId}`}{source && !source.active && <span className="ml-2 rounded-full border border-border px-2 py-0.5 text-xs">Archived</span>}</span> <span aria-hidden="true">→</span> <span>{destination ? `${destination.code} · ${destination.name}` : `Destination ${transfer.destinationStoreId}`}{destination && !destination.active && <span className="ml-2 rounded-full border border-border px-2 py-0.5 text-xs">Archived</span>}</span></p><p className="mt-2 text-sm text-muted-foreground">{transferStatusLabel(transfer.status)} · version {transfer.version} · outstanding custody {transfer.outstandingQuantity} units</p></div><Button variant="outline" disabled={busy} onClick={() => { void onRefresh() }}>Refresh saved record</Button></div>
     {capabilities.isPending && <p role="status" className="rounded-xl border border-border p-4 text-sm">Checking current actions for both transfer participants…</p>}
     {capabilities.isError && <p role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">Current transfer capabilities could not be checked, so participant actions remain unavailable. {errorMessage(capabilities.error)} <Button variant="outline" onClick={() => { void capabilities.refetch() }}>Retry capability check</Button></p>}
     {(historicalSettlementActions.length > 0 || canReceivePhysicalSettlement || canConfirmPhysicalReturn) && <p role="note" aria-label="Administrative historical settlement" className="rounded-xl border border-border p-4 text-sm">Administrative settlement of this existing historical transfer. This does not reactivate either store. Confirm the physical facts and record the required documents and evidence before proceeding.</p>}
@@ -853,7 +952,7 @@ function ReceiveAction({ transfer, line, position, busy, onCommand }: { transfer
   return <form aria-label={`Receive line ${line.lineNumber}`} className="grid gap-4 rounded-2xl border border-border p-5 sm:grid-cols-2" onSubmit={event => {
     event.preventDefault()
     if (!canSubmit) return
-    const body = { requestId: crypto.randomUUID(), expectedVersion: transfer.version, documentReference: documentReference.trim(), physicallyReceivedAt: new Date().toISOString(),
+    const body = { requestId: crypto.randomUUID(), expectedVersion: transfer.version, documentReference: documentReference.trim(),
       lines: [{ lineId: line.id, quantity: parsedQuantity, expectedDestinationVersion: position?.version ?? 0, documentLineReference: lineReference.trim(), observedSku: line.sku, observedLotCode: line.lotCode }],
       reason: reason.trim(), evidenceReference: evidenceReference.trim() }
     void onCommand({ operation: 'RECEIVE', transferId: transfer.id, body })

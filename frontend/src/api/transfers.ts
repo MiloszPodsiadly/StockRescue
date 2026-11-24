@@ -3,6 +3,8 @@ import { api, ApiError, csrf, requestSignal } from './client'
 
 export type Transfer = components['schemas']['TransferResponse']
 export type TransferQueueItem = components['schemas']['TransferQueueItem']
+export type HistoricalTransferQueueItem = JsonResponse<'listHistoricalTransfers'> extends PageOf<infer Item> ? Item : never
+export type HistoricalTransferParticipant = components['schemas']['TransferParticipantMetadata']
 export type TransferStatus = Transfer['status']
 export type CreateTransfer = components['schemas']['CreateTransferRequest']
 export type TransferDecision = components['schemas']['TransferDecisionRequest']
@@ -46,6 +48,7 @@ export type TransferCapabilities = components['schemas']['TransferCapabilitiesRe
 export type TransferSettlementPositions = components['schemas']['TransferSettlementPositionsResponse']
 
 const base = '/api/v1/organizations/{organizationId}/transfers' as const
+const historicalBase = '/api/v1/organizations/{organizationId}/transfers/historical' as const
 const intentsBase = '/api/v1/organizations/{organizationId}/transfer-command-intents' as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -114,6 +117,15 @@ export async function listTransfers(organizationId: string, storeId: string, sta
   cursor: string | null = null, limit = 50) {
   const { data, error, response } = await api.GET(base, { params: {
     path: { organizationId }, query: { storeId, ...(status ? { status } : {}), ...(cursor ? { cursor } : {}), limit },
+  }, signal: requestSignal(signal) })
+  if (!data) throw new ApiError(response, error)
+  return data
+}
+
+export async function listHistoricalTransfers(organizationId: string, status: TransferStatus | '', signal: AbortSignal,
+  cursor: string | null = null, limit = 50) {
+  const { data, error, response } = await api.GET(historicalBase, { params: {
+    path: { organizationId }, query: { ...(status ? { status } : {}), ...(cursor ? { cursor } : {}), limit },
   }, signal: requestSignal(signal) })
   if (!data) throw new ApiError(response, error)
   return data

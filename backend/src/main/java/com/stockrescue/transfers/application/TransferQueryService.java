@@ -83,6 +83,28 @@ public class TransferQueryService {
     }
 
     @Transactional(readOnly = true)
+    public TransferRepository.CursorPage<TransferRepository.HistoricalTransfer> historicalPage(UUID actor,
+            UUID organizationId, TransferStatus status, String cursor, int limit) {
+        requireOrganizationAdministrator(actor, organizationId);
+        return transfers.historicalPage(organizationId, status, cursor, limit);
+    }
+
+    @Transactional(readOnly = true)
+    public TransferRepository.HistoricalParticipants historicalParticipants(UUID actor, UUID organizationId,
+            UUID transferId) {
+        if (access.organization(actor, organizationId).role()
+                != com.stockrescue.access.application.OrganizationAccess.OrganizationRole.ORG_ADMIN) return null;
+        authorizedDetail(actor, organizationId, transferId);
+        return transfers.historicalParticipants(organizationId, transferId).orElse(null);
+    }
+
+    private void requireOrganizationAdministrator(UUID actor, UUID organizationId) {
+        if (access.organization(actor, organizationId).role()
+                != com.stockrescue.access.application.OrganizationAccess.OrganizationRole.ORG_ADMIN)
+            throw new OrganizationUnavailableException();
+    }
+
+    @Transactional(readOnly = true)
     public boolean canReadCommandIntent(UUID actor, UUID organizationId, String operation, UUID transferId, JsonNode payload) {
         access.organization(actor, organizationId);
         try {

@@ -42,6 +42,13 @@ public class TransferRepository {
             TransferStatus status, long version, Instant createdAt, Instant updatedAt, long lineCount,
             BigInteger outstandingQuantity) { }
 
+    public record TransferParticipant(UUID id, String code, String name, boolean active) { }
+
+    public record HistoricalTransfer(TransferSummary transfer, TransferParticipant source,
+            TransferParticipant destination) { }
+
+    public record HistoricalParticipants(TransferParticipant source, TransferParticipant destination) { }
+
     public record TransferLine(UUID id, int lineNumber, UUID sourcePositionId, UUID destinationLocationId,
             UUID productId, UUID lotId, String sku, String lotCode, long requestedQuantity,
             long expectedSourceVersion, UUID reservationAllocationId, long version, boolean picked,
@@ -95,7 +102,15 @@ public class TransferRepository {
     public record PhysicalDocument(UUID id, UUID organizationId, UUID transferId, UUID sourceStoreId,
             UUID destinationStoreId, UUID documentStoreId, UUID commandId, String storeSide,
             String type, String reference, String reason, String evidenceReference,
-            UUID actorId, UUID membershipId) { }
+            UUID actorId, UUID membershipId, java.time.Instant physicalEventAt) {
+        public PhysicalDocument(UUID id, UUID organizationId, UUID transferId, UUID sourceStoreId,
+                UUID destinationStoreId, UUID documentStoreId, UUID commandId, String storeSide,
+                String type, String reference, String reason, String evidenceReference,
+                UUID actorId, UUID membershipId) {
+            this(id, organizationId, transferId, sourceStoreId, destinationStoreId, documentStoreId,
+                    commandId, storeSide, type, reference, reason, evidenceReference, actorId, membershipId, null);
+        }
+    }
 
     public record PhysicalDocumentLine(UUID organizationId, UUID transferId, UUID documentId,
             UUID lineId, String documentType, int lineNumber, String lineReference, long quantity,
@@ -366,16 +381,18 @@ public class TransferRepository {
         jdbc.sql("""
                 INSERT INTO stockrescue.transfer_physical_document
                     (id,org_id,transfer_id,source_store_id,destination_store_id,document_store_id,command_id,
-                     store_side,document_type,document_reference,reason,evidence_reference,recorded_by_user_id,membership_id)
+                     store_side,document_type,document_reference,reason,evidence_reference,recorded_by_user_id,membership_id,physical_event_at)
                 VALUES (:id,:org,:transfer,:source,:destination,:store,:command,:side,:type,:reference,
-                        :reason,:evidence,:actor,:membership)
+                        :reason,:evidence,:actor,:membership,:physicalEventAt)
                 """)
                 .param("id", document.id()).param("org", document.organizationId()).param("transfer", document.transferId())
                 .param("source", document.sourceStoreId()).param("destination", document.destinationStoreId())
                 .param("store", document.documentStoreId()).param("command", document.commandId())
                 .param("side", document.storeSide()).param("type", document.type()).param("reference", text(document.reference(), 200))
                 .param("reason", text(document.reason(), 500)).param("evidence", text(document.evidenceReference(), 256))
-                .param("actor", document.actorId()).param("membership", document.membershipId()).update();
+                .param("actor", document.actorId()).param("membership", document.membershipId())
+                .param("physicalEventAt", document.physicalEventAt()==null?null:document.physicalEventAt().atOffset(ZoneOffset.UTC),
+                        Types.TIMESTAMP_WITH_TIMEZONE).update();
     }
 
     public void lockDocumentIdentity(UUID organizationId, UUID documentStoreId, String type, String reference) {
@@ -777,6 +794,61 @@ public class TransferRepository {
         return new CursorPage<>(items, next, more);
     }
 
+    public CursorPage<HistoricalTransfer> historicalPage(UUID organizationId, TransferStatus status, String cursor, int limit) {
+        validateCursorPage(limit);
+        String scope = "historical-transfer-queue:" + organizationId + ":ARCHIVED_PARTICIPANT:"
+                + (status == null ? "ALL" : status.name());
+        var position = cursor == null ? null : TransferCursor.timestampId(scope, cursor);
+        var rows = jdbc.sql("""
+                SELECT t.id,t.org_id,t.source_store_id,t.destination_store_id,t.status,t.version,t.created_at,t.updated_at,
+                    count(l.id) AS line_count,coalesce(sum(a.outstanding),0) AS outstanding,
+                    source.id AS historical_source_id,source.code AS historical_source_code,
+                    source.name AS historical_source_name,source.active AS historical_source_active,
+                    destination.id AS historical_destination_id,destination.code AS historical_destination_code,
+                    destination.name AS historical_destination_name,destination.active AS historical_destination_active
+                FROM stockrescue.transfer_order t
+                JOIN stockrescue.store source ON source.org_id=t.org_id AND source.id=t.source_store_id
+                JOIN stockrescue.store destination ON destination.org_id=t.org_id AND destination.id=t.destination_store_id
+                LEFT JOIN stockrescue.transfer_line l ON l.org_id=t.org_id AND l.transfer_id=t.id
+                LEFT JOIN stockrescue.transfer_custody_account a
+                  ON a.org_id=l.org_id AND a.transfer_id=l.transfer_id AND a.line_id=l.id
+                WHERE t.org_id=:org AND (NOT source.active OR NOT destination.active)
+                    AND (CAST(:status AS varchar) IS NULL OR t.status=:status)
+                    AND (CAST(:cursorAt AS timestamptz) IS NULL OR (t.updated_at,t.id)<(:cursorAt,:cursorId))
+                GROUP BY t.id,source.id,destination.id
+                ORDER BY t.updated_at DESC,t.id DESC LIMIT :limit
+                """)
+                .param("org", organizationId)
+                .param("status", status == null ? null : status.name(), Types.VARCHAR)
+                .param("cursorAt", position == null ? null : position.recordedAt().atOffset(ZoneOffset.UTC), Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("cursorId", position == null ? null : position.id(), Types.OTHER)
+                .param("limit", limit + 1)
+                .query((row, index) -> new HistoricalTransfer(summary(row),
+                        participant(row, "historical_source"), participant(row, "historical_destination"))).list();
+        boolean more = rows.size() > limit;
+        var items = rows.stream().limit(limit).toList();
+        String next = more ? TransferCursor.timestampId(scope, items.getLast().transfer().updatedAt(),
+                items.getLast().transfer().id()) : null;
+        return new CursorPage<>(items, next, more);
+    }
+
+    public Optional<HistoricalParticipants> historicalParticipants(UUID organizationId, UUID transferId) {
+        return jdbc.sql("""
+                SELECT source.id AS historical_source_id,source.code AS historical_source_code,
+                    source.name AS historical_source_name,source.active AS historical_source_active,
+                    destination.id AS historical_destination_id,destination.code AS historical_destination_code,
+                    destination.name AS historical_destination_name,destination.active AS historical_destination_active
+                FROM stockrescue.transfer_order t
+                JOIN stockrescue.store source ON source.org_id=t.org_id AND source.id=t.source_store_id
+                JOIN stockrescue.store destination ON destination.org_id=t.org_id AND destination.id=t.destination_store_id
+                WHERE t.org_id=:org AND t.id=:transfer
+                    AND (NOT source.active OR NOT destination.active)
+                """)
+                .param("org", organizationId).param("transfer", transferId)
+                .query((row, index) -> new HistoricalParticipants(participant(row, "historical_source"),
+                        participant(row, "historical_destination"))).optional();
+    }
+
     public Page<CustodyMovement> custodyTimeline(UUID organizationId, UUID transferId, int offset, int limit) {
         validatePage(offset, limit);
         var rows = jdbc.sql("""
@@ -1111,6 +1183,11 @@ public class TransferRepository {
                 TransferStatus.valueOf(row.getString("status")), row.getLong("version"),
                 row.getTimestamp("created_at").toInstant(), row.getTimestamp("updated_at").toInstant(),
                 row.getLong("line_count"), row.getBigDecimal("outstanding").toBigIntegerExact());
+    }
+
+    private static TransferParticipant participant(java.sql.ResultSet row, String prefix) throws java.sql.SQLException {
+        return new TransferParticipant(row.getObject(prefix + "_id", UUID.class), row.getString(prefix + "_code"),
+                row.getString(prefix + "_name"), row.getBoolean(prefix + "_active"));
     }
 
     private static <T> Page<T> page(List<T> rows, int limit) {

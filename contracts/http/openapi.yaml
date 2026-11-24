@@ -8295,6 +8295,102 @@ paths:
         for a currently authorized store
       tags:
       - transfer-controller
+  /api/v1/organizations/{organizationId}/transfers/historical:
+    get:
+      description: Organization administrators only. Includes transfers with at least
+        one archived participant across all lifecycle states; the optional status
+        filter is bound to the organization-scoped keyset cursor.
+      operationId: listHistoricalTransfers
+      parameters:
+      - in: path
+        name: organizationId
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: status
+        required: false
+        schema:
+          type: string
+          enum:
+          - REQUESTED
+          - REJECTED
+          - CANCELLED
+          - APPROVED
+          - PICKING
+          - PICKED
+          - IN_TRANSIT
+          - PARTIALLY_RECEIVED
+          - RECONCILIATION_REQUIRED
+          - RECEIVED
+          - CLOSED_WITH_DISCREPANCY
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 50
+          maximum: 100
+          minimum: 1
+      - description: Opaque cursor for this organization's archived-participant filter
+          and optional status
+        in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+          minLength: 0
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoricalTransferQueuePage"
+          description: Historical transfers with authorized store labels
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Invalid transfer request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Authentication required
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Current transfer action or CSRF denied
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: Transfer or current store context unavailable
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Stale state, stock conflict or changed retry payload"
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ApiProblem"
+          description: "Invalid evidence, stock safety or transfer context"
+      security:
+      - session: []
+      summary: List historical transfers involving archived stores
+      tags:
+      - transfer-controller
   /api/v1/organizations/{organizationId}/transfers/in-transit:
     get:
       description: "The optional scope-bound cursor follows persisted dispatch time,\
@@ -12149,6 +12245,37 @@ components:
       - matchSetRevision
       - matches
       - offset
+    HistoricalTransferQueueItem:
+      type: object
+      properties:
+        destination:
+          $ref: "#/components/schemas/TransferParticipantMetadata"
+        source:
+          $ref: "#/components/schemas/TransferParticipantMetadata"
+        transfer:
+          $ref: "#/components/schemas/TransferQueueItem"
+      required:
+      - destination
+      - source
+      - transfer
+    HistoricalTransferQueuePage:
+      type: object
+      properties:
+        hasMore:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoricalTransferQueueItem"
+        nextCursor:
+          type:
+          - string
+          - "null"
+          description: "Cursor for the next historical page, or null when complete"
+      required:
+      - hasMore
+      - items
+      - nextCursor
     IntentInspectionResponse:
       type: object
       properties:
@@ -15345,6 +15472,16 @@ components:
       - lines
       - reason
       - requestId
+    TransferHistoricalParticipants:
+      type: object
+      properties:
+        destination:
+          $ref: "#/components/schemas/TransferParticipantMetadata"
+        source:
+          $ref: "#/components/schemas/TransferParticipantMetadata"
+      required:
+      - destination
+      - source
     TransferInTransitLine:
       type: object
       properties:
@@ -15577,6 +15714,24 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TransferParkedDiagnostic"
+    TransferParticipantMetadata:
+      type: object
+      properties:
+        active:
+          type: boolean
+          description: False when the participant store is archived
+        code:
+          type: string
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+      required:
+      - active
+      - code
+      - id
+      - name
     TransferPickRequest:
       type: object
       properties:
@@ -15783,7 +15938,6 @@ components:
       - evidenceReference
       - expectedVersion
       - lines
-      - physicallyReceivedAt
       - reason
       - requestId
     TransferResponse:
@@ -15797,6 +15951,10 @@ components:
         destinationStoreId:
           type: string
           format: uuid
+        historicalParticipants:
+          anyOf:
+          - $ref: "#/components/schemas/TransferHistoricalParticipants"
+          - type: "null"
         id:
           type: string
           format: uuid

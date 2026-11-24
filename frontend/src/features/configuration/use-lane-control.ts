@@ -12,6 +12,7 @@ type Phase = 'IDLE' | 'LOADING_REVIEW' | 'REVIEWING' | 'SAVING' | 'CANCELLING' |
 type PendingCancellation = { draft: LaneUpdate | null, cancellationIds: Array<{ id: string, revisionId: string }>, reviewedRevisionIds: string[], reviewedLane: Lane | null, kind: ScheduleReview['kind'] }
 type State = {
   phase: Phase
+  commandActive: boolean
   notice: string
   error: unknown | null
   review: ScheduleReview | null
@@ -35,7 +36,7 @@ type Action =
   | { type: 'settled' }
 
 const initialState: State = {
-  phase: 'IDLE', notice: '', error: null, review: null, preparedDraft: null,
+  phase: 'IDLE', commandActive: false, notice: '', error: null, review: null, preparedDraft: null,
   reason: '', confirmed: false, unresolved: null,
 }
 
@@ -45,7 +46,7 @@ function isAmbiguousCommandFailure(error: unknown) {
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
-    case 'begin': return { ...state, phase: action.phase, error: null }
+    case 'begin': return { ...state, phase: action.phase, commandActive: true, error: null }
     case 'review':
       if (!action.revisions.length) return {
         ...state, review: null, preparedDraft: action.kind === 'zone-change' ? action.draft : null,
@@ -70,10 +71,10 @@ function reducer(state: State, action: Action): State {
     case 'needs-reconciliation': return { ...state, phase: 'NEEDS_RECONCILIATION', unresolved: action.pending }
     case 'reconciled': return { ...state, phase: 'IDLE', review: null, reason: '', confirmed: false, unresolved: null, error: null, notice: action.notice, preparedDraft: action.preparedDraft ?? null }
     case 'settled':
-      if (state.unresolved !== null) return { ...state, phase: 'NEEDS_RECONCILIATION' }
+      if (state.unresolved !== null) return { ...state, phase: 'NEEDS_RECONCILIATION', commandActive: false }
       return state.phase === 'REVIEWING' || state.phase === 'NEEDS_RECONCILIATION'
-        ? state
-        : { ...state, phase: 'IDLE' }
+        ? { ...state, commandActive: false }
+        : { ...state, phase: 'IDLE', commandActive: false }
   }
 }
 
@@ -407,7 +408,7 @@ export function useLaneControl(organizationId: string, laneId: string) {
 
   return {
     state, lane, history, currencies, historyOffset,
-    busy: state.phase !== 'IDLE' && state.phase !== 'REVIEWING' && state.phase !== 'NEEDS_RECONCILIATION',
+    busy: state.commandActive || (state.phase !== 'IDLE' && state.phase !== 'REVIEWING' && state.phase !== 'NEEDS_RECONCILIATION'),
     refreshing: lane.isFetching || history.isFetching,
     setHistoryOffset, setReason, setConfirmed, saveLane, approveCost, reviewScheduledCosts, cancelSchedule, closeReview, reload, reconcileUncertainResult,
   }

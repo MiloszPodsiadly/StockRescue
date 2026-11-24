@@ -103,6 +103,20 @@ public class TransferController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(page);
     }
 
+    @GetMapping("/historical")
+    @Operation(operationId = "listHistoricalTransfers", summary = "List historical transfers involving archived stores",
+            description = "Organization administrators only. Includes transfers with at least one archived participant across all lifecycle states; the optional status filter is bound to the organization-scoped keyset cursor.")
+    @ApiResponse(responseCode = "200", description = "Historical transfers with authorized store labels",
+            content = @Content(schema = @Schema(implementation = HistoricalTransferQueuePage.class)))
+    public ResponseEntity<HistoricalTransferQueuePage> historical(Authentication actor, @PathVariable UUID organizationId,
+            @RequestParam(required = false) TransferStatus status,
+            @RequestParam(defaultValue = "50") @Min(1) @Max(100) int limit,
+            @Parameter(description = "Opaque cursor for this organization's archived-participant filter and optional status")
+            @RequestParam(required = false) @Size(max = 512) String cursor) {
+        var page = transfers.historicalPage(actor(actor), organizationId, status, cursor, limit);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(HistoricalTransferQueuePage.from(page));
+    }
+
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
     @Operation(operationId = "createTransfer", summary = "Create an auditable stock transfer request without changing stock")
     @ApiResponse(responseCode = "200", description = "Transfer request recorded or exact retry recovered", content = @Content(schema = @Schema(implementation = CommandResponse.class)))
@@ -218,7 +232,8 @@ public class TransferController {
         UUID actorId = actor(actor);
         TransferDetail detail = transfers.detail(actorId, organizationId, transferId);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(TransferResponse.from(detail, transfers.canCancel(actorId, organizationId, transferId)));
+                .body(TransferResponse.from(detail, transfers.canCancel(actorId, organizationId, transferId),
+                        transfers.historicalParticipants(actorId, organizationId, transferId)));
     }
 
     @GetMapping("/{transferId}/capabilities")
@@ -404,7 +419,8 @@ public class TransferController {
             @NotBlank @Size(max = 128) @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String observedLotCode) { }
 
     public record TransferReceiveRequest(@NotNull UUID requestId,@NotNull @Min(0) @Max(Long.MAX_VALUE - 1) Long expectedVersion,
-            @NotBlank @Size(max = 200) String documentReference,@NotNull Instant physicallyReceivedAt,
+            @NotBlank @Size(max = 200) String documentReference,
+            @Schema(requiredMode = Schema.RequiredMode.NOT_REQUIRED) Instant physicallyReceivedAt,
             @NotNull @Size(min=1,max=TransferService.MAX_LINES) List<@Valid TransferReceiveLineRequest> lines,
             @NotBlank @Size(max=500) String reason,@NotBlank @Size(max=256) String evidenceReference) {
         ReceiveRequest toService() { return new ReceiveRequest(requestId,expectedVersion,documentReference,physicallyReceivedAt,
@@ -589,6 +605,50 @@ public class TransferController {
         }
     }
 
+    public record HistoricalTransferQueuePage(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<HistoricalTransferQueueItem> items,
+            @Schema(types = {"string", "null"}, requiredMode = Schema.RequiredMode.REQUIRED,
+                    description = "Cursor for the next historical page, or null when complete") String nextCursor,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean hasMore) {
+        static HistoricalTransferQueuePage from(
+                com.stockrescue.transfers.persistence.TransferRepository.CursorPage<com.stockrescue.transfers.persistence.TransferRepository.HistoricalTransfer> page) {
+            return new HistoricalTransferQueuePage(page.items().stream().map(HistoricalTransferQueueItem::from).toList(),
+                    page.nextCursor(), page.hasMore());
+        }
+    }
+
+    public record HistoricalTransferQueueItem(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) TransferQueueItem transfer,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) TransferParticipantMetadata source,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) TransferParticipantMetadata destination) {
+        static HistoricalTransferQueueItem from(
+                com.stockrescue.transfers.persistence.TransferRepository.HistoricalTransfer value) {
+            return new HistoricalTransferQueueItem(TransferQueueItem.from(value.transfer()),
+                    TransferParticipantMetadata.from(value.source()), TransferParticipantMetadata.from(value.destination()));
+        }
+    }
+
+    public record TransferParticipantMetadata(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) UUID id,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String code,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String name,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED, description = "False when the participant store is archived") boolean active) {
+        static TransferParticipantMetadata from(
+                com.stockrescue.transfers.persistence.TransferRepository.TransferParticipant value) {
+            return new TransferParticipantMetadata(value.id(), value.code(), value.name(), value.active());
+        }
+    }
+
+    public record TransferHistoricalParticipants(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) TransferParticipantMetadata source,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) TransferParticipantMetadata destination) {
+        static TransferHistoricalParticipants from(
+                com.stockrescue.transfers.persistence.TransferRepository.HistoricalParticipants value) {
+            return value == null ? null : new TransferHistoricalParticipants(
+                    TransferParticipantMetadata.from(value.source()), TransferParticipantMetadata.from(value.destination()));
+        }
+    }
+
     public record TransferCapabilitiesResponse(
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreAction> sourceActions,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<StoreAction> destinationActions,
@@ -653,12 +713,16 @@ public class TransferController {
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) long lineCount,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) BigInteger outstandingQuantity,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) List<TransferLineResponse> lines,
-            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canCancel) {
-        static TransferResponse from(TransferDetail value, boolean canCancel) {
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) boolean canCancel,
+            @Schema(types = {"object", "null"}, requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+                    description = "Organization-admin-only participant labels when at least one store is archived")
+            TransferHistoricalParticipants historicalParticipants) {
+        static TransferResponse from(TransferDetail value, boolean canCancel,
+                com.stockrescue.transfers.persistence.TransferRepository.HistoricalParticipants historicalParticipants) {
             return new TransferResponse(value.transfer().id(), value.transfer().sourceStoreId(), value.transfer().destinationStoreId(),
                     value.transfer().status(), value.transfer().version(), value.transfer().createdAt(), value.transfer().updatedAt(),
                     value.transfer().lineCount(), value.transfer().outstandingQuantity(), value.lines().stream().map(TransferLineResponse::from).toList(),
-                    canCancel);
+                    canCancel, TransferHistoricalParticipants.from(historicalParticipants));
         }
     }
 

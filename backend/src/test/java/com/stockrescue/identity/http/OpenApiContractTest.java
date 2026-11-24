@@ -47,6 +47,9 @@ class OpenApiContractTest extends InfrastructureTestBase {
         var schemaRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/v3/api-docs")).GET().build();
         var document=json.readTree(HttpClient.newHttpClient().send(schemaRequest,HttpResponse.BodyHandlers.ofString()).body());
         var schemas=document.path("components").path("schemas");
+        var transferReceive=schemas.path("TransferReceiveRequest");
+        assertThat(transferReceive.path("properties").has("physicallyReceivedAt")).isTrue();
+        assertThat(transferReceive.path("required")).noneMatch(value->value.asString().equals("physicallyReceivedAt"));
         var policyPath="/api/v1/organizations/{organizationId}/food-safety-profiles/{productCategory}/{temperatureClass}/versions";
         assertThat(document.path("paths").path(policyPath).path("post").path("operationId").asString()).isEqualTo("recordFoodSafetyPolicyReview");
         assertThat(document.path("paths").path(policyPath).path("get").path("operationId").asString()).isEqualTo("listFoodSafetyPolicyVersions");

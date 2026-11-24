@@ -578,7 +578,8 @@ public class TransferService {
         UUID documentId=UUID.randomUUID();
         transfers.recordPhysicalDocument(new PhysicalDocument(documentId,organizationId,transferId,current.sourceStoreId(),
                 current.destinationStoreId(),current.destinationStoreId(),commandId,"DESTINATION","RECEIPT",
-                normalized.documentReference(),normalized.reason(),normalized.evidenceReference(),actor,member.membershipId()));
+                normalized.documentReference(),normalized.reason(),normalized.evidenceReference(),actor,member.membershipId(),
+                posted.physicalReceiptAt()));
         var postedByLine=posted.lines().stream().collect(java.util.stream.Collectors.toMap(
                 InventoryService.TransferStockLineResult::lineId,line -> line));
         for(var requested:normalized.lines()) {
@@ -913,6 +914,18 @@ public class TransferService {
     public TransferRepository.CursorPage<TransferRepository.TransferSummary> page(UUID actor, UUID organizationId,
             UUID storeId, TransferStatus status, String cursor, int limit) {
         return queries.page(actor, organizationId, storeId, status, cursor, limit);
+    }
+
+    @Transactional(readOnly = true)
+    public TransferRepository.CursorPage<TransferRepository.HistoricalTransfer> historicalPage(UUID actor,
+            UUID organizationId, TransferStatus status, String cursor, int limit) {
+        return queries.historicalPage(actor, organizationId, status, cursor, limit);
+    }
+
+    @Transactional(readOnly = true)
+    public TransferRepository.HistoricalParticipants historicalParticipants(UUID actor, UUID organizationId,
+            UUID transferId) {
+        return queries.historicalParticipants(actor, organizationId, transferId);
     }
 
     @Transactional(readOnly = true)

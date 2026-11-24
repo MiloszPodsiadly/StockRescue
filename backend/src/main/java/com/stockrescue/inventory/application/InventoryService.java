@@ -72,7 +72,7 @@ public class InventoryService {
     public record TransferSettlementPositionVersion(UUID lineId,UUID positionId,long version) { }
     public record TransferStockLineResult(UUID lineId,UUID positionId,UUID allocationId,long quantity,
             long positionVersion,StockBuckets buckets) { }
-    public record TransferStockResult(UUID commandId,UUID movementId,List<TransferStockLineResult> lines) {
+    public record TransferStockResult(UUID commandId,UUID movementId,Instant physicalReceiptAt,List<TransferStockLineResult> lines) {
         public TransferStockResult { lines=List.copyOf(lines); }
     }
     private final AccessPolicy access;
@@ -413,15 +413,14 @@ public class InventoryService {
     @Transactional
     public TransferStockResult receiveForTransfer(UUID actor,UUID org,UUID store,UUID requestId,UUID transferId,
             Instant physicallyReceivedAt,String reason,String evidenceReference,List<TransferReceiptLine> requestedLines) {
-        if(requestId==null || transferId==null || physicallyReceivedAt==null
-                || physicallyReceivedAt.isAfter(clock.instant())
-                || physicallyReceivedAt.isBefore(Instant.parse("0001-01-01T00:00:00Z"))) throw failure(Kind.INVALID_REQUEST);
+        if(requestId==null || transferId==null || physicallyReceivedAt!=null
+                && physicallyReceivedAt.isBefore(Instant.parse("0001-01-01T00:00:00Z"))) throw failure(Kind.INVALID_REQUEST);
         var member=access.requireTransferSettlementStore(actor,org,store,StoreAction.RECEIVE_STOCK);
         var lines=normalizeTransferReceipts(requestedLines);
-        var received=physicallyReceivedAt.truncatedTo(ChronoUnit.MICROS);
+        var requestedReceiptAt=physicallyReceivedAt==null?null:physicallyReceivedAt.truncatedTo(ChronoUnit.MICROS);
         reason=text(reason,500);evidenceReference=text(evidenceReference,256);
         byte[] digest=transferSettlementFingerprint(store,InventoryOperation.TRANSFER_IN,transferId,lines,reason,
-                evidenceReference,received);
+                evidenceReference,requestedReceiptAt==null?"SERVER_ASSIGNED_RECEIPT_TIME":requestedReceiptAt);
         inventory.lockRequest(org,actor,InventoryOperation.TRANSFER_IN,requestId);
         var replay=transferStockReplay(actor,org,store,InventoryOperation.TRANSFER_IN,requestId,digest);
         if(replay!=null) return replay;
@@ -485,8 +484,10 @@ public class InventoryService {
                         quarantine?UUID.randomUUID():null,null));
             }
         }
+        var received=requestedReceiptAt==null?clock.instant():requestedReceiptAt;
+        if(received.isAfter(clock.instant())) throw failure(Kind.INVALID_REQUEST);
         return postTransferStock(actor,org,store,member.membershipId(),requestId,digest,reason,evidenceReference,
-                InventoryOperation.TRANSFER_IN,prepared);
+                InventoryOperation.TRANSFER_IN,prepared,received);
     }
 
     @Transactional
@@ -661,8 +662,14 @@ public class InventoryService {
     private TransferStockResult postTransferStock(UUID actor,UUID org,UUID store,UUID membership,UUID requestId,
             byte[] digest,String reason,String evidence,InventoryOperation operation,
             List<PreparedTransferStockLine> prepared) {
+        return postTransferStock(actor,org,store,membership,requestId,digest,reason,evidence,operation,prepared,null);
+    }
+
+    private TransferStockResult postTransferStock(UUID actor,UUID org,UUID store,UUID membership,UUID requestId,
+            byte[] digest,String reason,String evidence,InventoryOperation operation,
+            List<PreparedTransferStockLine> prepared,Instant physicalReceiptAt) {
         UUID commandId=UUID.randomUUID(),movementId=UUID.randomUUID();
-        var result=new TransferStockResult(commandId,movementId,prepared.stream()
+        var result=new TransferStockResult(commandId,movementId,physicalReceiptAt,prepared.stream()
                 .map(line->new TransferStockLineResult(line.lineId(),line.before().id(),line.allocationId(),
                         line.quantity(),line.version(),line.buckets()))
                 .sorted(Comparator.comparing(TransferStockLineResult::lineId)).toList());
