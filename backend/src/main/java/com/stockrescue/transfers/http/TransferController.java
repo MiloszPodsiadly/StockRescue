@@ -527,11 +527,13 @@ public class TransferController {
             @Schema(types = {"string", "null"}, format = "uuid", requiredMode = Schema.RequiredMode.REQUIRED) UUID stockPositionId,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String reason,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String evidenceReference,
+            @Schema(types = {"string", "null"}, format = "date-time", requiredMode = Schema.RequiredMode.REQUIRED) Instant physicalEventAt,
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) Instant recordedAt) {
         static TransferCustodyMovement from(CustodyMovement value) {
             return new TransferCustodyMovement(value.id(), value.lineId(), value.version(), value.type(), value.commandId(),
                     value.actorId(), value.quantity(), value.outstandingBefore(), value.outstandingAfter(), value.stockStoreId(),
-                    value.stockMovementId(), value.stockPositionId(), value.reason(), value.evidenceReference(), value.recordedAt());
+                    value.stockMovementId(), value.stockPositionId(), value.reason(), value.evidenceReference(),
+                    value.physicalEventAt(), value.recordedAt());
         }
     }
 

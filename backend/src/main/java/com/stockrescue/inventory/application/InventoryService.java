@@ -412,9 +412,11 @@ public class InventoryService {
 
     @Transactional
     public TransferStockResult receiveForTransfer(UUID actor,UUID org,UUID store,UUID requestId,UUID transferId,
-            Instant physicallyReceivedAt,String reason,String evidenceReference,List<TransferReceiptLine> requestedLines) {
+            Instant physicallyReceivedAt,String reason,String evidenceReference,List<TransferReceiptLine> requestedLines,
+            Map<UUID,Instant> dispatchRecordedAtByLine) {
         if(requestId==null || transferId==null || physicallyReceivedAt!=null
-                && physicallyReceivedAt.isBefore(Instant.parse("0001-01-01T00:00:00Z"))) throw failure(Kind.INVALID_REQUEST);
+                && physicallyReceivedAt.isBefore(Instant.parse("0001-01-01T00:00:00Z")) || dispatchRecordedAtByLine==null)
+            throw failure(Kind.INVALID_REQUEST);
         var member=access.requireTransferSettlementStore(actor,org,store,StoreAction.RECEIVE_STOCK);
         var lines=normalizeTransferReceipts(requestedLines);
         var requestedReceiptAt=physicallyReceivedAt==null?null:physicallyReceivedAt.truncatedTo(ChronoUnit.MICROS);
@@ -484,8 +486,14 @@ public class InventoryService {
                         quarantine?UUID.randomUUID():null,null));
             }
         }
-        var received=requestedReceiptAt==null?clock.instant():requestedReceiptAt;
-        if(received.isAfter(clock.instant())) throw failure(Kind.INVALID_REQUEST);
+        var databaseNow=inventory.databaseTime();
+        var received=requestedReceiptAt==null?databaseNow:requestedReceiptAt;
+        if(received.isAfter(databaseNow)) throw failure(Kind.INVALID_REQUEST);
+        for(var line:lines) {
+            var dispatchedAt=dispatchRecordedAtByLine.get(line.lineId());
+            if(dispatchedAt==null) throw failure(Kind.CONFLICT);
+            if(received.isBefore(dispatchedAt)) throw failure(Kind.INVALID_REQUEST);
+        }
         return postTransferStock(actor,org,store,member.membershipId(),requestId,digest,reason,evidenceReference,
                 InventoryOperation.TRANSFER_IN,prepared,received);
     }

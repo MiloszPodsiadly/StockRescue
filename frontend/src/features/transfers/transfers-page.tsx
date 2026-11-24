@@ -434,21 +434,21 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
   const destinationStoreCandidates = uniqueBy([...destinationStores, ...(destinationStoreSelection?.id === destinationStoreId ? [destinationStoreSelection] : [])], store => store.id)
   const sourceSelection = useQuery({
     queryKey: [...scope, 'transfer-create', 'source-store-selection', sourceStoreId], enabled: showForm && Boolean(sourceStoreId), retry: false, staleTime: 0,
-    queryFn: async ({ signal }) => {
-      const page = await listStores(organizationId, 'ACTIVE', sourceStoreSelection?.code ?? '', 0, signal, 100)
-      return page.items.find(store => store.id === sourceStoreId) ?? null
-    },
+    queryFn: ({ signal }) => getStore(organizationId, sourceStoreId, signal),
   })
   const destinationSelection = useQuery({
     queryKey: [...scope, 'transfer-create', 'destination-store-selection', destinationStoreId], enabled: showForm && Boolean(destinationStoreId), retry: false, staleTime: 0,
-    queryFn: async ({ signal }) => {
-      const page = await listStores(organizationId, 'ACTIVE', destinationStoreSelection?.code ?? '', 0, signal, 100)
-      return page.items.find(store => store.id === destinationStoreId) ?? null
-    },
+    queryFn: ({ signal }) => getStore(organizationId, destinationStoreId, signal),
   })
-  const sourceStore = sourceSelection.data?.active && sourceSelection.data.allowedActions.includes('REQUEST_TRANSFER')
+  const sourceSelectionCompleted = sourceSelection.isSuccess && !sourceSelection.isError && !sourceSelection.isPending
+    && !sourceSelection.isFetching && !sourceSelection.isPaused && sourceSelection.isFetchedAfterMount
+  const destinationSelectionCompleted = destinationSelection.isSuccess && !destinationSelection.isError && !destinationSelection.isPending
+    && !destinationSelection.isFetching && !destinationSelection.isPaused && destinationSelection.isFetchedAfterMount
+  const sourceSelectionReady = sourceSelectionCompleted && sourceSelection.data?.id === sourceStoreId
+  const destinationSelectionReady = destinationSelectionCompleted && destinationSelection.data?.id === destinationStoreId
+  const sourceStore = sourceSelectionReady && sourceSelection.data?.active && sourceSelection.data.allowedActions.includes('REQUEST_TRANSFER')
       && sourceSelection.data.allowedActions.includes('READ_INVENTORY') ? sourceSelection.data : undefined
-  const destinationStore = destinationSelection.data?.active && destinationSelection.data.id !== sourceStoreId
+  const destinationStore = destinationSelectionReady && destinationSelection.data?.active && destinationSelection.data.id !== sourceStoreId
       && destinationSelection.data.allowedActions.includes('READ_STORE') ? destinationSelection.data : undefined
   const selectedSourceStoreId = sourceStore?.id ?? ''
   const selectedDestinationStoreId = destinationStore?.id ?? ''
@@ -557,9 +557,11 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
       {sourceStoresQuery.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">Source store access could not be checked. {errorMessage(sourceStoresQuery.error)} <Button type="button" variant="outline" onClick={() => { void sourceStoresQuery.refetch() }}>Retry source stores</Button></p>}
       {destinationStoresQuery.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">Destination store access could not be checked. {errorMessage(destinationStoresQuery.error)} <Button type="button" variant="outline" onClick={() => { void destinationStoresQuery.refetch() }}>Retry destination stores</Button></p>}
       {sourceStoreId && sourceSelection.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected source store could not be revalidated. {errorMessage(sourceSelection.error)} <Button type="button" variant="outline" onClick={() => { void sourceSelection.refetch() }}>Retry source access</Button></p>}
-      {sourceStoreId && !sourceSelection.isPending && !sourceSelection.isError && !sourceStore && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected source store is no longer active or you no longer have the required transfer and inventory access. Choose an eligible source again.</p>}
+      {sourceStoreId && (sourceSelection.isPending || sourceSelection.isFetching || sourceSelection.isPaused) && <p role="status" className="sm:col-span-2 text-sm">Rechecking source store access…</p>}
+      {sourceStoreId && sourceSelectionCompleted && !sourceStore && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected source store is no longer active or you no longer have the required transfer and inventory access. Choose an eligible source again.</p>}
       {destinationStoreId && destinationSelection.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected destination store could not be revalidated. {errorMessage(destinationSelection.error)} <Button type="button" variant="outline" onClick={() => { void destinationSelection.refetch() }}>Retry destination access</Button></p>}
-      {destinationStoreId && !destinationSelection.isPending && !destinationSelection.isError && !destinationStore && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected destination store is no longer active, readable or distinct from the source. Choose an eligible destination again.</p>}
+      {destinationStoreId && (destinationSelection.isPending || destinationSelection.isFetching || destinationSelection.isPaused) && <p role="status" className="sm:col-span-2 text-sm">Rechecking destination store access…</p>}
+      {destinationStoreId && destinationSelectionCompleted && !destinationStore && <p role="alert" className="sm:col-span-2 text-sm text-destructive">The selected destination store is no longer active, readable or distinct from the source. Choose an eligible destination again.</p>}
       <div className="space-y-4 sm:col-span-2" aria-label="Transfer lines">
         {lines.map((line, index) => {
           const position = positionById.get(line.sourcePositionId)
@@ -745,7 +747,7 @@ export function TransferDetailView({ organizationId, transfer, stores, onCommand
       {custody.isPending ? <p role="status">Loading immutable custody entries…</p>
         : custody.isError ? <p role="alert" className="text-sm text-destructive">Custody history unavailable: {errorMessage(custody.error)} <Button variant="outline" onClick={() => { void custody.refetch() }}>Retry timeline read</Button></p>
           : custodyItems.length === 0 ? <p className="rounded-xl border border-border p-4 text-sm">No physical custody movement is recorded. Approval and picking do not mean goods have been dispatched.</p>
-            : <ol className="space-y-3">{custodyItems.map((movement: TransferCustodyMovement) => <li key={movement.id} className="rounded-xl border border-border p-4"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{movement.type} · {movement.quantity} units</p><time className="text-sm text-muted-foreground" dateTime={movement.recordedAt}>{new Date(movement.recordedAt).toLocaleString()}</time></div><p className="mt-2 text-sm">Actor {movement.actorId} · outstanding {movement.outstandingBefore} → {movement.outstandingAfter} · line {movement.lineId.slice(0, 8)}</p><p className="mt-2 break-all text-sm">Reason: {movement.reason} · evidence: {movement.evidenceReference}</p>{movement.stockMovementId && <p className="mt-2 break-all text-xs text-muted-foreground">Stock movement {movement.stockMovementId} · position {movement.stockPositionId} · store {movement.stockStoreId}</p>}</li>)}</ol>}
+            : <ol className="space-y-3">{custodyItems.map((movement: TransferCustodyMovement) => <li key={movement.id} className="rounded-xl border border-border p-4"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{movement.type} · {movement.quantity} units</p><div className="space-y-1 text-sm text-muted-foreground">{movement.type === 'RECEIPT' && <p><span className="font-medium">Physical receipt time:</span> {movement.physicalEventAt ? <time dateTime={movement.physicalEventAt} title={movement.physicalEventAt}>{new Date(movement.physicalEventAt).toLocaleString()}</time> : 'Not available'}</p>}<p><span className="font-medium">Recorded at:</span> <time dateTime={movement.recordedAt} title={movement.recordedAt}>{new Date(movement.recordedAt).toLocaleString()}</time></p></div></div><p className="mt-2 text-sm">Actor {movement.actorId} · outstanding {movement.outstandingBefore} → {movement.outstandingAfter} · line {movement.lineId.slice(0, 8)}</p><p className="mt-2 break-all text-sm">Reason: {movement.reason} · evidence: {movement.evidenceReference}</p>{movement.stockMovementId && <p className="mt-2 break-all text-xs text-muted-foreground">Stock movement {movement.stockMovementId} · position {movement.stockPositionId} · store {movement.stockStoreId}</p>}</li>)}</ol>}
       {custody.hasNextPage && <Button variant="outline" disabled={custody.isFetchingNextPage} onClick={() => { void custody.fetchNextPage() }}>{custody.isFetchingNextPage ? 'Loading custody entries…' : 'Load more custody entries'}</Button>}
     </section>
     <section aria-labelledby="discrepancy-heading" className="space-y-3">

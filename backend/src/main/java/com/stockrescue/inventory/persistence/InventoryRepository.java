@@ -42,6 +42,11 @@ public class InventoryRepository {
 
     public InventoryRepository(JdbcClient jdbc, ObjectMapper json) { this.jdbc=jdbc; this.json=json; }
 
+    public Instant databaseTime() {
+        return jdbc.sql("SELECT clock_timestamp() AS database_time")
+                .query((row, index) -> row.getTimestamp("database_time").toInstant()).single();
+    }
+
     public record Allocation(UUID id,UUID positionId,String bucket,UUID ownerId,long remaining,String state,long version) {}
     public record Movement(UUID id,InventoryOperation operation,long positionVersion,StockBuckets.Delta delta,String reason,String evidenceReference,Instant recordedAt) {}
     public record PositionIdentity(UUID locationId,UUID productId,UUID lotId) { }

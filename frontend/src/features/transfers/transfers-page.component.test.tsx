@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
@@ -11,7 +11,7 @@ import { CreateTransferPanel, HistoricalTransfersPage, TransferDetailView, Trans
 import { reconcileTransferSummaries } from './transfer-summary-reconciliation'
 
 const apiMocks = vi.hoisted(() => ({
-  available: vi.fn(), locations: vi.fn(), stores: vi.fn(), product: vi.fn(), lot: vi.fn(), sourceLocation: vi.fn(), lane: vi.fn(), positions: vi.fn(), sourcePosition: vi.fn(),
+  available: vi.fn(), locations: vi.fn(), stores: vi.fn(), getStore: vi.fn(), product: vi.fn(), lot: vi.fn(), sourceLocation: vi.fn(), lane: vi.fn(), positions: vi.fn(), sourcePosition: vi.fn(),
   custody: vi.fn(), transit: vi.fn(), discrepancies: vi.fn(), activeReturns: vi.fn(), command: vi.fn(),
   capabilities: vi.fn(), settlementPositions: vi.fn(), queue: vi.fn(), historicalQueue: vi.fn(), queueEvidence: vi.fn(), pendingIntents: vi.fn(),
 }))
@@ -30,7 +30,7 @@ vi.mock('@/api/inventory', () => ({
 vi.mock('@/api/storage-locations', () => ({ getStorageLocation: apiMocks.sourceLocation, listStorageLocations: apiMocks.locations }))
 vi.mock('@/api/products', () => ({ getProduct: apiMocks.product }))
 vi.mock('@/api/lots', () => ({ getLot: apiMocks.lot }))
-vi.mock('@/api/stores', () => ({ getStore: vi.fn(), listStores: apiMocks.stores }))
+vi.mock('@/api/stores', () => ({ getStore: apiMocks.getStore, listStores: apiMocks.stores }))
 vi.mock('@/api/configuration', () => ({ lookupLane: apiMocks.lane }))
 vi.mock('@/components/app-link', () => ({ AppLink: ({ href, children, ...props }: React.ComponentProps<'a'>) => <a href={href} {...props}>{children}</a> }))
 vi.mock('@/api/transfers', () => ({
@@ -79,9 +79,8 @@ function queueSummary(overrides: Partial<TransferQueueItem> = {}): TransferQueue
     version: 4, lineCount: 1, outstandingQuantity: 2, ...overrides }
 }
 
-function renderWithTenant(element: React.ReactNode) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={queryClient}><TenantScope.Provider value={['tenant', orgId, 'actor-1']}>{element}</TenantScope.Provider></QueryClientProvider>)
+function renderWithTenant(element: React.ReactNode, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+  return { ...render(<QueryClientProvider client={queryClient}><TenantScope.Provider value={['tenant', orgId, 'actor-1']}>{element}</TenantScope.Provider></QueryClientProvider>), queryClient }
 }
 
 function renderTransfersWorkspace(role = 'ORG_ADMIN') {
@@ -96,6 +95,9 @@ function renderTransfersWorkspace(role = 'ORG_ADMIN') {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  apiMocks.getStore.mockImplementation(async (_org: string, id: string) => id === 'source' || id.startsWith('source-')
+    ? store(id, ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY'])
+    : store(id, ['READ_STORE']))
   apiMocks.stores.mockResolvedValue({ items: [store('source', ['REQUEST_TRANSFER', 'READ_INVENTORY']), store('destination', ['READ_STORE'])], hasMore: false })
   apiMocks.available.mockResolvedValue({ items: [sourcePositionA, sourcePositionB], hasMore: false })
   apiMocks.locations.mockImplementation(async (_org: string, storeId: string) => ({ items: storeId === 'destination' ? [destinationLocation] : [], hasMore: false }))
@@ -384,15 +386,20 @@ it('edits two transfer lines, blocks a duplicate source position and submits eac
   } })
 })
 
-it('finds independently searched source and destination stores on later pages', async () => {
+it('revalidates exact source and destination UUIDs found after more than one hundred search matches', async () => {
   const user = userEvent.setup()
   const onCommand = vi.fn().mockResolvedValue(undefined)
   const sourceStore = store('source-26', ['REQUEST_TRANSFER', 'READ_INVENTORY'])
   const destinationStore = store('destination-26', ['READ_STORE'])
-  apiMocks.stores.mockImplementation(async (_org: string, _state: string, query: string, offset: number, _signal: AbortSignal, limit?: number) => {
-    if (limit === 100) return { items: query === sourceStore.code ? [sourceStore] : query === destinationStore.code ? [destinationStore] : [], hasMore: false }
-    if (query === 'Warehouse Alpha') return offset === 0 ? { items: [], hasMore: true } : { items: [sourceStore], hasMore: false }
-    if (query === 'Warehouse Omega') return offset === 0 ? { items: [], hasMore: true } : { items: [destinationStore], hasMore: false }
+  const sourceMatches = Array.from({ length: 125 }, (_, index) => store(`source-match-${index}`, ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY']))
+  const destinationMatches = Array.from({ length: 125 }, (_, index) => store(`destination-match-${index}`, ['READ_STORE']))
+  apiMocks.stores.mockImplementation(async (_org: string, _state: string, query: string, offset: number) => {
+    if (query === 'Warehouse Alpha') return offset < 125
+      ? { items: sourceMatches.slice(offset, offset + 25), hasMore: true }
+      : { items: [sourceStore], hasMore: false }
+    if (query === 'Warehouse Omega') return offset < 125
+      ? { items: destinationMatches.slice(offset, offset + 25), hasMore: true }
+      : { items: [destinationStore], hasMore: false }
     return { items: [], hasMore: false }
   })
   const pageOne = Array.from({ length: 100 }, (_, index) => ({ ...sourcePositionA, positionId: `position-${index + 1}`, productId: `product-${index + 1}`, lotId: `lot-${index + 1}`, locationId: `source-location-${index + 1}` }))
@@ -412,10 +419,16 @@ it('finds independently searched source and destination stores on later pages', 
   renderWithTenant(<CreateTransferPanel organizationId={orgId} administrator onCommand={onCommand} busy={false} />)
   await user.click(screen.getByRole('button', { name: 'New transfer request' }))
   await user.type(screen.getByLabelText('Find a source store'), 'Warehouse Alpha')
-  await user.click(await screen.findByRole('button', { name: 'Load more source stores' }))
+  for (let page = 1; page <= 5; page++) {
+    await user.click(await screen.findByRole('button', { name: 'Load more source stores' }))
+    await waitFor(() => expect(apiMocks.stores).toHaveBeenCalledWith(orgId, 'ACTIVE', 'Warehouse Alpha', page * 25, expect.any(AbortSignal)))
+  }
   await user.selectOptions(await screen.findByLabelText('Source store'), 'source-26')
   await user.type(screen.getByLabelText('Find a destination store'), 'Warehouse Omega')
-  await user.click(await screen.findByRole('button', { name: 'Load more destination stores' }))
+  for (let page = 1; page <= 5; page++) {
+    await user.click(await screen.findByRole('button', { name: 'Load more destination stores' }))
+    await waitFor(() => expect(apiMocks.stores).toHaveBeenCalledWith(orgId, 'ACTIVE', 'Warehouse Omega', page * 25, expect.any(AbortSignal)))
+  }
   await user.selectOptions(screen.getByLabelText('Destination store'), 'destination-26')
   await user.click(await screen.findByRole('button', { name: 'Load more available source positions' }))
   await user.selectOptions(screen.getByLabelText('Source product and lot'), 'position-101')
@@ -432,6 +445,152 @@ it('finds independently searched source and destination stores on later pages', 
     sourceStoreId: 'source-26', destinationStoreId: 'destination-26',
     lines: [{ sourcePositionId: 'position-101', destinationLocationId: 'destination-location-26', quantity: 1, expectedSourceVersion: 101 }],
   } })
+  expect(apiMocks.getStore).toHaveBeenCalledWith(orgId, sourceStore.id, expect.any(AbortSignal))
+  expect(apiMocks.getStore).toHaveBeenCalledWith(orgId, destinationStore.id, expect.any(AbortSignal))
+  expect(apiMocks.stores.mock.calls.every(call => call[5] !== 100)).toBe(true)
+})
+
+it.each(['source', 'destination'] as const)('keeps a %s store fail-closed during and after a cached refetch error, then restores the intact draft on retry', async target => {
+  const user = userEvent.setup()
+  const onCommand = vi.fn().mockResolvedValue(undefined)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const details: Record<string, Store> = {
+    source: store('source', ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY']),
+    destination: store('destination', ['READ_STORE']),
+  }
+  apiMocks.getStore.mockImplementation(async (_org: string, id: string) => details[id]!)
+  renderWithTenant(<CreateTransferPanel organizationId={orgId} administrator onCommand={onCommand} busy={false} />, client)
+  await user.click(screen.getByRole('button', { name: 'New transfer request' }))
+  await user.selectOptions(screen.getByLabelText('Source store'), 'source')
+  await user.selectOptions(screen.getByLabelText('Destination store'), 'destination')
+  await user.selectOptions(await screen.findByLabelText('Source product and lot'), 'position-a')
+  await user.selectOptions(screen.getByLabelText('Destination receiving location'), 'destination-location')
+  await user.type(screen.getByLabelText('Quantity (EA)'), '4')
+  await user.type(screen.getByLabelText('Reason for transfer'), 'Move reviewed stock')
+  await user.type(screen.getByLabelText('Evidence reference'), 'validation:cached-refetch')
+
+  const createButton = screen.getByRole('button', { name: 'Create transfer request' })
+  await waitFor(() => expect(createButton).toBeEnabled())
+  const pending = Promise.withResolvers<Store>()
+  const started = Promise.withResolvers<void>()
+  let holdNextRead = true
+  apiMocks.getStore.mockImplementation(async (_org: string, id: string) => {
+    if (id === target && holdNextRead) {
+      holdNextRead = false
+      started.resolve()
+      return pending.promise
+    }
+    return details[id]!
+  })
+  const selectionKey = ['tenant', orgId, 'actor-1', 'transfer-create', `${target}-store-selection`, target]
+  void client.invalidateQueries({ queryKey: selectionKey, exact: true })
+  await started.promise
+  await waitFor(() => expect(createButton).toBeDisabled())
+  expect(client.getQueryData(selectionKey)).toMatchObject({ id: target })
+
+  await act(async () => {
+    pending.reject(new ApiError(new Response(null, { status: 403 }), { code: 'FORBIDDEN' } as never))
+  })
+  expect(await screen.findByRole('alert')).toHaveTextContent(`selected ${target} store could not be revalidated`)
+  expect(client.getQueryData(selectionKey)).toMatchObject({ id: target })
+  expect(createButton).toBeDisabled()
+  fireEvent.submit(createButton.closest('form')!)
+  expect(onCommand).not.toHaveBeenCalled()
+
+  await user.click(screen.getByRole('button', { name: `Retry ${target} access` }))
+  await waitFor(() => expect(createButton).toBeEnabled())
+  expect(screen.getByLabelText('Quantity (EA)')).toHaveValue(4)
+  await user.click(createButton)
+  await waitFor(() => expect(onCommand).toHaveBeenCalledTimes(1))
+})
+
+it.each(['source', 'destination'] as const)('does not let a late %s response authorize a different selected store', async target => {
+  const user = userEvent.setup()
+  const onCommand = vi.fn()
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const firstId = target
+  const secondId = target === 'source' ? 'source-b' : 'destination-b'
+  const details: Record<string, Store> = {
+    source: store('source', ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY']),
+    destination: store('destination', ['READ_STORE']),
+    'source-b': store('source-b', ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY']),
+    'destination-b': store('destination-b', ['READ_STORE']),
+  }
+  apiMocks.stores.mockResolvedValue({ items: Object.values(details), hasMore: false })
+  const firstRead = Promise.withResolvers<Store>()
+  const secondRead = Promise.withResolvers<Store>()
+  const firstStarted = Promise.withResolvers<void>()
+  const secondStarted = Promise.withResolvers<void>()
+  apiMocks.getStore.mockImplementation(async (_org: string, id: string) => {
+    if (id === firstId) { firstStarted.resolve(); return firstRead.promise }
+    if (id === secondId) { secondStarted.resolve(); return secondRead.promise }
+    return details[id]!
+  })
+  renderWithTenant(<CreateTransferPanel organizationId={orgId} administrator onCommand={onCommand} busy={false} />, client)
+  await user.click(screen.getByRole('button', { name: 'New transfer request' }))
+  if (target === 'source') await user.selectOptions(screen.getByLabelText('Destination store'), 'destination')
+  else await user.selectOptions(screen.getByLabelText('Source store'), 'source')
+  const selectedStore = screen.getByLabelText(target === 'source' ? 'Source store' : 'Destination store')
+  await user.selectOptions(selectedStore, firstId)
+  await firstStarted.promise
+  await user.selectOptions(selectedStore, secondId)
+  await secondStarted.promise
+
+  const createButton = screen.getByRole('button', { name: 'Create transfer request' })
+  await waitFor(() => expect(createButton).toBeDisabled())
+  await act(async () => { firstRead.resolve(details[firstId]!) })
+  await waitFor(() => expect(createButton).toBeDisabled())
+  expect(selectedStore).toHaveValue(secondId)
+  expect(client.getQueryData(['tenant', orgId, 'actor-1', 'transfer-create', `${target}-store-selection`, secondId])).toBeUndefined()
+
+  await act(async () => {
+    secondRead.reject(new ApiError(new Response(null, { status: 403 }), { code: 'FORBIDDEN' } as never))
+  })
+  expect(await screen.findByRole('alert')).toHaveTextContent(`selected ${target} store could not be revalidated`)
+  expect(createButton).toBeDisabled()
+  fireEvent.submit(createButton.closest('form')!)
+  expect(onCommand).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['source', 'archived', { ...store('source', ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY']), active: false }],
+  ['source', 'missing transfer action', store('source', ['READ_STORE', 'READ_INVENTORY'])],
+  ['source', 'wrong UUID', store('another-source', ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY'])],
+  ['destination', 'archived', { ...store('destination', ['READ_STORE']), active: false }],
+  ['destination', 'missing store read action', store('destination', [])],
+  ['destination', 'wrong UUID', store('another-destination', ['READ_STORE'])],
+] as const)('blocks a selected %s returned as %s', async (target, _caseName, responseStore) => {
+  const user = userEvent.setup()
+  const onCommand = vi.fn()
+  apiMocks.getStore.mockImplementation(async (_org: string, id: string) => {
+    if (id === target) return responseStore
+    return id === 'source' ? store(id, ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY']) : store(id, ['READ_STORE'])
+  })
+  renderWithTenant(<CreateTransferPanel organizationId={orgId} administrator onCommand={onCommand} busy={false} />)
+  await user.click(screen.getByRole('button', { name: 'New transfer request' }))
+  await user.selectOptions(screen.getByLabelText('Source store'), 'source')
+  if (target === 'destination') await user.selectOptions(screen.getByLabelText('Destination store'), 'destination')
+  const alertText = target === 'source' ? 'selected source store is no longer active' : 'selected destination store is no longer active'
+  expect(await screen.findByRole('alert')).toHaveTextContent(alertText)
+  expect(screen.getByRole('button', { name: 'Create transfer request' })).toBeDisabled()
+  fireEvent.submit(screen.getByRole('button', { name: 'Create transfer request' }).closest('form')!)
+  expect(onCommand).not.toHaveBeenCalled()
+})
+
+it.each([403, 404])('keeps a source selection unavailable after the detail endpoint returns %i', async status => {
+  const user = userEvent.setup()
+  const onCommand = vi.fn()
+  apiMocks.getStore.mockImplementation(async (_org: string, id: string) => {
+    if (id === 'source') throw new ApiError(new Response(null, { status }), { code: status === 403 ? 'FORBIDDEN' : 'NOT_FOUND' } as never)
+    return store(id, ['READ_STORE'])
+  })
+  renderWithTenant(<CreateTransferPanel organizationId={orgId} administrator onCommand={onCommand} busy={false} />)
+  await user.click(screen.getByRole('button', { name: 'New transfer request' }))
+  await user.selectOptions(screen.getByLabelText('Source store'), 'source')
+  expect(await screen.findByRole('alert')).toHaveTextContent('selected source store could not be revalidated')
+  expect(screen.getByRole('button', { name: 'Retry source access' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Create transfer request' })).toBeDisabled()
+  expect(onCommand).not.toHaveBeenCalled()
 })
 
 it('keeps the selected stores and complete draft when source search is refined', async () => {
@@ -439,8 +598,7 @@ it('keeps the selected stores and complete draft when source search is refined',
   const onCommand = vi.fn().mockResolvedValue(undefined)
   const source = { ...store('source-alpha', ['REQUEST_TRANSFER', 'READ_INVENTORY']), code: 'ALPHA', name: 'Warehouse Alpha' }
   const destination = { ...store('destination-omega', ['READ_STORE']), code: 'OMEGA', name: 'Warehouse Omega' }
-  apiMocks.stores.mockImplementation(async (_org: string, _state: string, query: string, _offset: number, _signal: AbortSignal, limit?: number) => {
-    if (limit === 100) return { items: query === source.code ? [source] : query === destination.code ? [destination] : [], hasMore: false }
+  apiMocks.stores.mockImplementation(async (_org: string, _state: string, query: string) => {
     if (query === 'Alpha') return { items: [source], hasMore: false }
     if (query === 'Omega') return { items: [destination], hasMore: false }
     if (query.startsWith('Alpha refined')) return { items: [], hasMore: false }
@@ -474,6 +632,9 @@ it('keeps the selected stores and complete draft when source search is refined',
   await waitFor(() => expect(screen.getByRole('button', { name: 'Create transfer request' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: 'Create transfer request' }))
   await waitFor(() => expect(onCommand).toHaveBeenCalledTimes(1))
+  expect(apiMocks.getStore).toHaveBeenCalledWith(orgId, source.id, expect.any(AbortSignal))
+  expect(apiMocks.getStore).toHaveBeenCalledWith(orgId, destination.id, expect.any(AbortSignal))
+  expect(apiMocks.stores.mock.calls.every(call => call[5] !== 100)).toBe(true)
   expect(onCommand.mock.calls[0]![0]).toMatchObject({ operation: 'CREATE', body: {
     sourceStoreId: source.id, destinationStoreId: destination.id, reason: 'Move reviewed stock', evidenceReference: 'plan:alpha-omega',
     lines: [{ sourcePositionId: 'position-a', destinationLocationId: 'destination-location', quantity: 4, expectedSourceVersion: 3 }],
@@ -792,10 +953,14 @@ it('appends the next custody and reconciliation pages without replacing the firs
   const firstMovement = { id: 'movement-1', lineId: 'line-1', version: 1, type: 'DISPATCH', commandId: 'command-1',
     actorId: 'actor-1', quantity: 2, outstandingBefore: 0, outstandingAfter: 2, stockStoreId: 'source',
     stockMovementId: 'stock-1', stockPositionId: 'position-1', reason: 'First custody entry',
-    evidenceReference: 'dispatch:one', recordedAt: '2026-11-20T10:00:00Z' }
-  const secondMovement = { ...firstMovement, id: 'movement-2', version: 2, type: 'RECEIPT', reason: 'Second custody entry', recordedAt: '2026-11-20T11:00:00Z' }
+    evidenceReference: 'dispatch:one', physicalEventAt: null, recordedAt: '2026-11-20T10:00:00Z' }
+  const secondMovement = { ...firstMovement, id: 'movement-2', version: 2, type: 'RECEIPT', reason: 'Second custody entry',
+    physicalEventAt: null, recordedAt: '2026-11-20T11:00:00Z' }
+  const thirdMovement = { ...secondMovement, id: 'movement-3', version: 3, reason: 'Third custody entry',
+    physicalEventAt: '2026-11-20T11:30:00Z', recordedAt: '2026-11-20T12:00:00Z' }
   apiMocks.custody.mockImplementation(async (_org: string, _transfer: string, _signal: AbortSignal, cursor: string | null) => ({
-    items: [cursor === null ? firstMovement : secondMovement], nextCursor: cursor === null ? 'movement-cursor' : null, hasMore: cursor === null,
+    items: cursor === null ? [firstMovement] : [secondMovement, thirdMovement],
+    nextCursor: cursor === null ? 'movement-cursor' : null, hasMore: cursor === null,
   }))
   const firstEvidence = { id: 'evidence-1', transferId: transfer.id, lineId: 'line-1', type: 'DISCREPANCY',
     reason: 'First evidence entry', evidenceReference: 'case:first', expectedState: '{}', observedState: '{}',
@@ -810,7 +975,12 @@ it('appends the next custody and reconciliation pages without replacing the firs
   expect(await screen.findByText(/First custody entry/)).toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Load more custody entries' }))
   expect(await screen.findByText(/Second custody entry/)).toBeInTheDocument()
+  expect(await screen.findByText(/Third custody entry/)).toBeInTheDocument()
   expect(screen.getByText(/First custody entry/)).toBeInTheDocument()
+  expect(screen.getAllByText('Physical receipt time:')).toHaveLength(2)
+  expect(screen.getByText('Not available')).toBeInTheDocument()
+  expect(document.querySelectorAll('time[dateTime="2026-11-20T11:30:00Z"]')).toHaveLength(1)
+  expect(screen.getAllByText('Recorded at:')).toHaveLength(3)
 
   expect(await screen.findByText(/case:first/)).toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Load more reconciliation records' }))

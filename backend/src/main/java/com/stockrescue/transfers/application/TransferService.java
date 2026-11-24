@@ -550,6 +550,10 @@ public class TransferService {
         requireSettleable(current,normalized.expectedVersion());
         var detail=transfers.detail(organizationId,transferId).orElseThrow(OrganizationUnavailableException::new);
         var byId=detail.lines().stream().collect(java.util.stream.Collectors.toMap(TransferRepository.TransferLine::id,line -> line));
+        var requestedQuantities=detail.lines().stream().collect(java.util.stream.Collectors.toMap(
+                TransferRepository.TransferLine::id,TransferRepository.TransferLine::requestedQuantity));
+        var dispatchRecordedAtByLine=verifiedDispatchBoundaries(requestedQuantities,
+                transfers.dispatchEvidence(organizationId,transferId));
         var stockLines=new ArrayList<TransferReceiptLine>(normalized.lines().size());
         var quantityByLine=new java.util.HashMap<UUID,Long>();
         var returnRequestsByLine=new java.util.HashMap<UUID,TransferRepository.PendingReturn>();
@@ -565,7 +569,7 @@ public class TransferService {
             quantityByLine.put(line.id(),requested.quantity());
         }
         var posted=stock.receiveForTransfer(actor,organizationId,current.destinationStoreId(),normalized.requestId(),transferId,
-                normalized.physicallyReceivedAt(),normalized.reason(),normalized.evidenceReference(),stockLines);
+                normalized.physicallyReceivedAt(),normalized.reason(),normalized.evidenceReference(),stockLines,dispatchRecordedAtByLine);
         TransferStatus nextStatus=receiptStatus(current.status(),detail.lines(),quantityByLine);
         long version=nextVersion(current.version());
         UUID commandId=UUID.randomUUID();
@@ -602,6 +606,27 @@ public class TransferService {
                         "commandId",commandId,"stockMovementId",posted.movementId(),"documentReference",normalized.documentReference(),
                         "lineCount",normalized.lines().size()),normalized.reason());
         return outcome;
+    }
+
+    static Map<UUID,Instant> verifiedDispatchBoundaries(Map<UUID,Long> requestedQuantities,
+            List<TransferRepository.DispatchEvidence> evidence) {
+        if(requestedQuantities==null || requestedQuantities.isEmpty() || evidence==null)
+            throw new TransferWriteConflict();
+        var evidenceByLine=new java.util.HashMap<UUID,TransferRepository.DispatchEvidence>();
+        for(var movement:evidence) {
+            if(movement.lineId()==null || evidenceByLine.putIfAbsent(movement.lineId(),movement)!=null)
+                throw new TransferWriteConflict();
+        }
+        if(evidenceByLine.size()!=requestedQuantities.size()) throw new TransferWriteConflict();
+        var recordedAtByLine=new java.util.HashMap<UUID,Instant>();
+        for(var entry:requestedQuantities.entrySet()) {
+            var movement=evidenceByLine.get(entry.getKey());
+            if(entry.getValue()==null || movement==null || movement.movementCount()!=1
+                    || movement.quantity()!=entry.getValue() || movement.recordedAt()==null)
+                throw new TransferWriteConflict();
+            recordedAtByLine.put(entry.getKey(),movement.recordedAt());
+        }
+        return Map.copyOf(recordedAtByLine);
     }
 
     @Transactional

@@ -61,7 +61,9 @@ public class TransferRepository {
     public record CustodyMovement(UUID id, UUID lineId, long version, TransferMovementType type,
             UUID commandId, UUID actorId, long quantity, long outstandingBefore, long outstandingAfter,
             UUID stockStoreId, UUID stockMovementId, UUID stockPositionId, String reason,
-            String evidenceReference, Instant recordedAt) { }
+            String evidenceReference, Instant physicalEventAt, Instant recordedAt) { }
+
+    public record DispatchEvidence(UUID lineId, long movementCount, long quantity, Instant recordedAt) { }
 
     public record InTransitLine(UUID transferId, UUID lineId, UUID sourceStoreId, UUID destinationStoreId,
             UUID sourcePositionId, UUID destinationLocationId, long outstanding, Instant dispatchedAt,
@@ -849,26 +851,44 @@ public class TransferRepository {
                         participant(row, "historical_destination"))).optional();
     }
 
-    public Page<CustodyMovement> custodyTimeline(UUID organizationId, UUID transferId, int offset, int limit) {
-        validatePage(offset, limit);
-        var rows = jdbc.sql("""
-                SELECT id,line_id,version,movement_type,command_id,actor_user_id,quantity,outstanding_before,outstanding_after,
-                    stock_store_id,stock_movement_id,stock_position_id,reason,evidence_reference,recorded_at
+    private static final String CUSTODY_TIMELINE_SELECT = """
+            SELECT m.id,m.line_id,m.version,m.movement_type,m.command_id,m.actor_user_id,m.quantity,
+                m.outstanding_before,m.outstanding_after,m.stock_store_id,m.stock_movement_id,m.stock_position_id,
+                m.reason,m.evidence_reference,
+                CASE WHEN m.movement_type='RECEIPT' THEN (
+                    SELECT CASE WHEN count(*)=1 THEN min(d.physical_event_at) END
+                    FROM stockrescue.transfer_physical_document d
+                    JOIN stockrescue.transfer_physical_document_line dl
+                      ON dl.org_id=d.org_id AND dl.transfer_id=d.transfer_id AND dl.document_id=d.id
+                     AND dl.document_type='RECEIPT' AND dl.line_id=m.line_id
+                    WHERE d.org_id=m.org_id AND d.transfer_id=m.transfer_id AND d.command_id=m.command_id
+                      AND d.document_type='RECEIPT' AND d.store_side='DESTINATION'
+                      AND d.document_store_id=m.stock_store_id
+                ) END AS physical_event_at,
+                m.recorded_at
+            FROM stockrescue.transfer_custody_movement m
+            WHERE m.org_id=:org AND m.transfer_id=:transfer
+            """;
+
+    public List<DispatchEvidence> dispatchEvidence(UUID organizationId, UUID transferId) {
+        return jdbc.sql("""
+                SELECT line_id,count(*) AS movement_count,max(quantity) AS quantity,min(recorded_at) AS recorded_at
                 FROM stockrescue.transfer_custody_movement
-                WHERE org_id=:org AND transfer_id=:transfer
-                ORDER BY recorded_at DESC,id DESC LIMIT :limit OFFSET :offset
+                WHERE org_id=:org AND transfer_id=:transfer AND movement_type='DISPATCH'
+                GROUP BY line_id
                 """)
                 .param("org", organizationId).param("transfer", transferId)
-                .param("limit", limit + 1).param("offset", offset)
-                .query((row, index) -> new CustodyMovement(row.getObject("id", UUID.class),
-                        row.getObject("line_id", UUID.class), row.getLong("version"),
-                        TransferMovementType.valueOf(row.getString("movement_type")), row.getObject("command_id", UUID.class),
-                        row.getObject("actor_user_id", UUID.class),
-                        row.getLong("quantity"), row.getLong("outstanding_before"), row.getLong("outstanding_after"),
-                        row.getObject("stock_store_id", UUID.class), row.getObject("stock_movement_id", UUID.class),
-                        row.getObject("stock_position_id", UUID.class), row.getString("reason"),
-                        row.getString("evidence_reference"), row.getTimestamp("recorded_at").toInstant()))
+                .query((row, index) -> new DispatchEvidence(row.getObject("line_id", UUID.class),
+                        row.getLong("movement_count"), row.getLong("quantity"), row.getTimestamp("recorded_at").toInstant()))
                 .list();
+    }
+
+    public Page<CustodyMovement> custodyTimeline(UUID organizationId, UUID transferId, int offset, int limit) {
+        validatePage(offset, limit);
+        var rows = jdbc.sql(CUSTODY_TIMELINE_SELECT + " ORDER BY m.recorded_at DESC,m.id DESC LIMIT :limit OFFSET :offset")
+                .param("org", organizationId).param("transfer", transferId)
+                .param("limit", limit + 1).param("offset", offset)
+                .query((row, index) -> custodyMovement(row)).list();
         return page(rows, limit);
     }
 
@@ -876,27 +896,29 @@ public class TransferRepository {
         validateCursorPage(limit);
         String scope="custody:"+organizationId+":"+transferId;
         var position=cursor==null?null:TransferCursor.timestampId(scope,cursor);
-        var rows=jdbc.sql("""
-                SELECT id,line_id,version,movement_type,command_id,actor_user_id,quantity,outstanding_before,outstanding_after,
-                    stock_store_id,stock_movement_id,stock_position_id,reason,evidence_reference,recorded_at
-                FROM stockrescue.transfer_custody_movement
-                WHERE org_id=:org AND transfer_id=:transfer
-                  AND (CAST(:cursorAt AS timestamptz) IS NULL OR (recorded_at,id)<(:cursorAt,:cursorId))
-                ORDER BY recorded_at DESC,id DESC LIMIT :limit
+        var rows=jdbc.sql(CUSTODY_TIMELINE_SELECT + """
+                AND (CAST(:cursorAt AS timestamptz) IS NULL OR (m.recorded_at,m.id)<(:cursorAt,:cursorId))
+                ORDER BY m.recorded_at DESC,m.id DESC LIMIT :limit
                 """)
                 .param("org",organizationId).param("transfer",transferId)
                 .param("cursorAt",position==null?null:position.recordedAt().atOffset(ZoneOffset.UTC),Types.TIMESTAMP_WITH_TIMEZONE)
                 .param("cursorId",position==null?null:position.id(),Types.OTHER).param("limit",limit+1)
-                .query((row,index)->new CustodyMovement(row.getObject("id",UUID.class),row.getObject("line_id",UUID.class),
-                        row.getLong("version"),TransferMovementType.valueOf(row.getString("movement_type")),
-                        row.getObject("command_id",UUID.class),row.getObject("actor_user_id",UUID.class),row.getLong("quantity"),
-                        row.getLong("outstanding_before"),row.getLong("outstanding_after"),row.getObject("stock_store_id",UUID.class),
-                        row.getObject("stock_movement_id",UUID.class),row.getObject("stock_position_id",UUID.class),row.getString("reason"),
-                        row.getString("evidence_reference"),row.getTimestamp("recorded_at").toInstant())).list();
+                .query((row,index)->custodyMovement(row)).list();
         boolean more=rows.size()>limit;
         var items=rows.stream().limit(limit).toList();
         String next=more?TransferCursor.timestampId(scope,items.getLast().recordedAt(),items.getLast().id()):null;
         return new CursorPage<>(items,next,more);
+    }
+
+    private static CustodyMovement custodyMovement(java.sql.ResultSet row) throws java.sql.SQLException {
+        var physicalEventAt = row.getTimestamp("physical_event_at");
+        return new CustodyMovement(row.getObject("id", UUID.class), row.getObject("line_id", UUID.class),
+                row.getLong("version"), TransferMovementType.valueOf(row.getString("movement_type")),
+                row.getObject("command_id", UUID.class), row.getObject("actor_user_id", UUID.class), row.getLong("quantity"),
+                row.getLong("outstanding_before"), row.getLong("outstanding_after"), row.getObject("stock_store_id", UUID.class),
+                row.getObject("stock_movement_id", UUID.class), row.getObject("stock_position_id", UUID.class), row.getString("reason"),
+                row.getString("evidence_reference"), physicalEventAt == null ? null : physicalEventAt.toInstant(),
+                row.getTimestamp("recorded_at").toInstant());
     }
 
     public Page<InTransitLine> inTransitAging(UUID organizationId, UUID storeId, int offset, int limit) {

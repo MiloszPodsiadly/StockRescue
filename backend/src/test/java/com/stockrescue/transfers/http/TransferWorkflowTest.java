@@ -72,7 +72,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "stockrescue.inventory.outbox-relay.enabled=false")
+        properties = {
+                "stockrescue.inventory.outbox-relay.enabled=false",
+                "stockrescue.inventory.messaging.topic=stockrescue.transfer-workflow.inventory.events.v1",
+                "spring.kafka.consumer.group-id=stockrescue-transfer-workflow-test"
+        })
 @ActiveProfiles("local")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class TransferWorkflowTest extends InfrastructureTestBase {
@@ -2165,20 +2169,61 @@ class TransferWorkflowTest extends InfrastructureTestBase {
     }
 
     @Test
-    void physicalReceiptUsesServerTimeByDefaultAndPreservesValidHistoricalTime() throws Exception {
+    void physicalReceiptRequiresDispatchChronologyAndPreservesServerAndHistoricalTimes() throws Exception {
         var browser=fixture.owner();
         var prepared=preparePickedTransfer(browser,3);
         dispatch(browser,prepared,3,"dispatch-authoritative-receipt-time");
 
+        var dispatchRecordedAt=jdbc.sql("SELECT recorded_at FROM stockrescue.transfer_custody_movement WHERE org_id=:org AND transfer_id=:transfer AND line_id=:line AND movement_type='DISPATCH'")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).param("line",prepared.lineId())
+                .query(java.time.OffsetDateTime.class).single().toInstant();
+        var transferVersionBefore=jdbc.sql("SELECT version FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single();
+        var transferCommandsBefore=count("transfer_command_receipt",fixture.organization);
+        var inventoryCommandsBefore=count("inventory_command_receipt",fixture.organization);
+        var transferOutboxBefore=jdbc.sql("SELECT count(*) FROM stockrescue.transfer_outbox_event WHERE org_id=:org AND transfer_id=:transfer")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single();
+        var inventoryOutboxBefore=jdbc.sql("SELECT count(*) FROM stockrescue.inventory_outbox_event WHERE org_id=:org AND store_id=:store")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).query(Long.class).single();
+        var destinationPositionsBefore=jdbc.sql("SELECT count(*) FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).param("location",fixture.destinationLocation)
+                .query(Long.class).single();
+
         var future=new java.util.LinkedHashMap<>(receiveRequest(prepared,4,0,1,"future-physical-receipt-time"));
-        future.put("physicallyReceivedAt",Instant.now().plus(Duration.ofMinutes(2)));
+        var databaseNow=jdbc.sql("SELECT clock_timestamp() AS database_time")
+                .query((row,index)->row.getTimestamp("database_time").toInstant()).single();
+        future.put("physicallyReceivedAt",databaseNow.plus(Duration.ofMinutes(2)));
         problem(browser.write("POST",base()+"/"+prepared.transferId()+"/receive",future),422,"INVALID_REQUEST");
+
+        var beforeDispatch=new java.util.LinkedHashMap<>(receiveRequest(prepared,4,0,1,"before-dispatch-physical-receipt-time"));
+        beforeDispatch.put("physicallyReceivedAt",dispatchRecordedAt.minusNanos(1_000));
+        problem(browser.write("POST",base()+"/"+prepared.transferId()+"/receive",beforeDispatch),422,"INVALID_REQUEST");
+
         assertThat(stockOnHand(fixture.destinationStore,fixture.destinationLocation)).isZero();
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_type='RECEIPT'")
                 .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_custody_movement WHERE org_id=:org AND transfer_id=:transfer AND movement_type='RECEIPT'")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement WHERE org_id=:org AND operation='TRANSFER_IN'")
+                .param("org",fixture.organization).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_command_receipt WHERE org_id=:org AND transfer_id=:transfer AND operation='RECEIVE'")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_command_receipt WHERE org_id=:org AND store_id=:store AND operation='TRANSFER_IN'")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT version FROM stockrescue.transfer_order WHERE org_id=:org AND id=:transfer")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single()).isEqualTo(transferVersionBefore);
+        assertThat(count("transfer_command_receipt",fixture.organization)).isEqualTo(transferCommandsBefore);
+        assertThat(count("inventory_command_receipt",fixture.organization)).isEqualTo(inventoryCommandsBefore);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.transfer_outbox_event WHERE org_id=:org AND transfer_id=:transfer")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single()).isEqualTo(transferOutboxBefore);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_outbox_event WHERE org_id=:org AND store_id=:store")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).query(Long.class).single()).isEqualTo(inventoryOutboxBefore);
+        assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_position WHERE org_id=:org AND store_id=:store AND location_id=:location")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).param("location",fixture.destinationLocation)
+                .query(Long.class).single()).isEqualTo(destinationPositionsBefore);
 
-        var physicalEventAt=Instant.now().minus(Duration.ofHours(2)).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
-        var historical=new java.util.LinkedHashMap<>(receiveRequest(prepared,4,0,1,"backdated-physical-receipt-time"));
+        var physicalEventAt=dispatchRecordedAt;
+        var historical=new java.util.LinkedHashMap<>(receiveRequest(prepared,4,0,1,"physical-receipt-at-dispatch-boundary"));
         historical.put("physicallyReceivedAt",physicalEventAt);
         var received=browser.write("POST",base()+"/"+prepared.transferId()+"/receive",historical);
         assertThat(received.statusCode()).as(received.body()).isEqualTo(200);
@@ -2186,13 +2231,77 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(replayed.statusCode()).as(replayed.body()).isEqualTo(200);
         assertThat(tree(replayed).path("commandId").stringValue()).isEqualTo(tree(received).path("commandId").stringValue());
         assertThat(tree(replayed).path("stockMovementId").stringValue()).isEqualTo(tree(received).path("stockMovementId").stringValue());
-        var storedPhysicalEvent=jdbc.sql("SELECT physical_event_at FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_type='RECEIPT'")
+        var changedHistorical=new java.util.LinkedHashMap<>(historical);
+        changedHistorical.put("physicallyReceivedAt",physicalEventAt.plusSeconds(1));
+        problem(browser.write("POST",base()+"/"+prepared.transferId()+"/receive",changedHistorical),409,"IDEMPOTENCY_CONFLICT");
+        var storedPhysicalEvent=jdbc.sql("SELECT physical_event_at FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_type='RECEIPT' AND document_reference='physical-receipt-at-dispatch-boundary'")
                 .param("org",fixture.organization).param("transfer",prepared.transferId())
                 .query(java.time.OffsetDateTime.class).single().toInstant();
         assertThat(storedPhysicalEvent).isEqualTo(physicalEventAt);
+
+        var delayedPhysicalEventAt=jdbc.sql("SELECT clock_timestamp() AS database_time")
+                .query((row,index)->row.getTimestamp("database_time").toInstant()).single();
+        assertThat(delayedPhysicalEventAt).isAfter(dispatchRecordedAt);
+        var delayedReceipt=new java.util.LinkedHashMap<>(receiveRequest(prepared,5,1,1,"delayed-physical-receipt-time"));
+        delayedReceipt.put("physicallyReceivedAt",delayedPhysicalEventAt);
+        var delayedResult=browser.write("POST",base()+"/"+prepared.transferId()+"/receive",delayedReceipt);
+        assertThat(delayedResult.statusCode()).as(delayedResult.body()).isEqualTo(200);
+        var delayedReplay=browser.write("POST",base()+"/"+prepared.transferId()+"/receive",delayedReceipt);
+        assertThat(delayedReplay.statusCode()).as(delayedReplay.body()).isEqualTo(200);
+        assertThat(tree(delayedReplay).path("commandId").stringValue()).isEqualTo(tree(delayedResult).path("commandId").stringValue());
+        var changedDelayed=new java.util.LinkedHashMap<>(delayedReceipt);
+        changedDelayed.put("physicallyReceivedAt",delayedPhysicalEventAt.plusSeconds(1));
+        problem(browser.write("POST",base()+"/"+prepared.transferId()+"/receive",changedDelayed),409,"IDEMPOTENCY_CONFLICT");
+
+        var defaultReceipt=new java.util.LinkedHashMap<>(receiveRequest(prepared,6,2,1,"server-assigned-physical-receipt-time"));
+        defaultReceipt.remove("physicallyReceivedAt");
+        var defaultRequestId=(UUID)defaultReceipt.get("requestId");
+        var defaultResult=browser.write("POST",base()+"/"+prepared.transferId()+"/receive",defaultReceipt);
+        assertThat(defaultResult.statusCode()).as(defaultResult.body()).isEqualTo(200);
+        var defaultDocumentTime=jdbc.sql("SELECT physical_event_at FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_reference=:reference")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).param("reference","server-assigned-physical-receipt-time")
+                .query(java.time.OffsetDateTime.class).single().toInstant();
+        var defaultInventoryTime=Instant.parse(jdbc.sql("SELECT outcome->>'physicalReceiptAt' FROM stockrescue.inventory_command_receipt WHERE org_id=:org AND store_id=:store AND request_id=:request")
+                .param("org",fixture.organization).param("store",fixture.destinationStore).param("request",defaultRequestId)
+                .query(String.class).single());
+        assertThat(defaultDocumentTime).isEqualTo(defaultInventoryTime);
+        assertThat(defaultDocumentTime).isAfterOrEqualTo(dispatchRecordedAt);
+        var defaultReplay=browser.write("POST",base()+"/"+prepared.transferId()+"/receive",defaultReceipt);
+        assertThat(defaultReplay.statusCode()).as(defaultReplay.body()).isEqualTo(200);
+        assertThat(jdbc.sql("SELECT physical_event_at FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_reference=:reference")
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).param("reference","server-assigned-physical-receipt-time")
+                .query(java.time.OffsetDateTime.class).single().toInstant()).isEqualTo(defaultDocumentTime);
+        var changedDefault=new java.util.LinkedHashMap<>(defaultReceipt);
+        changedDefault.put("physicallyReceivedAt",defaultDocumentTime.plusSeconds(1));
+        problem(browser.write("POST",base()+"/"+prepared.transferId()+"/receive",changedDefault),409,"IDEMPOTENCY_CONFLICT");
+        var timelineResponse=browser.get(base()+"/"+prepared.transferId()+"/custody?limit=20");
+        assertThat(timelineResponse.statusCode()).as(timelineResponse.body()).isEqualTo(200);
+        var timelineItems=java.util.stream.StreamSupport.stream(tree(timelineResponse).path("items").spliterator(),false).toList();
+        var dispatchMovement=timelineItems.stream().filter(item->item.path("type").asString().equals("DISPATCH")).findFirst().orElseThrow();
+        assertThat(dispatchMovement.path("physicalEventAt").isNull()).isTrue();
+        assertThat(Instant.parse(dispatchMovement.path("recordedAt").asString())).isEqualTo(dispatchRecordedAt);
+        var historicalMovement=timelineItems.stream()
+                .filter(item->item.path("commandId").asString().equals(tree(received).path("commandId").asString())).findFirst().orElseThrow();
+        assertThat(Instant.parse(historicalMovement.path("physicalEventAt").asString())).isEqualTo(storedPhysicalEvent);
+        assertThat(Instant.parse(historicalMovement.path("recordedAt").asString())).isAfter(dispatchRecordedAt);
+        var delayedMovement=timelineItems.stream()
+                .filter(item->item.path("commandId").asString().equals(tree(delayedResult).path("commandId").asString())).findFirst().orElseThrow();
+        assertThat(Instant.parse(delayedMovement.path("physicalEventAt").asString())).isEqualTo(delayedPhysicalEventAt);
+        var defaultMovement=timelineItems.stream()
+                .filter(item->item.path("commandId").asString().equals(tree(defaultResult).path("commandId").asString())).findFirst().orElseThrow();
+        assertThat(Instant.parse(defaultMovement.path("physicalEventAt").asString())).isEqualTo(defaultDocumentTime);
+        var offsetTimelineResponse=browser.get(base()+"/"+prepared.transferId()+"/custody?offset=1&limit=20");
+        assertThat(offsetTimelineResponse.statusCode()).as(offsetTimelineResponse.body()).isEqualTo(200);
+        var offsetItems=java.util.stream.StreamSupport.stream(tree(offsetTimelineResponse).path("items").spliterator(),false).toList();
+        assertThat(offsetItems).hasSize(3);
+        assertThat(offsetItems).filteredOn(item->item.path("type").asString().equals("RECEIPT"))
+                .hasSize(2).allSatisfy(item->assertThat(item.path("physicalEventAt").asString()).isNotBlank());
+        assertThat(offsetItems).filteredOn(item->item.path("type").asString().equals("DISPATCH"))
+                .hasSize(1).allSatisfy(item->assertThat(item.path("physicalEventAt").isNull()).isTrue());
+        assertThat(offsetItems.stream().map(item->item.path("id").asString()).toList()).doesNotHaveDuplicates();
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.stock_movement m JOIN stockrescue.transfer_custody_movement c ON c.org_id=m.org_id AND c.stock_movement_id=m.id WHERE c.org_id=:org AND c.transfer_id=:transfer AND c.movement_type='RECEIPT' AND m.operation='TRANSFER_IN'")
-                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single()).isEqualTo(1);
-        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("3:1:0:0:2");
+                .param("org",fixture.organization).param("transfer",prepared.transferId()).query(Long.class).single()).isEqualTo(3);
+        assertThat(custody(prepared.transferId(),prepared.lineId())).isEqualTo("3:3:0:0:0");
     }
 
     @Test
@@ -2245,13 +2354,15 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         assertThat(second.path("hasMore").asBoolean()).isTrue();
         assertThat(third.path("items")).hasSize(2);
         assertThat(third.path("hasMore").asBoolean()).isFalse();
-        var movementIds = java.util.stream.Stream.of(first, second, third)
-                .flatMap(page -> java.util.stream.StreamSupport.stream(page.path("items").spliterator(), false))
-                .map(item -> item.path("id").asString()).toList();
+        var movements = java.util.stream.Stream.of(first, second, third)
+                .flatMap(page -> java.util.stream.StreamSupport.stream(page.path("items").spliterator(), false)).toList();
+        var movementIds = movements.stream().map(item -> item.path("id").asString()).toList();
         assertThat(movementIds).hasSize(102).doesNotHaveDuplicates();
-        assertThat(java.util.stream.Stream.of(first, second, third)
-                .flatMap(page -> java.util.stream.StreamSupport.stream(page.path("items").spliterator(), false))
-                .filter(item -> item.path("type").asString().equals("RECEIPT")).count()).isEqualTo(101);
+        var receiptMovements = movements.stream().filter(item -> item.path("type").asString().equals("RECEIPT")).toList();
+        assertThat(receiptMovements).hasSize(101);
+        assertThat(receiptMovements).allSatisfy(item -> assertThat(item.path("physicalEventAt").asString()).isNotBlank());
+        assertThat(movements.stream().filter(item -> item.path("type").asString().equals("DISPATCH")))
+                .singleElement().satisfies(item -> assertThat(item.path("physicalEventAt").isNull()).isTrue());
     }
 
     @Test
@@ -2792,6 +2903,23 @@ class TransferWorkflowTest extends InfrastructureTestBase {
         UUID secondLineId = UUID.fromString(secondLine.path("id").asString());
         assertThat(custody(transferId, firstLineId)).isEqualTo(firstDispatched + ":" + (firstDispatched - 1) + ":0:0:1");
         assertThat(custody(transferId, secondLineId)).isEqualTo(secondDispatched + ":" + secondDispatched + ":0:0:0");
+        var physicalReceiptAt=jdbc.sql("SELECT physical_event_at FROM stockrescue.transfer_physical_document WHERE org_id=:org AND transfer_id=:transfer AND document_type='RECEIPT' AND document_reference='receipt-two-lines'")
+                .param("org",fixture.organization).param("transfer",transferId).query(java.time.OffsetDateTime.class).single().toInstant();
+        var receiptTimelineResponse=manager.get(base()+"/"+transferId+"/custody?limit=50");
+        assertThat(receiptTimelineResponse.statusCode()).as(receiptTimelineResponse.body()).isEqualTo(200);
+        var receiptTimelineItems=java.util.stream.StreamSupport.stream(tree(receiptTimelineResponse).path("items").spliterator(),false).toList();
+        var receiptMovements=receiptTimelineItems.stream().filter(item->item.path("type").asString().equals("RECEIPT")).toList();
+        assertThat(receiptMovements).hasSize(2);
+        assertThat(receiptMovements.stream().map(item->item.path("lineId").asString()).toList())
+                .containsExactlyInAnyOrder(firstLineId.toString(),secondLineId.toString());
+        var receiptCommandId=tree(receive).path("commandId").asString();
+        assertThat(receiptMovements).allSatisfy(item->{
+            assertThat(item.path("commandId").asString()).isEqualTo(receiptCommandId);
+            assertThat(Instant.parse(item.path("physicalEventAt").asString())).isEqualTo(physicalReceiptAt);
+        });
+        assertThat(receiptTimelineItems.stream().map(item->item.path("id").asString()).toList()).hasSize(4).doesNotHaveDuplicates();
+        assertThat(receiptTimelineItems.stream().filter(item->item.path("type").asString().equals("DISPATCH")))
+                .allSatisfy(item->assertThat(item.path("physicalEventAt").isNull()).isTrue());
 
         var damage = manager.write("POST", base() + "/" + transferId + "/damage", Map.of(
                 "requestId", UUID.randomUUID(), "expectedVersion", 6, "documentReference", "damage-two-lines",

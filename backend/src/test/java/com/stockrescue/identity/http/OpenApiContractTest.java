@@ -215,6 +215,16 @@ class OpenApiContractTest extends InfrastructureTestBase {
                 .extracting(value -> value.asString()).containsExactly("string", "null");
         assertThat(schemas.path("TransferSettlementPositionVersion").path("required"))
                 .anyMatch(value -> value.asString().equals("positionId"));
+        var custodyRead=document.path("paths").path(transferBase+"/{transferId}/custody").path("get");
+        assertThat(custodyRead.path("operationId").asString()).isEqualTo("getTransferCustodyTimeline");
+        assertThat(custodyRead.path("security").get(0).has("session")).isTrue();
+        var custodyMovement=schemas.path("TransferCustodyMovement");
+        var custodyMovementProperties=custodyMovement.path("properties");
+        assertThat(custodyMovement.path("required")).anyMatch(value->value.asString().equals("physicalEventAt"));
+        assertThat(custodyMovementProperties.path("physicalEventAt").path("type"))
+                .extracting(value->value.asString()).containsExactly("string","null");
+        assertThat(custodyMovementProperties.path("physicalEventAt").path("format").asString()).isEqualTo("date-time");
+        assertThat(custodyMovementProperties.has("recordedAt")).isTrue();
 
         var inventory="/api/v1/organizations/{organizationId}/stores/{storeId}/inventory";
         var inventoryPaths=document.path("paths");

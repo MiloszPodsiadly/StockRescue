@@ -557,8 +557,10 @@ async function exerciseArchivedDestinationReturnRecovery(page: Page, context: Br
   await expect(historicalRecord).toContainText('Archived')
   await historicalRecord.getByRole('link', { name: 'Open historical transfer' }).click()
   await expect(page.getByRole('region', { name: 'Recover saved transfer command' })).toHaveCount(0)
-  await expect(page.getByText(`${source.code} · ${source.name}`)).toBeVisible()
-  await expect(page.getByText(`${destination.code} · ${destination.name}`)).toBeVisible()
+  const participantSummary = page.getByRole('heading', { name: `Transfer ${created.transferId}`, exact: true })
+    .locator('xpath=following-sibling::p[1]')
+  await expect(participantSummary).toContainText(`${source.code} · ${source.name}`)
+  await expect(participantSummary).toContainText(`${destination.code} · ${destination.name}`)
   await expect(page.getByText('Archived')).toHaveCount(1)
   await expect(page.getByRole('note', { name: 'Administrative historical settlement' })).toBeVisible()
   const returnRequest = page.getByRole('form', { name: 'Request physical return' })
@@ -748,8 +750,38 @@ async function recoverCommittedTransferCommand(page: Page, path: string, submit:
     else await page.reload()
     const reopenedRegion = recoveryPage.getByRole('region', { name: 'Recover saved transfer command' })
     await expect(reopenedRegion).toBeVisible()
-    await recoveryPage.getByRole('button', { name: 'Inspect saved outcome' }).click()
-    await expect(recoveryPage.getByText(`Recovered ${expectedStatus} from the saved command record.`)).toBeVisible()
+    const intentResponses: { method: string, path: string, status: number, details: Record<string, unknown> }[] = []
+    const pendingIntentResponses: Promise<void>[] = []
+    const captureIntentResponse = (response: import('@playwright/test').Response) => {
+      const url = new URL(response.url())
+      if (!url.pathname.includes('/transfer-command-intents/')) return
+      const capture = (async () => {
+        const details: Record<string, unknown> = {}
+        try {
+          const body = await response.json() as Record<string, unknown>
+          for (const key of ['code', 'state', 'executionStatus', 'redacted']) {
+            if (key in body) details[key] = body[key]
+          }
+          const outcome = body.committedOutcome
+          if (typeof outcome === 'object' && outcome !== null && 'status' in outcome) {
+            details.committedOutcomeStatus = (outcome as { status: unknown }).status
+          }
+        } catch { /* Keep status and route when a problem response has no JSON body. */ }
+        intentResponses.push({ method: response.request().method(), path: url.pathname, status: response.status(), details })
+      })()
+      pendingIntentResponses.push(capture)
+    }
+    recoveryPage.on('response', captureIntentResponse)
+    try {
+      await recoveryPage.getByRole('button', { name: 'Inspect saved outcome' }).click()
+      await expect(recoveryPage.getByText(`Recovered ${expectedStatus} from the saved command record.`)).toBeVisible()
+    } catch (failure) {
+      await Promise.all(pendingIntentResponses)
+      const visibleMessages = await recoveryPage.locator('[role="alert"], [role="status"]').allTextContents()
+      throw new Error(`${String(failure)}\nRecovery intent API responses: ${JSON.stringify(intentResponses)}\nVisible messages: ${JSON.stringify(visibleMessages)}`, { cause: failure })
+    } finally {
+      recoveryPage.off('response', captureIntentResponse)
+    }
     return recoveryPage
   } finally {
     if (!page.isClosed()) await page.unroute(routePattern, dropResponse)

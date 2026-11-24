@@ -15147,6 +15147,11 @@ components:
         outstandingBefore:
           type: integer
           format: int64
+        physicalEventAt:
+          type:
+          - string
+          - "null"
+          format: date-time
         quantity:
           type: integer
           format: int64
@@ -15188,6 +15193,7 @@ components:
       - lineId
       - outstandingAfter
       - outstandingBefore
+      - physicalEventAt
       - quantity
       - reason
       - recordedAt

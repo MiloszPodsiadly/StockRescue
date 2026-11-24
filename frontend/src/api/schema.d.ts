@@ -3467,6 +3467,8 @@ export interface components {
             outstandingAfter: number;
             /** Format: int64 */
             outstandingBefore: number;
+            /** Format: date-time */
+            physicalEventAt: string | null;
             /** Format: int64 */
             quantity: number;
             reason: string;
