@@ -683,12 +683,13 @@ async function verifyRecallBlocksInTransitReceipt(context: BrowserContext, organ
     `${organizationPath}/stores/${destination.id}/inventory/positions?productId=${product.id}&lotId=${lot.id}&locationId=${destinationLocation.id}&offset=0&limit=100`)
   const receive = await tryWrite<components['schemas']['CommandResponse']>(context, `${transferPath}/receive`, {
     requestId: randomUUID(), expectedVersion: transfer.version, documentReference: `RECALLED-RECEIPT-${suffix}`,
-    physicallyReceivedAt: new Date().toISOString(),
     lines: [{ lineId: line.id, quantity: 5, expectedDestinationVersion: destinationPositions.items[0]?.version ?? 0,
       documentLineReference: 'recalled-line', observedSku: product.sku, observedLotCode: lot.lotCode }],
     reason: 'Attempted receipt after supplier recall notice', evidenceReference: `recall-block:${suffix}`,
   })
-  expect(receive.status).toBe(200)
+  const receiptProblemCode = typeof receive.body === 'object' && receive.body !== null && 'code' in receive.body
+    ? String(receive.body.code) : 'unknown'
+  expect(receive.status, `Receipt API problem code: ${receiptProblemCode}`).toBe(200)
   expect(receive.body.status).toBe('RECEIVED')
   expect((await read<Transfer>(context, transferPath)).outstandingQuantity).toBe(0)
   const afterReceipt = await read<StockPage>(context,

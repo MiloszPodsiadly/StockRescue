@@ -14,6 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   available: vi.fn(), locations: vi.fn(), stores: vi.fn(), getStore: vi.fn(), product: vi.fn(), lot: vi.fn(), sourceLocation: vi.fn(), lane: vi.fn(), positions: vi.fn(), sourcePosition: vi.fn(),
   custody: vi.fn(), transit: vi.fn(), discrepancies: vi.fn(), activeReturns: vi.fn(), command: vi.fn(),
   capabilities: vi.fn(), settlementPositions: vi.fn(), queue: vi.fn(), historicalQueue: vi.fn(), queueEvidence: vi.fn(), pendingIntents: vi.fn(),
+  inspectIntent: vi.fn(), acknowledgeIntent: vi.fn(), prepareIntent: vi.fn(), markIntentSubmitted: vi.fn(), resolveIntent: vi.fn(),
 }))
 
 vi.mock('@tanstack/react-router', () => ({ useParams: () => ({ organizationId: orgId }), useNavigate: () => vi.fn() }))
@@ -48,6 +49,11 @@ vi.mock('@/api/transfers', () => ({
   listTransfersInTransit: apiMocks.transit,
   listTransferInTransit: apiMocks.transit,
   recoverTransferCommand: vi.fn(),
+  inspectTransferCommandIntent: apiMocks.inspectIntent,
+  acknowledgeTransferCommandIntent: apiMocks.acknowledgeIntent,
+  prepareTransferCommandIntent: apiMocks.prepareIntent,
+  markTransferCommandIntentSubmitted: apiMocks.markIntentSubmitted,
+  resolveFailedTransferCommandIntent: apiMocks.resolveIntent,
 }))
 
 const orgId = 'org-1'
@@ -83,14 +89,15 @@ function renderWithTenant(element: React.ReactNode, queryClient = new QueryClien
   return { ...render(<QueryClientProvider client={queryClient}><TenantScope.Provider value={['tenant', orgId, 'actor-1']}>{element}</TenantScope.Provider></QueryClientProvider>), queryClient }
 }
 
-function renderTransfersWorkspace(role = 'ORG_ADMIN') {
+function renderTransfersWorkspace(role = 'ORG_ADMIN', scope: readonly ['tenant', string, string] = ['tenant', orgId, 'actor-1']) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const organization = { id: orgId, role } as never
-  return render(<QueryClientProvider client={queryClient}>
-    <TenantScope.Provider value={['tenant', orgId, 'actor-1']}><OrganizationContext.Provider value={organization}>
+  const rendered = render(<QueryClientProvider client={queryClient}>
+    <TenantScope.Provider value={scope}><OrganizationContext.Provider value={organization}>
       <TransfersPage />
     </OrganizationContext.Provider></TenantScope.Provider>
   </QueryClientProvider>)
+  return { ...rendered, queryClient }
 }
 
 beforeEach(() => {
@@ -121,6 +128,11 @@ beforeEach(() => {
   apiMocks.queueEvidence.mockResolvedValue({ items: [], nextCursor: null, hasMore: false })
   apiMocks.pendingIntents.mockResolvedValue({ items: [] })
   apiMocks.command.mockResolvedValue({ transferId: 'transfer-1', status: 'REQUESTED', version: 1 })
+  apiMocks.inspectIntent.mockResolvedValue({})
+  apiMocks.acknowledgeIntent.mockResolvedValue({})
+  apiMocks.prepareIntent.mockResolvedValue({ id: 'intent-1' })
+  apiMocks.markIntentSubmitted.mockResolvedValue({})
+  apiMocks.resolveIntent.mockResolvedValue({})
 })
 
 it('reconciles duplicate transfer snapshots by version, independent of store and page order', () => {
@@ -145,6 +157,166 @@ it('chooses the later update for equal versions and a stable winner for an equal
   expect(reconcileTransferSummaries([earlier, later])).toEqual([later])
   expect(reconcileTransferSummaries([conflictA, conflictB])).toEqual(reconcileTransferSummaries([conflictB, conflictA]))
   expect(reconcileTransferSummaries([microOlder, microNewer])).toEqual([microNewer])
+})
+
+it.each(['transit', 'evidence'] as const)('keeps the empty queue and %s retry independent until its read recovers', async kind => {
+  const user = userEvent.setup()
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  const pending = Promise.withResolvers<never>()
+  const query = kind === 'transit' ? apiMocks.transit : apiMocks.queueEvidence
+  query.mockImplementationOnce(() => pending.promise).mockResolvedValueOnce({
+    items: kind === 'transit'
+      ? [{ transferId: 'transfer-recovered', lineId: 'line-recovered', outstanding: 3, ageSeconds: 60, dispatchedAt: '2026-11-20T10:00:00Z' }]
+      : [{ id: 'evidence-recovered', transferId: 'transfer-recovered', type: 'DISCREPANCY', resolutionScope: 'TRANSFER_OPEN', lineSettled: false, transferClosed: false, recordedAt: '2026-11-20T10:00:00Z' }],
+    nextCursor: null, hasMore: false,
+  })
+  renderTransfersWorkspace()
+
+  const section = await screen.findByRole('region', { name: kind === 'transit' ? 'In-transit lines' : 'Transfer evidence history' })
+  expect(await within(screen.getByRole('region', { name: 'Transfer queue' })).findByText('No transfers match the selected queue filters.')).toBeInTheDocument()
+  expect(within(section).getByRole('status')).toHaveTextContent(kind === 'transit' ? 'Loading outstanding custody lines' : 'Loading reconciliation evidence')
+  expect(screen.queryByText('No transfers in this view')).not.toBeInTheDocument()
+
+  await act(async () => { pending.reject(new Error(`${kind} read unavailable`)) })
+  expect(await within(section).findByRole('alert')).toHaveTextContent(kind === 'transit' ? 'In-transit records could not be loaded' : 'Transfer evidence could not be loaded')
+  const retry = within(section).getByRole('button', { name: kind === 'transit' ? 'Retry in-transit records' : 'Retry evidence history' })
+  await user.click(retry)
+  if (kind === 'transit') expect(await within(section).findByText(/3 units/)).toBeInTheDocument()
+  else expect(await within(section).findByText(/DISCREPANCY/)).toBeInTheDocument()
+  expect(query).toHaveBeenCalledTimes(2)
+})
+
+it('shows queue errors alongside successful custody and evidence reads', async () => {
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.queue.mockRejectedValue(new Error('queue read failed'))
+  apiMocks.transit.mockResolvedValue({ items: [{ transferId: 'transfer-visible', lineId: 'line-visible', outstanding: 2, ageSeconds: 60, dispatchedAt: '2026-11-20T10:00:00Z' }], nextCursor: null, hasMore: false })
+  apiMocks.queueEvidence.mockResolvedValue({ items: [{ id: 'evidence-visible', transferId: 'transfer-visible', type: 'DISCREPANCY', resolutionScope: 'TRANSFER_OPEN', lineSettled: false, transferClosed: false, recordedAt: '2026-11-20T10:00:00Z' }], nextCursor: null, hasMore: false })
+  renderTransfersWorkspace()
+
+  const queue = await screen.findByRole('region', { name: 'Transfer queue' })
+  expect(await within(queue).findByRole('alert')).toHaveTextContent('Transfer queue could not be loaded')
+  expect(await screen.findByRole('region', { name: 'In-transit lines' })).toHaveTextContent('2 units')
+  expect(await screen.findByRole('region', { name: 'Transfer evidence history' })).toHaveTextContent('DISCREPANCY')
+  expect(within(queue).queryByText('No transfers match the selected queue filters.')).not.toBeInTheDocument()
+})
+
+it('reports an empty queue, custody list and evidence list only after all reads succeed', async () => {
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  renderTransfersWorkspace()
+
+  expect(await screen.findByText('No transfers match the selected queue filters.')).toBeInTheDocument()
+  expect(await screen.findByText('No outstanding in-transit lines are visible for these stores.')).toBeInTheDocument()
+  expect(await screen.findByText('No transfer reconciliation evidence is visible for these stores.')).toBeInTheDocument()
+  expect(screen.queryByText('No transfers in this view')).not.toBeInTheDocument()
+})
+
+it('keeps a queue continuation available when the current page has no visible rows', async () => {
+  const user = userEvent.setup()
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.queue.mockImplementationOnce(async () => ({ items: [], nextCursor: 'queue-next', hasMore: true }))
+    .mockImplementationOnce(async () => ({ items: [queueSummary({ id: 'transfer-after-empty-page' })], nextCursor: null, hasMore: false }))
+  renderTransfersWorkspace()
+
+  const queue = await screen.findByRole('region', { name: 'Transfer queue' })
+  expect(await within(queue).findByText('No transfers are visible on this page. More results are available.')).toBeInTheDocument()
+  await user.click(within(queue).getByRole('button', { name: 'Load more transfers' }))
+  expect(await within(queue).findByText(/transfer-after-empty-page/)).toBeInTheDocument()
+  expect(within(queue).queryByText('No transfers match the selected queue filters.')).not.toBeInTheDocument()
+})
+
+it('keeps stale queue results visible and labels them when a background refresh fails', async () => {
+  const user = userEvent.setup()
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.queue.mockImplementationOnce(async () => ({ items: [queueSummary({ id: 'transfer-stale' })], nextCursor: null, hasMore: false }))
+    .mockRejectedValueOnce(new Error('refresh failed'))
+  renderTransfersWorkspace()
+
+  const queue = await screen.findByRole('region', { name: 'Transfer queue' })
+  expect(await within(queue).findByText(/transfer-stale/)).toBeInTheDocument()
+  await user.click(within(queue).getByRole('button', { name: 'Refresh queue' }))
+  expect(await within(queue).findByRole('alert')).toHaveTextContent('Transfer queue could not be loaded')
+  expect(within(queue).getByText('Showing previously loaded transfers; the latest refresh failed.')).toBeInTheDocument()
+  expect(within(queue).getByText(/transfer-stale/)).toBeInTheDocument()
+})
+
+it('does not show a late queue page after the operator changes the store filter', async () => {
+  const user = userEvent.setup()
+  apiMocks.stores.mockResolvedValue({ items: [store('A', ['READ_TRANSFERS']), store('B', ['READ_TRANSFERS'])], hasMore: false })
+  const lateStoreA = Promise.withResolvers<{ items: TransferQueueItem[], nextCursor: null, hasMore: false }>()
+  const storeAStarted = Promise.withResolvers<void>()
+  apiMocks.queue.mockImplementation(async (_org: string, storeId: string) => {
+    if (storeId === 'A') { storeAStarted.resolve(); return lateStoreA.promise }
+    return { items: [queueSummary({ id: 'transfer-store-B' })], nextCursor: null, hasMore: false }
+  })
+  renderTransfersWorkspace()
+
+  await storeAStarted.promise
+  await user.selectOptions(await screen.findByLabelText('Store queue'), 'B')
+  const queue = await screen.findByRole('region', { name: 'Transfer queue' })
+  expect(await within(queue).findByText(/transfer-store-B/)).toBeInTheDocument()
+  await act(async () => { lateStoreA.resolve({ items: [queueSummary({ id: 'transfer-late-store-A' })], nextCursor: null, hasMore: false }) })
+  expect(within(queue).queryByText(/transfer-late-store-A/)).not.toBeInTheDocument()
+  expect(within(queue).getByText(/transfer-store-B/)).toBeInTheDocument()
+})
+
+it('discards a late transfer read after the authenticated actor scope changes', async () => {
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  const lateRead = Promise.withResolvers<{ items: TransferQueueItem[], nextCursor: null, hasMore: false }>()
+  const firstReadStarted = Promise.withResolvers<void>()
+  let calls = 0
+  apiMocks.queue.mockImplementation(async () => {
+    calls++
+    if (calls === 1) { firstReadStarted.resolve(); return lateRead.promise }
+    return { items: [queueSummary({ id: 'transfer-actor-two' })], nextCursor: null, hasMore: false }
+  })
+  const rendered = renderTransfersWorkspace('ORG_ADMIN', ['tenant', orgId, 'actor-1'])
+  await firstReadStarted.promise
+
+  rendered.rerender(<QueryClientProvider client={rendered.queryClient}>
+    <TenantScope.Provider value={['tenant', orgId, 'actor-2']}><OrganizationContext.Provider value={{ id: orgId, role: 'ORG_ADMIN' } as never}>
+      <TransfersPage />
+    </OrganizationContext.Provider></TenantScope.Provider>
+  </QueryClientProvider>)
+  const queue = await screen.findByRole('region', { name: 'Transfer queue' })
+  expect(await within(queue).findByText(/transfer-actor-two/)).toBeInTheDocument()
+  await act(async () => { lateRead.resolve({ items: [queueSummary({ id: 'transfer-actor-one' })], nextCursor: null, hasMore: false }) })
+  expect(within(queue).queryByText(/transfer-actor-one/)).not.toBeInTheDocument()
+  expect(within(queue).getByText(/transfer-actor-two/)).toBeInTheDocument()
+})
+
+it('keeps a committed CLOSE distinct from lost acknowledgement and reconciles an already acknowledged intent without another write', async () => {
+  const user = userEvent.setup()
+  const intent = { id: 'intent-close', operation: 'CLOSE', requestId: 'request-close', state: 'SUBMITTED', preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close' }
+  const committed = {
+    id: intent.id, operation: 'CLOSE', transferId: 'transfer-close', requestId: intent.requestId,
+    state: 'SUBMITTED', preparedAt: intent.preparedAt, executionStatus: 'COMMITTED_AWAITING_ACKNOWLEDGEMENT',
+    payload: { requestId: intent.requestId, expectedVersion: 9 },
+    committedOutcome: { transferId: 'transfer-close', status: 'CLOSED_WITH_DISCREPANCY', version: 10 }, redacted: false,
+  }
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS', 'REQUEST_TRANSFER', 'READ_INVENTORY'])], hasMore: false })
+  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [intent] }).mockResolvedValue({ items: [] })
+  apiMocks.inspectIntent.mockResolvedValueOnce(committed).mockResolvedValueOnce(committed).mockResolvedValueOnce({
+    ...committed, executionStatus: 'ACKNOWLEDGED', state: 'ACKNOWLEDGED',
+  })
+  apiMocks.acknowledgeIntent.mockRejectedValueOnce(new Error('acknowledgement response was lost'))
+  renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  expect(await within(recovery).findByText(/Recovered Closed with discrepancy/)).toBeInTheDocument()
+  expect(await within(recovery).findByRole('alert')).toHaveTextContent('transfer is committed, but acknowledgement could not be confirmed')
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.prepareIntent).not.toHaveBeenCalled()
+  await user.click(await screen.findByRole('button', { name: 'New transfer request' }))
+  expect(screen.getByRole('button', { name: 'Resolve saved command first' })).toBeDisabled()
+
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  expect(await screen.findByText(/Recovered Closed with discrepancy from the saved command record/)).toBeInTheDocument()
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Recover saved transfer command' })).not.toBeInTheDocument())
+  expect(apiMocks.acknowledgeIntent).toHaveBeenCalledTimes(1)
+  expect(apiMocks.inspectIntent).toHaveBeenCalledTimes(3)
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: 'Create transfer request' })).toBeDisabled()
 })
 
 it('renders one queue card using the newest summary returned by different store requests', async () => {
@@ -313,7 +485,7 @@ it('keeps the store access retry reachable after a store query fails', async () 
 
   const retry = await screen.findByRole('button', { name: 'Retry store access' })
   await userEvent.setup().click(retry)
-  expect(await screen.findByRole('heading', { name: 'No transfers in this view' })).toBeInTheDocument()
+  expect(await screen.findByText('No transfers match the selected queue filters.')).toBeInTheDocument()
   expect(apiMocks.queue).toHaveBeenCalledWith(orgId, 'source', '', expect.any(AbortSignal), null, 50)
 })
 
@@ -387,7 +559,6 @@ it('edits two transfer lines, blocks a duplicate source position and submits eac
 })
 
 it('revalidates exact source and destination UUIDs found after more than one hundred search matches', async () => {
-  const user = userEvent.setup()
   const onCommand = vi.fn().mockResolvedValue(undefined)
   const sourceStore = store('source-26', ['REQUEST_TRANSFER', 'READ_INVENTORY'])
   const destinationStore = store('destination-26', ['READ_STORE'])
@@ -417,29 +588,31 @@ it('revalidates exact source and destination UUIDs found after more than one hun
   apiMocks.lot.mockImplementation(async (_org: string, lotId: string) => ({ id: lotId, lotCode: `LOT-${lotId.split('-').at(-1)}` }))
 
   renderWithTenant(<CreateTransferPanel organizationId={orgId} administrator onCommand={onCommand} busy={false} />)
-  await user.click(screen.getByRole('button', { name: 'New transfer request' }))
-  await user.type(screen.getByLabelText('Find a source store'), 'Warehouse Alpha')
+  fireEvent.click(screen.getByRole('button', { name: 'New transfer request' }))
+  fireEvent.change(screen.getByLabelText('Find a source store'), { target: { value: 'Warehouse Alpha' } })
   for (let page = 1; page <= 5; page++) {
-    await user.click(await screen.findByRole('button', { name: 'Load more source stores' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more source stores' }))
     await waitFor(() => expect(apiMocks.stores).toHaveBeenCalledWith(orgId, 'ACTIVE', 'Warehouse Alpha', page * 25, expect.any(AbortSignal)))
   }
-  await user.selectOptions(await screen.findByLabelText('Source store'), 'source-26')
-  await user.type(screen.getByLabelText('Find a destination store'), 'Warehouse Omega')
+  fireEvent.change(await screen.findByLabelText('Source store'), { target: { value: 'source-26' } })
+  fireEvent.change(screen.getByLabelText('Find a destination store'), { target: { value: 'Warehouse Omega' } })
   for (let page = 1; page <= 5; page++) {
-    await user.click(await screen.findByRole('button', { name: 'Load more destination stores' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more destination stores' }))
     await waitFor(() => expect(apiMocks.stores).toHaveBeenCalledWith(orgId, 'ACTIVE', 'Warehouse Omega', page * 25, expect.any(AbortSignal)))
   }
-  await user.selectOptions(screen.getByLabelText('Destination store'), 'destination-26')
-  await user.click(await screen.findByRole('button', { name: 'Load more available source positions' }))
-  await user.selectOptions(screen.getByLabelText('Source product and lot'), 'position-101')
-  await user.click(await screen.findByRole('button', { name: 'Load more destination locations' }))
-  await user.selectOptions(screen.getByLabelText('Destination receiving location'), 'destination-location-26')
-  await user.type(screen.getByLabelText('Quantity (EA)'), '1')
-  await user.type(screen.getByLabelText('Reason for transfer'), 'Reach stock outside the first page')
-  await user.type(screen.getByLabelText('Evidence reference'), 'selection:page-26')
+  fireEvent.change(screen.getByLabelText('Destination store'), { target: { value: 'destination-26' } })
+  fireEvent.click(await screen.findByRole('button', { name: 'Load more available source positions' }))
+  await waitFor(() => expect(apiMocks.available).toHaveBeenCalledWith(orgId, 'source-26', { offset: 100, limit: 100 }, expect.any(AbortSignal)))
+  fireEvent.change(await screen.findByLabelText('Source product and lot'), { target: { value: 'position-101' } })
+  fireEvent.click(await screen.findByRole('button', { name: 'Load more destination locations' }))
+  await waitFor(() => expect(apiMocks.locations).toHaveBeenCalledWith(orgId, 'destination-26', false, '', 25, expect.any(AbortSignal)))
+  fireEvent.change(await screen.findByLabelText('Destination receiving location'), { target: { value: 'destination-location-26' } })
+  fireEvent.change(screen.getByLabelText('Quantity (EA)'), { target: { value: '1' } })
+  fireEvent.change(screen.getByLabelText('Reason for transfer'), { target: { value: 'Reach stock outside the first page' } })
+  fireEvent.change(screen.getByLabelText('Evidence reference'), { target: { value: 'selection:page-26' } })
 
   await waitFor(() => expect(screen.getByRole('button', { name: 'Create transfer request' })).toBeEnabled())
-  await user.click(screen.getByRole('button', { name: 'Create transfer request' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Create transfer request' }))
   await waitFor(() => expect(onCommand).toHaveBeenCalledTimes(1))
   expect(onCommand.mock.calls[0]![0]).toMatchObject({ operation: 'CREATE', body: {
     sourceStoreId: 'source-26', destinationStoreId: 'destination-26',
@@ -450,10 +623,71 @@ it('revalidates exact source and destination UUIDs found after more than one hun
   expect(apiMocks.stores.mock.calls.every(call => call[5] !== 100)).toBe(true)
 })
 
+it('preserves paginated stock and location selections during same-store revalidation with zero query retention', async () => {
+  const user = userEvent.setup()
+  const onCommand = vi.fn().mockResolvedValue(undefined)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+  const pageOnePosition = { ...sourcePositionA, positionId: 'position-1', productId: 'product-1', lotId: 'lot-1', locationId: 'source-location-1' }
+  const page101Position = { ...sourcePositionA, positionId: 'position-101', productId: 'product-101', lotId: 'lot-101', locationId: 'source-location-101', positionVersion: 101 }
+  const firstLocation = { ...destinationLocation, id: 'destination-location-1', code: 'DST-1' }
+  const page26Location = { ...destinationLocation, id: 'destination-location-26', code: 'DST-26' }
+  apiMocks.available.mockImplementation(async (_org: string, _store: string, filters: { offset: number }) => filters.offset === 0
+    ? { items: [pageOnePosition], hasMore: true } : { items: [page101Position], hasMore: false })
+  apiMocks.locations.mockImplementation(async (_org: string, _store: string, _includeArchived: boolean, _query: string, offset: number) => offset === 0
+    ? { items: [firstLocation], hasMore: true } : { items: [page26Location], hasMore: false })
+  apiMocks.product.mockImplementation(async (_org: string, productId: string) => ({ id: productId, sku: `SKU-${productId}`, name: `Product ${productId}` }))
+  apiMocks.lot.mockImplementation(async (_org: string, lotId: string) => ({ id: lotId, lotCode: `LOT-${lotId}` }))
+  apiMocks.sourceLocation.mockImplementation(async (_org: string, _store: string, locationId: string) => ({ ...sourceLocationA, id: locationId, zoneId: 'source-zone' }))
+  renderWithTenant(<CreateTransferPanel organizationId={orgId} administrator={false} onCommand={onCommand} busy={false} />, client)
+  await user.click(screen.getByRole('button', { name: 'New transfer request' }))
+  await user.selectOptions(screen.getByLabelText('Source store'), 'source')
+  await user.selectOptions(screen.getByLabelText('Destination store'), 'destination')
+  await user.click(await screen.findByRole('button', { name: 'Load more available source positions' }))
+  await user.selectOptions(await screen.findByLabelText('Source product and lot'), 'position-101')
+  await user.click(await screen.findByRole('button', { name: 'Load more destination locations' }))
+  await user.selectOptions(await screen.findByLabelText('Destination receiving location'), 'destination-location-26')
+  await user.type(screen.getByLabelText('Quantity (EA)'), '1')
+  await user.type(screen.getByLabelText('Reason for transfer'), 'Keep the selected stock page through a permission check')
+  await user.type(screen.getByLabelText('Evidence reference'), 'selection:revalidation')
+
+  const sourcePending = Promise.withResolvers<Store>()
+  const destinationPending = Promise.withResolvers<Store>()
+  const sourceStarted = Promise.withResolvers<void>()
+  const destinationStarted = Promise.withResolvers<void>()
+  apiMocks.getStore.mockImplementation(async (_org: string, id: string) => {
+    if (id === 'source') { sourceStarted.resolve(); return sourcePending.promise }
+    if (id === 'destination') { destinationStarted.resolve(); return destinationPending.promise }
+    return store(id, ['READ_STORE'])
+  })
+  const sourceSelectionKey = ['tenant', orgId, 'actor-1', 'transfer-create', 'source-store-selection', 'source']
+  const destinationSelectionKey = ['tenant', orgId, 'actor-1', 'transfer-create', 'destination-store-selection', 'destination']
+  const positionsKey = ['tenant', orgId, 'actor-1', 'transfer-create', 'positions', 'source']
+  const locationsKey = ['tenant', orgId, 'actor-1', 'transfer-create', 'destination-locations', 'destination', '']
+  void client.invalidateQueries({ queryKey: sourceSelectionKey, exact: true })
+  void client.invalidateQueries({ queryKey: destinationSelectionKey, exact: true })
+  await Promise.all([sourceStarted.promise, destinationStarted.promise])
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Create transfer request' })).toBeDisabled())
+  expect(screen.queryByRole('option', { name: /SKU-product-101/ })).not.toBeInTheDocument()
+  expect(screen.queryByRole('option', { name: /DST-26/ })).not.toBeInTheDocument()
+  expect(client.getQueryData(positionsKey)).toMatchObject({ pages: [{ items: [{ positionId: 'position-1' }] }, { items: [{ positionId: 'position-101' }] }] })
+  expect(client.getQueryData(locationsKey)).toMatchObject({ pages: [{ items: [{ id: 'destination-location-1' }] }, { items: [{ id: 'destination-location-26' }] }] })
+
+  await act(async () => {
+    sourcePending.resolve(store('source', ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY']))
+    destinationPending.resolve(store('destination', ['READ_STORE']))
+  })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Create transfer request' })).toBeEnabled())
+  expect(screen.getByLabelText('Source product and lot')).toHaveValue('position-101')
+  expect(screen.getByLabelText('Destination receiving location')).toHaveValue('destination-location-26')
+  expect(screen.getByLabelText('Quantity (EA)')).toHaveValue(1)
+  await user.click(screen.getByRole('button', { name: 'Create transfer request' }))
+  await waitFor(() => expect(onCommand).toHaveBeenCalledTimes(1))
+})
+
 it.each(['source', 'destination'] as const)('keeps a %s store fail-closed during and after a cached refetch error, then restores the intact draft on retry', async target => {
   const user = userEvent.setup()
   const onCommand = vi.fn().mockResolvedValue(undefined)
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   const details: Record<string, Store> = {
     source: store('source', ['READ_STORE', 'REQUEST_TRANSFER', 'READ_INVENTORY']),
     destination: store('destination', ['READ_STORE']),
@@ -487,11 +721,16 @@ it.each(['source', 'destination'] as const)('keeps a %s store fail-closed during
   await started.promise
   await waitFor(() => expect(createButton).toBeDisabled())
   expect(client.getQueryData(selectionKey)).toMatchObject({ id: target })
+  const dependentKey = target === 'source'
+    ? ['tenant', orgId, 'actor-1', 'transfer-create', 'positions', target]
+    : ['tenant', orgId, 'actor-1', 'transfer-create', 'destination-locations', target, '']
+  expect(client.getQueryData(dependentKey)).toBeDefined()
 
   await act(async () => {
     pending.reject(new ApiError(new Response(null, { status: 403 }), { code: 'FORBIDDEN' } as never))
   })
   expect(await screen.findByRole('alert')).toHaveTextContent(`selected ${target} store could not be revalidated`)
+  await waitFor(() => expect(client.getQueryData(dependentKey)).toBeUndefined())
   expect(client.getQueryData(selectionKey)).toMatchObject({ id: target })
   expect(createButton).toBeDisabled()
   fireEvent.submit(createButton.closest('form')!)

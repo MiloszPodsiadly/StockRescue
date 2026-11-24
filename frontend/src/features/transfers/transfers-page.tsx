@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { AppLink } from '@/components/app-link'
@@ -21,7 +21,7 @@ import {
   resolveFailedTransferCommandIntent,
 } from '@/api/transfers'
 import type {
-  Transfer, TransferCommandIntent, TransferCommandIntentInspection, TransferCustodyMovement, TransferDiscrepancyRecord,
+  Transfer, TransferCommandIntent, TransferCommandIntentInspection, TransferCommandIntentSummary, TransferCustodyMovement, TransferDiscrepancyRecord,
   HistoricalTransferQueueItem, TransferInTransitLine, TransferQueueItem, TransferStatus,
 } from '@/api/transfers'
 import { OrganizationPage } from '../organizations/organization-page'
@@ -94,7 +94,10 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     queryFn: ({ signal }) => listPendingTransferCommandIntents(organizationId, signal),
     enabled: !historicalOnly, retry: false, refetchOnWindowFocus: true, staleTime: 0, gcTime: 0,
   })
-  const pendingCommand = pendingIntents.data?.items[0]
+  const [unresolvedCommandState, setUnresolvedCommandState] = useState<{ scope: readonly string[], intent: TransferCommandIntentSummary } | null>(null)
+  const unresolvedCommand = unresolvedCommandState && unresolvedCommandState.scope.length === scope.length
+    && scope.every((value, index) => value === unresolvedCommandState.scope[index]) ? unresolvedCommandState.intent : null
+  const pendingCommand = unresolvedCommand ?? pendingIntents.data?.items[0]
   const commandBlocked = commandBusy || Boolean(pendingCommand) || pendingIntents.isPending || pendingIntents.isError
   const stores = useInfiniteQuery({
     queryKey: [...scope, 'stores', 'transfer-workspace', storeSearch], enabled: !transferId && !historicalOnly, initialPageParam: 0,
@@ -145,27 +148,72 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
   const detail = useQuery({ queryKey: [...scope, 'transfers', 'detail', transferId], enabled: Boolean(transferId), queryFn: ({ signal }) => getTransfer(organizationId, transferId!, signal), refetchOnWindowFocus: true, staleTime: 0 })
 
   async function refreshTransferData() {
-    await client.invalidateQueries({ queryKey: scope })
+    await client.invalidateQueries({ queryKey: scope, predicate: query => !query.queryKey.includes('transfer-command-intents') })
   }
 
   async function refreshPendingIntents() {
-    await client.invalidateQueries({ queryKey: [...scope, 'transfer-command-intents'] })
+    await client.invalidateQueries({ queryKey: [...scope, 'transfer-command-intents'] }, { throwOnError: true })
   }
 
-  async function submitPreparedCommand(intent: TransferCommandIntent, intentId: string) {
-    await markTransferCommandIntentSubmitted(organizationId, intentId, new AbortController().signal)
+  async function confirmIntentAcknowledgement(intentId: string): Promise<boolean> {
+    try {
+      await acknowledgeTransferCommandIntent(organizationId, intentId, new AbortController().signal)
+      return true
+    } catch {
+      try {
+        const current = await inspectTransferCommandIntent(organizationId, intentId, new AbortController().signal)
+        return current.executionStatus === 'ACKNOWLEDGED'
+      } catch {
+        return false
+      }
+    }
+  }
+
+  async function refreshCommittedCommand(intent: TransferCommandIntentSummary, acknowledgementConfirmed: boolean, transferToOpen?: string) {
+    setUnresolvedCommandState({ scope, intent })
+    let pendingIntentReconciled = false
+    try {
+      await refreshTransferData()
+      if (acknowledgementConfirmed) {
+        await refreshPendingIntents()
+        const current = client.getQueryData<{ items: TransferCommandIntentSummary[] }>(pendingIntentKey)
+        pendingIntentReconciled = Boolean(current && !current.items.some(item => item.id === intent.id))
+        if (pendingIntentReconciled) {
+          setUnresolvedCommandState(currentState => currentState?.intent.id === intent.id ? null : currentState)
+        }
+      }
+    } catch {
+      setCommandNotice(current => `${current} The command result is confirmed, but server recovery state could not be reconciled. New commands remain blocked; inspect the saved record again.`)
+      return
+    }
+    if (!acknowledgementConfirmed) return
+    if (!pendingIntentReconciled) {
+      setCommandNotice(current => `${current} Acknowledgement is confirmed, but the saved intent is still pending or could not be reconciled. New commands remain blocked.`)
+      return
+    }
+    if (transferToOpen && transferId !== transferToOpen) {
+      try {
+        await navigate({ to: '/organizations/$organizationId/transfers/$transferId', params: { organizationId, transferId: transferToOpen } })
+      } catch {
+        setCommandNotice(current => `${current} The command result is confirmed, but its transfer view could not be opened. Refresh the workspace to continue.`)
+      }
+    }
+  }
+
+  async function submitPreparedCommand(intent: TransferCommandIntent, intentSummary: TransferCommandIntentSummary) {
+    setUnresolvedCommandState({ scope, intent: intentSummary })
+    await markTransferCommandIntentSubmitted(organizationId, intentSummary.id, new AbortController().signal)
     const outcome = await executeTransferCommand(organizationId, intent, new AbortController().signal)
-    let acknowledged = true
-    try { await acknowledgeTransferCommandIntent(organizationId, intentId, new AbortController().signal) }
-    catch { acknowledged = false }
     setPendingInspection(null)
     setRecoveryMissing(false)
     setCommandError('')
+    const savedMessage = `Saved as ${transferStatusLabel(outcome.status)}. Server record ${outcome.transferId.slice(0, 8)} · version ${outcome.version}.`
+    setCommandNotice(`${savedMessage} The server confirmed the business result; confirming its recovery acknowledgement.`)
+    const acknowledged = await confirmIntentAcknowledgement(intentSummary.id)
     setCommandNotice(acknowledged
-      ? `Saved as ${transferStatusLabel(outcome.status)}. Server record ${outcome.transferId.slice(0, 8)} · version ${outcome.version}.`
-      : `Saved as ${transferStatusLabel(outcome.status)}. The result is confirmed; its recovery record still needs acknowledgement.`)
-    await Promise.all([refreshTransferData(), refreshPendingIntents()])
-    if (transferId !== outcome.transferId) await navigate({ to: '/organizations/$organizationId/transfers/$transferId', params: { organizationId, transferId: outcome.transferId } })
+      ? `${savedMessage} The recovery record is acknowledged.`
+      : `${savedMessage} The business result is confirmed, but acknowledgement is not confirmed. Inspect the saved outcome before starting another command.`)
+    await refreshCommittedCommand(intentSummary, acknowledged, outcome.transferId)
   }
 
   async function runIntent(intent: TransferCommandIntent) {
@@ -179,13 +227,14 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     try {
       const prepared = await prepareTransferCommandIntent(organizationId, intent, new AbortController().signal)
       intentId = prepared.id
-      await submitPreparedCommand(intent, intentId)
+      await submitPreparedCommand(intent, prepared)
     } catch (error) {
       setCommandError(errorMessage(error))
       if (intentId && !uncertainOutcome(error)) {
         try {
           await resolveFailedTransferCommandIntent(organizationId, intentId,
             error instanceof ApiError && error.status === 409 ? 'CONFLICTED' : 'REJECTED', new AbortController().signal)
+          setUnresolvedCommandState(current => current?.intent.id === intentId ? null : current)
           setCommandNotice('The server rejected the command before committing it. Review the current transfer and permissions before starting another request.')
         } catch {
           setCommandNotice('The command failed, but its durable recovery record could not be resolved. Inspect it before submitting another command.')
@@ -196,7 +245,8 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
         setCommandNotice('The command may have been prepared on the server. Reload the transfer workspace to check for a saved recovery record; no stock command is retried automatically.')
       }
       setPendingInspection(null)
-      await refreshPendingIntents()
+      try { await refreshPendingIntents() }
+      catch { setCommandNotice(current => `${current} The saved recovery record could not be refreshed. Keep this command blocked and inspect it again before continuing.`) }
     } finally { setCommandBusy(false) }
   }
 
@@ -206,11 +256,17 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     try {
       const result = await inspectTransferCommandIntent(organizationId, pendingCommand.id, new AbortController().signal)
       if (result.redacted) {
-        if (result.executionStatus === 'COMMITTED_AWAITING_ACKNOWLEDGEMENT') {
-          await acknowledgeTransferCommandIntent(organizationId, pendingCommand.id, new AbortController().signal)
-          setPendingInspection(null); setRecoveryMissing(false)
-          setCommandNotice('The saved command committed and was safely acknowledged. Transfer details are hidden because access changed.')
-          await refreshPendingIntents()
+        if (result.executionStatus === 'COMMITTED_AWAITING_ACKNOWLEDGEMENT' || result.executionStatus === 'ACKNOWLEDGED') {
+          setPendingInspection(result); setRecoveryMissing(false)
+          const acknowledged = result.executionStatus === 'ACKNOWLEDGED' || await confirmIntentAcknowledgement(pendingCommand.id)
+          if (acknowledged) {
+            setPendingInspection(null)
+            setCommandNotice('The saved command record is acknowledged. Transfer details remain hidden because access changed.')
+          } else {
+            setCommandError('The saved command acknowledgement could not be confirmed. Inspect the recovery record again; transfer details remain hidden.')
+            setCommandNotice('The saved command is being checked without exposing transfer details. No stock operation was submitted.')
+          }
+          await refreshCommittedCommand(pendingCommand, acknowledged)
         } else {
           setPendingInspection(result)
           setRecoveryMissing(false)
@@ -219,11 +275,18 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
         return
       }
       if (result.committedOutcome) {
-        await acknowledgeTransferCommandIntent(organizationId, pendingCommand.id, new AbortController().signal)
-        setPendingInspection(null); setRecoveryMissing(false)
-        setCommandNotice(`Recovered ${transferStatusLabel(result.committedOutcome.status)} from the saved command record.`)
-        await Promise.all([refreshTransferData(), refreshPendingIntents()])
-        if (transferId !== result.committedOutcome.transferId) await navigate({ to: '/organizations/$organizationId/transfers/$transferId', params: { organizationId, transferId: result.committedOutcome.transferId } })
+        setPendingInspection(result); setRecoveryMissing(false)
+        const recoveredMessage = `Recovered ${transferStatusLabel(result.committedOutcome.status)} from the saved command record.`
+        setCommandNotice(`${recoveredMessage} Confirming recovery acknowledgement.`)
+        const acknowledged = result.executionStatus === 'ACKNOWLEDGED' || await confirmIntentAcknowledgement(pendingCommand.id)
+        if (acknowledged) {
+          setPendingInspection(null)
+          setCommandNotice(recoveredMessage)
+        } else {
+          setCommandError('The transfer is committed, but acknowledgement could not be confirmed. Inspect the saved outcome again before starting another command.')
+          setCommandNotice(`${recoveredMessage} The recovery record remains pending. No stock operation was submitted.`)
+        }
+        await refreshCommittedCommand(pendingCommand, acknowledged, acknowledged ? result.committedOutcome.transferId : undefined)
       } else {
         setPendingInspection(result)
         setRecoveryMissing(result.executionStatus === 'SUBMITTED_AWAITING_OUTCOME' || result.executionStatus === 'PREPARED')
@@ -233,7 +296,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       }
     } catch (error) {
       setCommandError(errorMessage(error))
-      setCommandNotice('Outcome inspection failed. Retry this read when the service is available; no command was submitted.')
+      setCommandNotice('Outcome inspection or acknowledgement could not be confirmed. Retry this read when the service is available; no command was submitted.')
     } finally { setCommandBusy(false) }
   }
 
@@ -246,7 +309,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     }
     setCommandBusy(true); setCommandError(''); setCommandNotice('Submitting the original command with its saved request key and exact payload.')
     try {
-      await submitPreparedCommand(intent, pendingCommand.id)
+      await submitPreparedCommand(intent, pendingCommand)
     } catch (error) {
       setCommandError(errorMessage(error))
       if (!uncertainOutcome(error)) {
@@ -254,6 +317,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
           await resolveFailedTransferCommandIntent(organizationId, pendingCommand.id,
             error instanceof ApiError && error.status === 409 ? 'CONFLICTED' : 'REJECTED', new AbortController().signal)
           setPendingInspection(null); setRecoveryMissing(false)
+          setUnresolvedCommandState(current => current?.intent.id === pendingCommand.id ? null : current)
           setCommandNotice('The saved command was rejected without a committed receipt. Review current transfer state before a new request.')
         } catch {
           setCommandNotice('The server could not confirm whether this command completed. Keep the recovery record and inspect it again before taking further action.')
@@ -273,6 +337,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     try {
       await resolveFailedTransferCommandIntent(organizationId, pendingCommand.id, resolution, new AbortController().signal)
       setPendingInspection(null); setRecoveryMissing(false)
+      setUnresolvedCommandState(current => current?.intent.id === pendingCommand.id ? null : current)
       setCommandNotice('The server confirmed that no command committed and released the blocked request. Transfer details remain hidden.')
       await refreshPendingIntents()
     } catch (error) {
@@ -321,17 +386,16 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
                       : storeSearch.trim() ? <div className="space-y-3"><StateMessage state="empty" title="No accessible stores match this search" description="Your account can read transfers in another active store. Clear the search or try a different store code or name." />{stores.hasNextPage && <p className="text-sm text-muted-foreground">More matching store results are available on the next page.</p>}</div>
                         : stores.hasNextPage ? <StateMessage state="empty" title="No transfer access on this store page" description="Load more active stores to check whether your transfer access is assigned on a later page." />
                           : <StateMessage state="forbidden" title="No transfer access for any active store" description="Ask an organization administrator to grant transfer reading for an active store." />
-                : queue.isPending ? <StateMessage state="loading" title="Loading transfer queue" description="Reading only stores where you currently have transfer access." />
-                : queue.isError ? <div className="space-y-4"><StateMessage state={queue.error instanceof ApiError && queue.error.status === 403 ? 'forbidden' : 'unavailable'} title="Transfer queue unavailable" description={errorMessage(queue.error)} /><Button variant="outline" onClick={() => { void queue.refetch() }}>Retry queue</Button></div>
-                  : queueItems.length === 0 && transitItems.length === 0 && evidenceItems.length === 0 ? <StateMessage state="empty" title="No transfers in this view" description="Change the store or status filter, or create a request from verified available source stock." />
-                    : <TransferQueue items={queueItems} stores={storeMap} transit={transitItems} discrepancies={evidenceItems} organizationId={organizationId}
+                : queueStoreIds.length === 0 ? <div className="space-y-3"><StateMessage state="empty" title="No accessible stores match this filter" description="Choose another store or clear the store filter to review transfers where you currently have access." />{storeFilter && <Button type="button" variant="outline" onClick={() => { setStoreFilter('') }}>Clear store filter</Button>}</div>
+                  : <TransferQueue items={queueItems} stores={storeMap} transit={transitItems} discrepancies={evidenceItems} organizationId={organizationId}
                       onReload={() => { void queue.refetch() }} loading={queue.isFetching}
+                      queuePending={queue.isPending} queueFetching={queue.isFetching} queueError={queue.isError} queueErrorMessage={queue.error ? errorMessage(queue.error) : ''}
                       canLoadTransfers={Boolean(queue.hasNextPage)} loadingTransfers={queue.isFetchingNextPage} onLoadTransfers={() => { void queue.fetchNextPage() }}
                       canLoadTransit={Boolean(transit.hasNextPage)} loadingTransit={transit.isFetchingNextPage} onLoadTransit={() => { void transit.fetchNextPage() }}
-                      transitPending={transit.isPending} transitError={transit.isError} retryTransit={() => { void transit.refetch() }}
+                      transitPending={transit.isPending} transitFetching={transit.isFetching} transitError={transit.isError} retryTransit={() => { void transit.refetch() }}
                       canLoadEvidence={Boolean(evidence.hasNextPage)} loadingEvidence={evidence.isFetchingNextPage} onLoadEvidence={() => { void evidence.fetchNextPage() }}
-                      evidencePending={evidence.isPending} evidenceError={evidence.isError} retryEvidence={() => { void evidence.refetch() }} />}
-              {readableStores.some(store => store.active && store.allowedActions.includes('REQUEST_TRANSFER')) && <CreateTransferPanel organizationId={organizationId} administrator={organization.role === 'ORG_ADMIN'} onCommand={runIntent} busy={commandBlocked} />}
+                      evidencePending={evidence.isPending} evidenceFetching={evidence.isFetching} evidenceError={evidence.isError} retryEvidence={() => { void evidence.refetch() }} />}
+              {readableStores.some(store => store.active && store.allowedActions.includes('REQUEST_TRANSFER')) && <CreateTransferPanel key={JSON.stringify(scope)} organizationId={organizationId} administrator={organization.role === 'ORG_ADMIN'} onCommand={runIntent} busy={commandBusy} blockedReason={pendingCommand ? 'Resolve saved command first' : pendingIntents.isPending || pendingIntents.isError ? 'Checking saved command status' : undefined} />}
             </>}
   </section>
 }
@@ -353,24 +417,30 @@ function HistoricalTransferQueue({ items, organizationId, loading, onReload, can
   </section>
 }
 
-function TransferQueue({ items, stores, transit, discrepancies, organizationId, onReload, loading,
+function TransferQueue({ items, stores, transit, discrepancies, organizationId, onReload, loading, queuePending, queueFetching, queueError, queueErrorMessage,
   canLoadTransfers, loadingTransfers, onLoadTransfers, canLoadTransit, loadingTransit, onLoadTransit,
-  transitPending, transitError, retryTransit, canLoadEvidence, loadingEvidence, onLoadEvidence,
-  evidencePending, evidenceError, retryEvidence }: {
+  transitPending, transitFetching, transitError, retryTransit, canLoadEvidence, loadingEvidence, onLoadEvidence,
+  evidencePending, evidenceFetching, evidenceError, retryEvidence }: {
   items: TransferQueueItem[], stores: Map<string, Store>, transit: TransferInTransitLine[], discrepancies: TransferDiscrepancyRecord[],
-  organizationId: string, onReload: () => void, loading: boolean,
+  organizationId: string, onReload: () => void, loading: boolean, queuePending: boolean, queueFetching: boolean, queueError: boolean, queueErrorMessage: string,
   canLoadTransfers: boolean, loadingTransfers: boolean, onLoadTransfers: () => void,
   canLoadTransit: boolean, loadingTransit: boolean, onLoadTransit: () => void,
-  transitPending: boolean, transitError: boolean, retryTransit: () => void,
+  transitPending: boolean, transitFetching: boolean, transitError: boolean, retryTransit: () => void,
   canLoadEvidence: boolean, loadingEvidence: boolean, onLoadEvidence: () => void,
-  evidencePending: boolean, evidenceError: boolean, retryEvidence: () => void,
+  evidencePending: boolean, evidenceFetching: boolean, evidenceError: boolean, retryEvidence: () => void,
 }) {
   const transitByTransfer = new Map<string, TransferInTransitLine[]>()
   for (const line of transit) transitByTransfer.set(line.transferId, [...(transitByTransfer.get(line.transferId) ?? []), line])
   const discrepancyTransfers = new Set(discrepancies.map(item => item.transferId))
   return <section aria-label="Transfer queue" className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-xl font-semibold">Transfer queue</h3><Button variant="outline" disabled={loading} onClick={onReload}>{loading ? 'Refreshing…' : 'Refresh queue'}</Button></div>
-    {items.length === 0 && <p className="text-sm text-muted-foreground">No transfers match the selected queue filters.</p>}
+    {queuePending && items.length === 0 && <p role="status" className="text-sm">Loading transfer queue…</p>}
+    {queueFetching && !queuePending && items.length === 0 && <p role="status" className="text-sm">Refreshing transfer queue…</p>}
+    {queueError && <p role="alert" className="text-sm text-destructive">Transfer queue could not be loaded. {queueErrorMessage} <Button variant="outline" onClick={onReload}>Retry queue</Button></p>}
+    {queueError && items.length > 0 && <p role="status" className="text-sm">Showing previously loaded transfers; the latest refresh failed.</p>}
+    {queueFetching && !queuePending && items.length > 0 && <p role="status" className="text-sm">Refreshing the transfer queue. Previously loaded transfers remain visible.</p>}
+    {!queuePending && !queueFetching && !queueError && items.length === 0 && !canLoadTransfers && <p className="text-sm text-muted-foreground">No transfers match the selected queue filters.</p>}
+    {!queuePending && !queueFetching && !queueError && items.length === 0 && canLoadTransfers && <p role="status" className="text-sm">No transfers are visible on this page. More results are available.</p>}
     <ul className="grid gap-4">{items.map(item => {
       const age = Math.max(0, ...(transitByTransfer.get(item.id) ?? []).map(line => line.ageSeconds))
       const source = stores.get(item.sourceStoreId); const destination = stores.get(item.destinationStoreId)
@@ -384,26 +454,36 @@ function TransferQueue({ items, stores, transit, discrepancies, organizationId, 
     <section aria-label="In-transit lines" className="space-y-3 rounded-2xl border border-border p-5">
       <h4 className="text-lg font-semibold">In-transit lines</h4>
       {transitPending && <p role="status" className="text-sm">Loading outstanding custody lines…</p>}
+      {transitFetching && !transitPending && transit.length === 0 && <p role="status" className="text-sm">Refreshing outstanding custody lines…</p>}
       {transitError && <p role="alert" className="text-sm text-destructive">In-transit records could not be loaded. <Button variant="outline" onClick={retryTransit}>Retry in-transit records</Button></p>}
-      {!transitPending && !transitError && transit.length === 0 && <p className="text-sm text-muted-foreground">No outstanding in-transit lines are visible for these stores.</p>}
+      {transitError && transit.length > 0 && <p role="status" className="text-sm">Showing previously loaded custody lines; the latest refresh failed.</p>}
+      {transitFetching && !transitPending && transit.length > 0 && <p role="status" className="text-sm">Refreshing custody lines. Previously loaded lines remain visible.</p>}
+      {!transitPending && !transitFetching && !transitError && transit.length === 0 && !canLoadTransit && <p className="text-sm text-muted-foreground">No outstanding in-transit lines are visible for these stores.</p>}
+      {!transitPending && !transitFetching && !transitError && transit.length === 0 && canLoadTransit && <p role="status" className="text-sm">No in-transit lines are visible on this page. More results are available.</p>}
       {transit.length > 0 && <ul className="space-y-2">{transit.map(line => <li key={`${line.transferId}:${line.lineId}`} className="flex flex-wrap items-center justify-between gap-3 text-sm"><span>Line {line.lineId.slice(0, 8)} · {line.outstanding} units · {formatTransferAge(line.ageSeconds)}</span><AppLink href={`/organizations/${organizationId}/transfers/${line.transferId}`} className="text-primary underline">Open transfer</AppLink></li>)}</ul>}
       {canLoadTransit && <Button variant="outline" disabled={loadingTransit} onClick={onLoadTransit}>{loadingTransit ? 'Loading in-transit lines…' : 'Load more in-transit lines'}</Button>}
     </section>
     <section aria-label="Transfer evidence history" className="space-y-3 rounded-2xl border border-border p-5">
       <h4 className="text-lg font-semibold">Transfer evidence history</h4>
       {evidencePending && <p role="status" className="text-sm">Loading reconciliation evidence…</p>}
+      {evidenceFetching && !evidencePending && discrepancies.length === 0 && <p role="status" className="text-sm">Refreshing reconciliation evidence…</p>}
       {evidenceError && <p role="alert" className="text-sm text-destructive">Transfer evidence could not be loaded. <Button variant="outline" onClick={retryEvidence}>Retry evidence history</Button></p>}
-      {!evidencePending && !evidenceError && discrepancies.length === 0 && <p className="text-sm text-muted-foreground">No transfer reconciliation evidence is visible for these stores.</p>}
+      {evidenceError && discrepancies.length > 0 && <p role="status" className="text-sm">Showing previously loaded evidence; the latest refresh failed.</p>}
+      {evidenceFetching && !evidencePending && discrepancies.length > 0 && <p role="status" className="text-sm">Refreshing reconciliation evidence. Previously loaded records remain visible.</p>}
+      {!evidencePending && !evidenceFetching && !evidenceError && discrepancies.length === 0 && !canLoadEvidence && <p className="text-sm text-muted-foreground">No transfer reconciliation evidence is visible for these stores.</p>}
+      {!evidencePending && !evidenceFetching && !evidenceError && discrepancies.length === 0 && canLoadEvidence && <p role="status" className="text-sm">No evidence is visible on this page. More results are available.</p>}
       {discrepancies.length > 0 && <ul className="space-y-2">{discrepancies.map(item => <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 text-sm"><span>{item.type} · {new Date(item.recordedAt).toLocaleString()} · {discrepancyStatus(item)}</span><AppLink href={`/organizations/${organizationId}/transfers/${item.transferId}`} className="text-primary underline">Open evidence</AppLink></li>)}</ul>}
       {canLoadEvidence && <Button variant="outline" disabled={loadingEvidence} onClick={onLoadEvidence}>{loadingEvidence ? 'Loading evidence…' : 'Load more evidence'}</Button>}
     </section>
   </section>
 }
 
-export function CreateTransferPanel({ organizationId, administrator, onCommand, busy }: {
+export function CreateTransferPanel({ organizationId, administrator, onCommand, busy, blockedReason }: {
   organizationId: string, administrator: boolean,
   onCommand: (intent: TransferCommandIntent) => Promise<void>, busy: boolean,
+  blockedReason?: string,
 }) {
+  const client = useQueryClient()
   const scope = useTenantKey()
   const [sourceStoreSearch, setSourceStoreSearch] = useState('')
   const [destinationStoreSearch, setDestinationStoreSearch] = useState('')
@@ -445,24 +525,72 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
   const destinationSelectionCompleted = destinationSelection.isSuccess && !destinationSelection.isError && !destinationSelection.isPending
     && !destinationSelection.isFetching && !destinationSelection.isPaused && destinationSelection.isFetchedAfterMount
   const sourceSelectionReady = sourceSelectionCompleted && sourceSelection.data?.id === sourceStoreId
+    && sourceSelection.data.active && sourceSelection.data.allowedActions.includes('REQUEST_TRANSFER')
+    && sourceSelection.data.allowedActions.includes('READ_INVENTORY')
   const destinationSelectionReady = destinationSelectionCompleted && destinationSelection.data?.id === destinationStoreId
-  const sourceStore = sourceSelectionReady && sourceSelection.data?.active && sourceSelection.data.allowedActions.includes('REQUEST_TRANSFER')
-      && sourceSelection.data.allowedActions.includes('READ_INVENTORY') ? sourceSelection.data : undefined
-  const destinationStore = destinationSelectionReady && destinationSelection.data?.active && destinationSelection.data.id !== sourceStoreId
-      && destinationSelection.data.allowedActions.includes('READ_STORE') ? destinationSelection.data : undefined
-  const selectedSourceStoreId = sourceStore?.id ?? ''
-  const selectedDestinationStoreId = destinationStore?.id ?? ''
-  const positions = useInfiniteQuery({ queryKey: [...scope, 'transfer-create', 'positions', selectedSourceStoreId], enabled: Boolean(selectedSourceStoreId), initialPageParam: 0,
+    && destinationSelection.data.active && destinationSelection.data.id !== sourceStoreId
+    && destinationSelection.data.allowedActions.includes('READ_STORE')
+  const sourceStore = sourceSelectionReady ? sourceSelection.data
+      : undefined
+  const destinationStore = destinationSelectionReady ? destinationSelection.data : undefined
+  const sourceSelectionDenied = (sourceSelection.isError && sourceSelection.error instanceof ApiError
+    && (sourceSelection.error.status === 403 || sourceSelection.error.status === 404))
+    || (sourceSelectionCompleted && !sourceSelectionReady)
+  const destinationSelectionDenied = (destinationSelection.isError && destinationSelection.error instanceof ApiError
+    && (destinationSelection.error.status === 403 || destinationSelection.error.status === 404))
+    || (destinationSelectionCompleted && !destinationSelectionReady)
+  const sourcePositionKey = useMemo(() => [...scope, 'transfer-create', 'positions', sourceStoreId] as const, [scope, sourceStoreId])
+  const sourceLocationKey = useMemo(() => [...scope, 'transfer-create', 'source-location', sourceStoreId] as const, [scope, sourceStoreId])
+  const destinationLocationKey = useMemo(() => [...scope, 'transfer-create', 'destination-locations', destinationStoreId] as const, [scope, destinationStoreId])
+  const laneKey = useMemo(() => [...scope, 'transfer-create', 'lane', sourceStoreId, destinationStoreId] as const, [scope, sourceStoreId, destinationStoreId])
+  useEffect(() => {
+    if (!sourceStoreId || sourceStore || sourceSelectionDenied) return
+    void client.cancelQueries({ queryKey: sourcePositionKey })
+    void client.cancelQueries({ queryKey: sourceLocationKey })
+    if (destinationStoreId) void client.cancelQueries({ queryKey: laneKey })
+  }, [client, sourceStoreId, sourceStore, sourceSelectionDenied, sourcePositionKey, sourceLocationKey, destinationStoreId, laneKey])
+  useEffect(() => {
+    if (!destinationStoreId || destinationStore || destinationSelectionDenied) return
+    void client.cancelQueries({ queryKey: destinationLocationKey })
+    void client.cancelQueries({ queryKey: laneKey })
+  }, [client, destinationStoreId, destinationStore, destinationSelectionDenied, destinationLocationKey, laneKey])
+  useEffect(() => {
+    if (!sourceStoreId || !sourceSelectionDenied) return
+    const cancellations = [
+      client.cancelQueries({ queryKey: sourcePositionKey }),
+      client.cancelQueries({ queryKey: sourceLocationKey }),
+    ]
+    if (destinationStoreId) cancellations.push(client.cancelQueries({ queryKey: laneKey }))
+    void Promise.all(cancellations).then(() => {
+      client.removeQueries({ queryKey: sourcePositionKey })
+      client.removeQueries({ queryKey: sourceLocationKey })
+      if (destinationStoreId) client.removeQueries({ queryKey: laneKey })
+    })
+  }, [client, sourceStoreId, sourceSelectionDenied, destinationStoreId, scope, sourcePositionKey, sourceLocationKey, laneKey])
+  useEffect(() => {
+    if (!destinationStoreId || !destinationSelectionDenied) return
+    void Promise.all([
+      client.cancelQueries({ queryKey: destinationLocationKey }),
+      client.cancelQueries({ queryKey: laneKey }),
+    ]).then(() => {
+      client.removeQueries({ queryKey: destinationLocationKey })
+      client.removeQueries({ queryKey: laneKey })
+    })
+  }, [client, destinationStoreId, destinationSelectionDenied, scope, destinationLocationKey, laneKey])
+  const selectedSourceStoreId = sourceStoreId
+  const selectedDestinationStoreId = destinationStoreId
+  const positions = useInfiniteQuery({ queryKey: sourcePositionKey, enabled: Boolean(sourceStore), initialPageParam: 0,
     queryFn: ({ signal, pageParam }) => listInventoryAvailableByLot(organizationId, selectedSourceStoreId, { offset: pageParam, limit: 100 }, signal),
     getNextPageParam: (page, pages) => page.hasMore ? pages.length * 100 : undefined, staleTime: 0 })
-  const sourcePositions = (positions.data?.pages ?? []).flatMap(page => page.items)
+  const sourcePositions = sourceStore ? (positions.data?.pages ?? []).flatMap(page => page.items) : []
   const destinationLocations = useInfiniteQuery({
-    queryKey: [...scope, 'transfer-create', 'destination-locations', selectedDestinationStoreId, destinationLocationSearch],
-    enabled: Boolean(selectedDestinationStoreId), initialPageParam: 0,
+    queryKey: [...destinationLocationKey, destinationLocationSearch],
+    enabled: Boolean(destinationStore), initialPageParam: 0,
     queryFn: ({ signal, pageParam }) => listStorageLocations(organizationId, selectedDestinationStoreId, false, destinationLocationSearch, pageParam, signal),
     getNextPageParam: (page, pages) => page.hasMore ? pages.length * 25 : undefined, staleTime: 0,
   })
-  const destinationLocationItems = uniqueBy((destinationLocations.data?.pages ?? []).flatMap(page => page.items), location => location.id)
+  const destinationLocationItems = destinationStore
+    ? uniqueBy((destinationLocations.data?.pages ?? []).flatMap(page => page.items), location => location.id) : []
   const selectedPositions = uniqueBy(lines.flatMap(line => sourcePositions.filter(item => item.positionId === line.sourcePositionId)), item => item.positionId)
   const selectedProducts = [...new Set(selectedPositions.map(position => position.productId))]
   const selectedLots = uniqueBy(selectedPositions, position => `${position.productId}:${position.lotId}`)
@@ -474,10 +602,10 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
     queryKey: [...scope, 'transfer-create', 'lot', position.lotId], queryFn: ({ signal }: { signal: AbortSignal }) => getLot(organizationId, position.lotId, signal), staleTime: 60000,
   })) })
   const sourceLocationQueries = useQueries({ queries: selectedSourceLocations.map(locationId => ({
-    queryKey: [...scope, 'transfer-create', 'source-location', selectedSourceStoreId, locationId],
+    queryKey: [...sourceLocationKey, locationId],
     queryFn: ({ signal }: { signal: AbortSignal }) => getStorageLocation(organizationId, selectedSourceStoreId, locationId, signal), staleTime: 0,
   })) })
-  const route = useQuery({ queryKey: [...scope, 'transfer-create', 'lane', selectedSourceStoreId, selectedDestinationStoreId], enabled: administrator && Boolean(selectedSourceStoreId && selectedDestinationStoreId), queryFn: ({ signal }) => lookupLane(organizationId, selectedSourceStoreId, selectedDestinationStoreId, signal), staleTime: 0 })
+  const route = useQuery({ queryKey: laneKey, enabled: administrator && Boolean(sourceStore && destinationStore), queryFn: ({ signal }) => lookupLane(organizationId, selectedSourceStoreId, selectedDestinationStoreId, signal), staleTime: 0 })
   const positionById = new Map(sourcePositions.map(position => [position.positionId, position]))
   const sourceLocationById = new Map(selectedSourceLocations.flatMap((id, index) => sourceLocationQueries[index]?.data ? [[id, sourceLocationQueries[index]!.data!]] : []))
   const destinationLocationById = new Map(destinationLocationItems.map(location => [location.id, location]))
@@ -517,8 +645,14 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
     return !administrator || Boolean(lane && sourceLocation?.zoneId === lane.originZoneId && destinationLocation?.zoneId === lane.destinationZoneId)
   })
   const routeAllowsRequest = !administrator || route.data?.status === 'CONFIGURED'
+  const sourceAvailabilityReady = Boolean(sourceStore && positions.data && !positions.isPending && !positions.isFetching && !positions.isPaused && !positions.isError)
+  const destinationLocationsReady = Boolean(destinationStore && destinationLocations.data && !destinationLocations.isPending
+    && !destinationLocations.isFetching && !destinationLocations.isPaused && !destinationLocations.isError)
+  const routeReadReady = !administrator || Boolean(route.data && !route.isPending && !route.isFetching && !route.isPaused && !route.isError)
+  const sourceLocationsReady = !administrator || sourceLocationQueries.every(query => query.isSuccess && !query.isFetching && !query.isPaused && !query.isError)
   const canSubmit = Boolean(sourceStore && destinationStore && positions.data && destinationLocations.data
-    && validLines && aggregateAvailability && allRoutesMatch && reason.trim() && evidenceReference.trim() && routeAllowsRequest && !busy)
+    && sourceAvailabilityReady && destinationLocationsReady && routeReadReady && sourceLocationsReady
+    && validLines && aggregateAvailability && allRoutesMatch && reason.trim() && evidenceReference.trim() && routeAllowsRequest && !busy && !blockedReason)
 
   function updateLine(id: string, patch: Partial<DraftTransferLine>) {
     setLines(current => current.map(line => line.id === id ? { ...line, ...patch } : line))
@@ -574,7 +708,7 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
           const quantityLabel = index === 0 ? `Quantity (${position?.unit ?? 'EA'})` : `Quantity for line ${index + 1} (${position?.unit ?? 'EA'})`
           return <fieldset key={line.id} className="grid min-w-0 gap-4 rounded-xl border border-border p-4 sm:grid-cols-2">
             <legend className="px-2 font-semibold">Transfer line {index + 1} of {lines.length}</legend>
-            <Field label={positionLabel}>{id => <select id={id} required value={line.sourcePositionId} onChange={event => { updateLine(line.id, { sourcePositionId: event.target.value, quantity: '' }) }} disabled={positions.isPending || !selectedSourceStoreId} className={inputClass}><option value="">Choose an available stock position</option>{sourcePositions.map(item => {
+            <Field label={positionLabel}>{id => <select id={id} required value={line.sourcePositionId} onChange={event => { updateLine(line.id, { sourcePositionId: event.target.value, quantity: '' }) }} disabled={positions.isPending || positions.isFetching || positions.isError || !sourceStore} className={inputClass}><option value="">Choose an available stock position</option>{sourcePositions.map(item => {
         const itemProduct = productById.get(item.productId)
         const itemLot = lotById.get(`${item.productId}:${item.lotId}`)
         const free = item.available === null ? 'count unknown' : `${item.available} ${item.unit} available`
@@ -582,7 +716,7 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
         return <option key={item.positionId} value={item.positionId} disabled={duplicate || item.initialization !== 'INITIALIZED' || item.unit !== 'EA' || item.available === null || item.available <= 0}>{itemProduct ? `${itemProduct.sku} · ${itemProduct.name}` : `Product ${item.productId.slice(0, 8)}`} · {itemLot?.lotCode ?? `Lot ${item.lotId.slice(0, 8)}`} · location ${item.locationId.slice(0, 8)} · {free}{duplicate ? ' · already selected' : ''}</option>
       })}</select>}</Field>
             <Field label="Search destination locations">{id => <input id={id} type="search" value={destinationLocationSearch} onChange={event => { setDestinationLocationSearch(event.target.value) }} className={inputClass} placeholder="Search location code or name" />}</Field>
-            <Field label={destinationLabel}>{id => <select id={id} required value={line.destinationLocationId} onChange={event => { updateLine(line.id, { destinationLocationId: event.target.value }) }} disabled={!destinationStore || destinationLocations.isPending} className={inputClass}><option value="">Choose an active location</option>{destinationLocationItems.map(location => <option key={location.id} value={location.id} disabled={!location.usable}>{location.code} · {location.name} · {location.zoneId}{location.usable ? '' : ' · unavailable'}</option>)}</select>}</Field>
+            <Field label={destinationLabel}>{id => <select id={id} required value={line.destinationLocationId} onChange={event => { updateLine(line.id, { destinationLocationId: event.target.value }) }} disabled={!destinationStore || destinationLocations.isPending || destinationLocations.isFetching || destinationLocations.isError} className={inputClass}><option value="">Choose an active location</option>{destinationLocationItems.map(location => <option key={location.id} value={location.id} disabled={!location.usable}>{location.code} · {location.name} · {location.zoneId}{location.usable ? '' : ' · unavailable'}</option>)}</select>}</Field>
             {position && <Field label={quantityLabel}>{id => <input id={id} type="number" min="1" max={position.available ?? undefined} step="1" required value={line.quantity} onChange={event => { updateLine(line.id, { quantity: event.target.value }) }} className={inputClass} />}</Field>}
             <div className="min-w-0 text-sm sm:col-span-2"><p>Source zone: {sourceLocation?.zoneId ?? (position ? 'Loading source location' : 'Choose source stock')} · destination zone: {destinationLocation?.zoneId ?? 'Choose receiving location'}</p>
               {position && <p className="mt-1">Observed source position version: {position.positionVersion}. Product {product?.sku ?? position.productId.slice(0, 8)} · lot {lot?.lotCode ?? position.lotId.slice(0, 8)}.</p>}
@@ -593,22 +727,22 @@ export function CreateTransferPanel({ organizationId, administrator, onCommand, 
             {lines.length > 1 && <Button type="button" variant="outline" onClick={() => { setLines(current => current.length > 1 ? current.filter(item => item.id !== line.id) : current) }} aria-label={`Remove transfer line ${index + 1}`}>Remove line</Button>}
           </fieldset>
         })}
-        {positions.hasNextPage && <Button type="button" variant="outline" disabled={positions.isFetchingNextPage} onClick={() => { void positions.fetchNextPage() }}>{positions.isFetchingNextPage ? 'Loading source positions…' : 'Load more available source positions'}</Button>}
-        {destinationLocations.hasNextPage && <Button type="button" variant="outline" disabled={destinationLocations.isFetchingNextPage} onClick={() => { void destinationLocations.fetchNextPage() }}>{destinationLocations.isFetchingNextPage ? 'Loading locations…' : 'Load more destination locations'}</Button>}
+        {sourceStore && positions.hasNextPage && <Button type="button" variant="outline" disabled={positions.isFetching || positions.isError} onClick={() => { void positions.fetchNextPage() }}>{positions.isFetching ? 'Loading source positions…' : 'Load more available source positions'}</Button>}
+        {destinationStore && destinationLocations.hasNextPage && <Button type="button" variant="outline" disabled={destinationLocations.isFetching || destinationLocations.isError} onClick={() => { void destinationLocations.fetchNextPage() }}>{destinationLocations.isFetching ? 'Loading locations…' : 'Load more destination locations'}</Button>}
         <Button type="button" variant="outline" disabled={lines.length >= 50} onClick={() => { setLines(current => current.length < 50 ? [...current, newDraftTransferLine()] : current) }}>Add transfer line</Button>
         {duplicatePosition && <p role="alert" className="text-sm text-destructive">Choose a different source position for each line.</p>}
         {!aggregateAvailability && <p role="alert" className="text-sm text-destructive">Combined line quantities exceed the observed source availability for a product and lot.</p>}
-        {administrator && lines.some(line => line.sourcePositionId && line.destinationLocationId) && !allRoutesMatch && route.data?.lane && <p role="alert" className="text-sm text-destructive">One or more lines use zones outside the configured lane.</p>}
+        {administrator && sourceStore && destinationStore && lines.some(line => line.sourcePositionId && line.destinationLocationId) && !allRoutesMatch && route.data?.lane && <p role="alert" className="text-sm text-destructive">One or more lines use zones outside the configured lane.</p>}
       </div>
       <div className="sm:col-span-2 rounded-xl border border-border p-4 text-sm"><h4 className="font-semibold">Route and storage context</h4>
-        {administrator && selectedSourceStoreId && selectedDestinationStoreId && (route.isPending ? <p role="status" className="mt-2">Checking configured transport route…</p> : route.isError ? <p role="alert" className="mt-2 text-destructive">{errorMessage(route.error)} <Button type="button" variant="outline" onClick={() => { void route.refetch() }}>Retry route check</Button></p> : <p className="mt-2">Transport route: {route.data?.status === 'CONFIGURED' ? 'Configured and available' : `Unavailable (${route.data?.status ?? 'not checked'})`}. The server rechecks lane, zones and stock when each command is saved.</p>)}
+        {administrator && sourceStore && destinationStore && (route.isPending ? <p role="status" className="mt-2">Checking configured transport route…</p> : route.isError ? <p role="alert" className="mt-2 text-destructive">{errorMessage(route.error)} <Button type="button" variant="outline" onClick={() => { void route.refetch() }}>Retry route check</Button></p> : <p className="mt-2">Transport route: {route.data?.status === 'CONFIGURED' ? 'Configured and available' : `Unavailable (${route.data?.status ?? 'not checked'})`}. The server rechecks lane, zones and stock when each command is saved.</p>)}
         {!administrator && <p className="mt-2">The server checks the current transport route, compatible zones and stock state when you submit.</p>}</div>
-      {positions.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">Source availability could not be checked: {errorMessage(positions.error)} <Button type="button" variant="outline" onClick={() => { void positions.refetch() }}>Retry availability</Button></p>}
-      {(sourceLocationQueries.some(query => query.isError) || destinationLocations.isError) && <p role="alert" className="sm:col-span-2 text-sm text-destructive">Storage locations could not be checked. Confirm store access and retry the failed read. <Button type="button" variant="outline" onClick={() => { for (const query of sourceLocationQueries) if (query.isError) void query.refetch(); if (destinationLocations.isError) void destinationLocations.refetch() }}>Retry locations</Button></p>}
-      {positions.isPending && selectedSourceStoreId && <p role="status" className="sm:col-span-2">Loading current source availability…</p>}
+      {sourceStore && positions.isError && <p role="alert" className="sm:col-span-2 text-sm text-destructive">Source availability could not be checked: {errorMessage(positions.error)} <Button type="button" variant="outline" onClick={() => { void positions.refetch() }}>Retry availability</Button></p>}
+      {((sourceStore && sourceLocationQueries.some(query => query.isError)) || (destinationStore && destinationLocations.isError)) && <p role="alert" className="sm:col-span-2 text-sm text-destructive">Storage locations could not be checked. Confirm store access and retry the failed read. <Button type="button" variant="outline" onClick={() => { if (sourceStore) for (const query of sourceLocationQueries) if (query.isError) void query.refetch(); if (destinationStore && destinationLocations.isError) void destinationLocations.refetch() }}>Retry locations</Button></p>}
+      {positions.isPending && sourceStore && <p role="status" className="sm:col-span-2">Loading current source availability…</p>}
       <Field label="Reason for transfer">{id => <textarea id={id} required maxLength={500} value={reason} onChange={event => { setReason(event.target.value) }} className={inputClass} />}</Field>
       <Field label="Evidence reference">{id => <input id={id} required maxLength={256} value={evidenceReference} onChange={event => { setEvidenceReference(event.target.value) }} className={inputClass} placeholder="Document or review reference" />}</Field>
-      <Button type="submit" className="sm:col-span-2" disabled={!canSubmit}>{busy ? 'Saving request…' : 'Create transfer request'}</Button>
+      <Button type="submit" className="sm:col-span-2" disabled={!canSubmit}>{busy ? 'Saving request…' : blockedReason ?? 'Create transfer request'}</Button>
     </form>}
   </section>
 }
