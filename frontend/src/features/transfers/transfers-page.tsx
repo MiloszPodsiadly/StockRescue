@@ -47,13 +47,29 @@ type RecoveryView = {
 }
 type RecoveryMessage = { scopeKey: string, intentId?: string, notice?: string, error?: string, complete?: boolean }
 type PendingReadState = { scopeKey: string, token: number, status: 'loading' | 'success' | 'error' }
+type PendingReadResult = {
+  scopeKey: string
+  token: number
+  page: Awaited<ReturnType<typeof listPendingTransferCommandIntents>>
+}
 type RecoveryOperation = { scopeKey: string, token: number, intentId?: string, signal: AbortSignal }
+type TransferCommandPhase = 'mark-submitted' | 'execute'
 type AcknowledgementResult =
   | { kind: 'acknowledged', redacted: boolean }
   | { kind: 'committed-awaiting-acknowledgement', inspection: TransferCommandIntentInspection }
   | { kind: 'terminal', inspection: TransferCommandIntentInspection }
   | { kind: 'unknown', redacted: boolean }
 const newDraftTransferLine = (): DraftTransferLine => ({ id: crypto.randomUUID(), sourcePositionId: '', destinationLocationId: '', quantity: '' })
+
+class SupersededPendingReadError extends Error {
+  constructor() { super('Pending transfer-intent read was superseded.') }
+}
+
+class TransferCommandPhaseError extends Error {
+  constructor(readonly phase: TransferCommandPhase, readonly original: unknown) {
+    super(`Transfer command ${phase} failed.`)
+  }
+}
 
 function discrepancyStatus(item: TransferDiscrepancyRecord) {
   if (['PENDING', 'PARTIALLY_FULFILLED', 'FULFILLED', 'SUPERSEDED'].includes(item.resolutionScope))
@@ -67,12 +83,27 @@ function uniqueBy<T>(values: T[], key: (value: T) => string): T[] {
   return [...new Map(values.map(value => [key(value), value])).values()]
 }
 
-function uncertainOutcome(error: unknown) {
-  return transferAccessDenied(error) || !(error instanceof ApiError) || error.status >= 500
-}
-
 function transferAccessDenied(error: unknown) {
   return error instanceof ApiError && [401, 403, 404].includes(error.status)
+}
+
+function definitiveTransferExecutionResolution(error: unknown): 'REJECTED' | 'CONFLICTED' | null {
+  if (!(error instanceof ApiError)) return null
+  if ((error.status === 400 || error.status === 422)
+    && (error.code === 'INVALID_REQUEST' || error.code === 'LOT_NOT_ELIGIBLE')) return 'REJECTED'
+  if (error.status === 409 && [
+    'INVENTORY_CONFLICT', 'INSUFFICIENT_STOCK', 'INVENTORY_INACTIVE', 'INVENTORY_FROZEN',
+    'INVENTORY_NOT_INITIALIZED', 'IDEMPOTENCY_CONFLICT', 'RECEIPT_ALREADY_RECORDED',
+    'ALLOCATION_UNAVAILABLE', 'CONFIGURATION_CONFLICT', 'CONFIGURATION_INACTIVE',
+    'INCOMPATIBLE_ZONES',
+  ].includes(error.code)) return 'CONFLICTED'
+  return null
+}
+
+function definitivePrepareRejection(error: unknown) {
+  return error instanceof ApiError
+    && ((error.status === 400 || error.status === 422) && error.code === 'INVALID_REQUEST'
+      || error.status === 409 && ['INVENTORY_CONFLICT', 'IDEMPOTENCY_CONFLICT'].includes(error.code))
 }
 
 function terminalIntentStatus(status: TransferCommandIntentInspection['executionStatus']): status is 'REJECTED' | 'CONFLICTED' {
@@ -166,10 +197,10 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       recordPendingReadState({ scopeKey: requestedScope, token, status: 'loading' })
       try {
         const page = await listPendingTransferCommandIntents(organizationId, signal)
-        if (scopeKeyRef.current === requestedScope && pendingReadToken.current === token) {
-          recordPendingReadState({ scopeKey: requestedScope, token, status: 'success' })
-        }
-        return page
+        signal.throwIfAborted()
+        if (scopeKeyRef.current !== requestedScope || pendingReadToken.current !== token) throw new SupersededPendingReadError()
+        recordPendingReadState({ scopeKey: requestedScope, token, status: 'success' })
+        return { scopeKey: requestedScope, token, page }
       } catch (error) {
         if (scopeKeyRef.current === requestedScope && pendingReadToken.current === token) {
           recordPendingReadState({ scopeKey: requestedScope, token, status: 'error' })
@@ -180,9 +211,11 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     enabled: !historicalOnly, retry: false, refetchOnWindowFocus: true, staleTime: 0, gcTime: 0,
   })
   const pendingReadStatus = pendingReadState?.scopeKey === scopeKey ? pendingReadState.status : null
-  const pendingReadReady = pendingReadStatus === 'success' && pendingIntents.isSuccess
+  const pendingReadReady = pendingReadStatus === 'success' && pendingReadState?.token === pendingReadToken.current
+    && pendingIntents.data?.scopeKey === scopeKey && pendingIntents.data.token === pendingReadState.token
+    && pendingIntents.isSuccess
     && !pendingIntents.isError && !pendingIntents.isFetching && !pendingIntents.isPaused
-  const pendingSummary = pendingReadReady ? pendingIntents.data?.items[0] ?? null : null
+  const pendingSummary = pendingReadReady ? pendingIntents.data.page.items[0] ?? null : null
   const localRecoveryLock = recoveryLockState?.scopeKey === scopeKey ? recoveryLockState : null
   const activeIntentId = localRecoveryLock && pendingSummary && localRecoveryLock.intentId !== pendingSummary.id
     ? pendingSummary.id : localRecoveryLock?.intentId ?? pendingSummary?.id ?? null
@@ -192,7 +225,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
   const authorizedInspection = recoveryInspection && activeSummary
     && inspectionIsConsistent(recoveryInspection) && inspectionMatchesSummary(recoveryInspection, activeSummary)
     ? recoveryInspection : null
-  const recoveryRedacted = Boolean(activeSummary?.redacted || recoveryInspection?.redacted)
+  const recoveryRedacted = Boolean(activeSummary?.redacted || recoveryInspection?.redacted || recoveryView?.redacted)
   const activeIntentIdRef = useRef(activeIntentId)
   activeIntentIdRef.current = activeIntentId
   const commandBusy = commandBusyState?.scopeKey === scopeKey && commandBusyState.token === operationToken.current
@@ -289,11 +322,17 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       if (scopeKeyRef.current !== scopeKey) return
       const currentScope = scopeKey
       if (event.action.type === 'error') {
+        const read = pendingReadStateRef.current
+        if (read?.scopeKey !== currentScope || read.status !== 'error' || read.token !== pendingReadToken.current) return
         setRecoveryViewState(current => current?.scopeKey === currentScope ? null : current)
         return
       }
       if (event.action.type !== 'success') return
-      const summary = client.getQueryData<{ items: TransferCommandIntentSummary[] }>(pendingIntentKey)?.items[0] ?? null
+      const read = pendingReadStateRef.current
+      const cached = client.getQueryData<PendingReadResult>(pendingIntentKey)
+      if (read?.scopeKey !== currentScope || read.status !== 'success' || read.token !== pendingReadToken.current
+        || cached?.scopeKey !== currentScope || cached.token !== read.token) return
+      const summary = cached.page.items[0] ?? null
       setRecoveryLockState(current => current?.scopeKey === currentScope && summary && current.intentId !== summary.id
         ? { scopeKey: currentScope, intentId: summary.id } : current)
       setRecoveryViewState(current => {
@@ -351,32 +390,35 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       current?.scopeKey === operation.scopeKey && current.token === operation.token ? null : current)
   }
 
-  function currentPendingRead() {
+  function currentPendingRead(): PendingReadResult | null {
     const read = pendingReadStateRef.current
     const query = client.getQueryState(pendingIntentKey)
-    if (read?.scopeKey !== scopeKey || read.status !== 'success' || query?.status !== 'success' || query.fetchStatus !== 'idle') return null
-    return client.getQueryData<{ items: TransferCommandIntentSummary[] }>(pendingIntentKey) ?? { items: [] }
+    if (read?.scopeKey !== scopeKey || read.status !== 'success' || read.token !== pendingReadToken.current
+      || query?.status !== 'success' || query.fetchStatus !== 'idle') return null
+    const cached = client.getQueryData<PendingReadResult>(pendingIntentKey)
+    return cached?.scopeKey === scopeKey && cached.token === read.token ? cached : null
   }
 
   async function refreshPendingIntents(requestScope = scopeKey, signal = tenantSignal()) {
-    if (scopeKeyRef.current !== requestScope) return null
+    if (scopeKeyRef.current !== requestScope || signal.aborted) return null
     const token = ++pendingReadToken.current
     recordPendingReadState({ scopeKey: requestScope, token, status: 'loading' })
     await client.cancelQueries({ queryKey: pendingIntentKey, exact: true })
-    if (scopeKeyRef.current !== requestScope) return null
+    if (scopeKeyRef.current !== requestScope || pendingReadToken.current !== token || signal.aborted) return null
     try {
       const page = await listPendingTransferCommandIntents(organizationId, signal)
       signal.throwIfAborted()
-      if (scopeKeyRef.current === requestScope && pendingReadToken.current === token) {
-        client.setQueryData(pendingIntentKey, page)
-        recordPendingReadState({ scopeKey: requestScope, token, status: 'success' })
-      }
-      return page
+      if (scopeKeyRef.current !== requestScope || pendingReadToken.current !== token) return null
+      const result = { scopeKey: requestScope, token, page }
+      recordPendingReadState({ scopeKey: requestScope, token, status: 'success' })
+      client.setQueryData(pendingIntentKey, result)
+      return result
     } catch (error) {
-      if (scopeKeyRef.current === requestScope && pendingReadToken.current === token) {
+      if (scopeKeyRef.current === requestScope && pendingReadToken.current === token && !signal.aborted) {
         recordPendingReadState({ scopeKey: requestScope, token, status: 'error' })
+        throw error
       }
-      throw error
+      return null
     }
   }
 
@@ -418,9 +460,9 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     resolution: 'ACKNOWLEDGED' | 'REJECTED' | 'CONFLICTED' | 'UNRESOLVED', notice: string, redacted: boolean) {
     const intentId = operation.intentId
     if (!intentId || !operationIsCurrent(operation)) return false
-    let page: Awaited<ReturnType<typeof listPendingTransferCommandIntents>> | null
+    let read: PendingReadResult | null
     try {
-      page = await refreshPendingIntents(operation.scopeKey, operation.signal)
+      read = await refreshPendingIntents(operation.scopeKey, operation.signal)
     } catch {
       if (operationIsCurrent(operation)) {
         setRecoveryView(operation, { kind: 'unknown' })
@@ -428,8 +470,20 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       }
       return false
     }
-    if (!page || !operationIsCurrent(operation)) return false
-    const current = page.items[0]
+    if (!read || !operationIsCurrent(operation)) {
+      if (operationIsCurrent(operation)) {
+        setRecoveryView(operation, { kind: 'unknown' })
+        setCommandMessage(operation, 'A newer recovery read took priority. Keep the command blocked and check its current server status again.')
+      }
+      return false
+    }
+    const latest = currentPendingRead()
+    if (!latest || latest.token < read.token) {
+      setRecoveryView(operation, { kind: 'unknown' })
+      setCommandMessage(operation, 'The current recovery state could not be confirmed. New commands remain paused; retry the saved-command check.')
+      return false
+    }
+    const current = latest.page.items[0]
     if (current && current.id !== intentId) {
       replaceWithServerPending(operation, current)
       return false
@@ -491,7 +545,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     if (outcome.kind === 'committed-awaiting-acknowledgement') {
       const inspection = outcome.inspection
       const page = currentPendingRead()
-      const summary = page?.items.find(item => item.id === operation.intentId)
+      const summary = page?.page.items.find(item => item.id === operation.intentId)
       if (inspection.redacted || summary?.redacted) {
         setRecoveryView(operation, inspection.redacted ? { kind: 'inspection', inspection } : { kind: 'unknown' })
         setCommandMessage(operation, 'The business result is committed, but acknowledgement is not confirmed. Access changed or remains uncertain; inspect the saved record again.')
@@ -515,7 +569,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       || !inspectionIsConsistent(inspection) || !terminalIntentStatus(inspection.executionStatus)) return
     const status = inspection.executionStatus
     const page = currentPendingRead()
-    const summary = page?.items.find(item => item.id === operation.intentId)
+    const summary = page?.page.items.find(item => item.id === operation.intentId)
     if (summary?.redacted && !inspection.redacted) {
       setRecoveryView(operation, { kind: 'unknown' })
       setCommandMessage(operation, 'The server changed access while the command was being checked. Details remain hidden until the next check succeeds.')
@@ -542,7 +596,12 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       return
     }
     if (!alreadySubmitted) {
-      const submitted = await markTransferCommandIntentSubmitted(organizationId, intentSummary.id, operation.signal)
+      let submitted: Awaited<ReturnType<typeof markTransferCommandIntentSubmitted>>
+      try {
+        submitted = await markTransferCommandIntentSubmitted(organizationId, intentSummary.id, operation.signal)
+      } catch (error) {
+        throw new TransferCommandPhaseError('mark-submitted', error)
+      }
       if (!operationIsCurrent(operation)) return
       if (submitted.id !== intentSummary.id || submitted.redacted || submitted.state !== 'SUBMITTED') {
         setRecoveryView(operation, { kind: 'unknown' })
@@ -550,7 +609,12 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
         return
       }
     }
-    const outcome = await executeTransferCommand(organizationId, intent, operation.signal)
+    let outcome: Awaited<ReturnType<typeof executeTransferCommand>>
+    try {
+      outcome = await executeTransferCommand(organizationId, intent, operation.signal)
+    } catch (error) {
+      throw new TransferCommandPhaseError('execute', error)
+    }
     if (!operationIsCurrent(operation)) return
     const savedMessage = `Saved as ${transferStatusLabel(outcome.status)}. Server record ${outcome.transferId.slice(0, 8)} · version ${outcome.version}.`
     setCommandMessage(operation, `${savedMessage} The server confirmed the business result; confirming its recovery acknowledgement.`)
@@ -558,6 +622,56 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     if (!operationIsCurrent(operation)) return
     await refreshCommittedCommand(operation, acknowledgement,
       acknowledgement.kind === 'acknowledged' && !acknowledgement.redacted ? outcome.transferId : undefined)
+  }
+
+  async function handlePreparedCommandFailure(operation: RecoveryOperation, intentId: string, error: unknown) {
+    if (!operationIsCurrent(operation)) return
+    const phaseError = error instanceof TransferCommandPhaseError ? error : null
+    const original = phaseError?.original ?? error
+    const resolution = phaseError?.phase === 'execute' ? definitiveTransferExecutionResolution(original) : null
+    if (resolution) {
+      try {
+        await resolveFailedTransferCommandIntent(organizationId, intentId, resolution, operation.signal)
+      } catch { /* Inspect below; the server guards committed receipts transactionally. */ }
+      if (!operationIsCurrent(operation)) return
+      try {
+        await inspectAndApply(operation, intentId)
+      } catch (inspectionError) {
+        if (operationIsCurrent(operation)) {
+          setRecoveryView(operation, { kind: 'unknown', redacted: transferAccessDenied(original) || transferAccessDenied(inspectionError) })
+          setCommandMessage(operation, 'The business request returned a definitive rejection response, but the server recovery state could not be confirmed. Keep it blocked and inspect the saved record.')
+        }
+      }
+      return
+    }
+
+    const denied = transferAccessDenied(original)
+    setRecoveryView(operation, { kind: 'unknown', redacted: denied })
+    const notice = phaseError?.phase === 'mark-submitted'
+      ? 'The saved command could not be marked as submitted. Its server state is unconfirmed; inspect the saved record before retrying.'
+      : phaseError?.phase === 'execute'
+        ? 'The exact saved request may still be processing. No replacement request was sent; inspect its outcome before continuing.'
+        : denied
+          ? 'Current access to the saved command could not be confirmed. Its details remain hidden; retry the status check.'
+          : 'The saved command could not be verified. Keep it blocked and inspect its current server state.'
+    setCommandMessage(operation, notice)
+    if (!phaseError) return
+    try {
+      const refreshed = await refreshPendingIntents(operation.scopeKey, operation.signal)
+      if (!operationIsCurrent(operation)) return
+      const current = currentPendingRead()
+      if (!current || !refreshed) {
+        setRecoveryView(operation, { kind: 'unknown', redacted: denied })
+        setCommandMessage(operation, 'The request and current recovery status could not be confirmed. Keep it blocked and retry the saved-command check.')
+      } else if (current.page.items[0] && current.page.items[0].id !== intentId) {
+        replaceWithServerPending(operation, current.page.items[0])
+      }
+    } catch {
+      if (operationIsCurrent(operation)) {
+        setRecoveryView(operation, { kind: 'unknown', redacted: denied })
+        setCommandMessage(operation, 'The request and current recovery status could not be confirmed. Keep it blocked and retry the saved-command check.')
+      }
+    }
   }
 
   async function runIntent(intent: TransferCommandIntent) {
@@ -580,32 +694,27 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       await submitPreparedCommand(intent, prepared, operation, false)
     } catch (error) {
       if (!operationIsCurrent(operation)) return
-      if (intentId && !uncertainOutcome(error)) {
-        try {
-          await resolveFailedTransferCommandIntent(organizationId, intentId,
-            error instanceof ApiError && error.status === 409 ? 'CONFLICTED' : 'REJECTED', operation.signal)
-          if (operationIsCurrent(operation)) await inspectAndApply(operation, intentId)
-        } catch {
-          if (operationIsCurrent(operation)) {
-            setRecoveryView(operation, { kind: 'unknown' })
-            setCommandMessage(operation, 'The command did not complete normally, and its terminal state could not be confirmed. Keep it blocked and inspect the saved record.')
-            try { await refreshPendingIntents(operation.scopeKey, operation.signal) }
-            catch { setRecoveryView(operation, { kind: 'unknown' }) }
-          }
-        }
-      } else if (intentId) {
+      if (intentId) {
         retainRecoveryLock(operation, intentId)
-        setRecoveryView(operation, { kind: 'unknown' })
-        setCommandMessage(operation, 'The server saved the exact command, but its result is unknown. Inspect its current outcome before taking another action.')
-        try { await refreshPendingIntents(operation.scopeKey, operation.signal) }
-        catch { setCommandMessage(operation, 'The command result and current access could not be confirmed. Keep it blocked and retry the saved-command check.') }
+        await handlePreparedCommandFailure(operation, intentId, error)
       } else {
-        setCommandMessage(operation, 'The command may have been prepared on the server. Checking for its saved recovery record; no stock command is retried automatically.')
+        setCommandMessage(operation, undefined, 'The command may have been prepared. Checking its recovery status; no stock operation was sent by this attempt.')
         try {
-          const page = await refreshPendingIntents(operation.scopeKey, operation.signal)
-          if (operationIsCurrent(operation) && page?.items[0]) replaceWithServerPending(operation, page.items[0])
+          await refreshPendingIntents(operation.scopeKey, operation.signal)
+          if (!operationIsCurrent(operation)) return
+          const current = currentPendingRead()
+          if (!current) {
+            setCommandMessage(operation, undefined, 'The command may have been prepared, but current recovery status is not confirmed. New commands remain paused; check saved commands again.')
+          } else if (current.page.items[0]) {
+            replaceWithServerPending(operation, current.page.items[0])
+          } else if (definitivePrepareRejection(error)) {
+            setCommandMessage(operation, undefined, 'The transfer command was rejected before it could be prepared. No stock operation was sent; review the request before trying again.')
+          } else {
+            setCommandMessage(operation, undefined, 'No pending command was found. This attempt did not send a stock operation; its preparation outcome remains unconfirmed.')
+          }
         } catch {
-          if (operationIsCurrent(operation)) setCommandMessage(operation, 'The command may have been prepared, but current recovery status could not be read. New commands remain paused.')
+          if (operationIsCurrent(operation)) setCommandMessage(operation, undefined,
+            'The command may have been prepared, but current recovery status could not be read. New commands remain paused; check saved commands again.')
         }
       }
     } finally { finishOperation(operation) }
@@ -624,7 +733,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       setCommandMessage(operation, 'Current access and pending status could not be confirmed. Retry the saved-command check before continuing.')
       return
     }
-    const summary = page.items[0]
+    const summary = page.page.items[0]
     if (summary && summary.id !== operation.intentId) {
       replaceWithServerPending(operation, summary)
       return
@@ -632,6 +741,12 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     if (summary?.redacted && !inspection.redacted) {
       setRecoveryView(operation, { kind: 'unknown' })
       setCommandMessage(operation, 'The server changed access while the command was being inspected. Transfer details remain hidden.')
+      return
+    }
+    if (inspection.redacted && inspection.executionStatus !== 'REJECTED' && inspection.executionStatus !== 'CONFLICTED'
+      && inspection.executionStatus !== 'ACKNOWLEDGED') {
+      setRecoveryView(operation, { kind: 'inspection', inspection, redacted: true })
+      setCommandMessage(operation, 'Current access no longer permits these request details. The saved command remains blocked while recovery is checked.')
       return
     }
     if (inspection.executionStatus === 'REJECTED' || inspection.executionStatus === 'CONFLICTED') {
@@ -694,16 +809,22 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     setRecoveryView(operation, { kind: 'checking' })
     setCommandMessage(operation, 'Checking the current server record without repeating the stock operation.')
     try {
-      const page = await refreshPendingIntents(operation.scopeKey, operation.signal)
-      if (!operationIsCurrent(operation) || !page) return
-      if (page.items[0] && page.items[0].id !== intentId) {
-        replaceWithServerPending(operation, page.items[0])
+      const read = await refreshPendingIntents(operation.scopeKey, operation.signal)
+      if (!operationIsCurrent(operation)) return
+      const current = currentPendingRead()
+      if (!read || !current) {
+        setRecoveryView(operation, { kind: 'unknown' })
+        setCommandMessage(operation, 'A newer recovery read took priority. The command remains blocked; retry the saved-command check.')
+        return
+      }
+      if (current.page.items[0] && current.page.items[0].id !== intentId) {
+        replaceWithServerPending(operation, current.page.items[0])
         return
       }
       await inspectAndApply(operation, intentId)
     } catch (error) {
       if (!operationIsCurrent(operation)) return
-      setRecoveryView(operation, { kind: 'unknown' })
+      setRecoveryView(operation, { kind: 'unknown', redacted: transferAccessDenied(error) })
       setCommandMessage(operation, transferAccessDenied(error)
         ? 'Current access to the saved command could not be confirmed. Its details remain hidden; retry the status check.'
         : 'The saved command status could not be read. New commands remain paused; retry this read when the service is available.')
@@ -718,13 +839,19 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     retainRecoveryLock(operation, intentId)
     setCommandMessage(operation, 'Verifying the saved request and current access before retrying its exact request key and payload.')
     try {
-      const page = await refreshPendingIntents(operation.scopeKey, operation.signal)
-      if (!operationIsCurrent(operation) || !page) return
-      if (page.items[0] && page.items[0].id !== intentId) {
-        replaceWithServerPending(operation, page.items[0])
+      const read = await refreshPendingIntents(operation.scopeKey, operation.signal)
+      if (!operationIsCurrent(operation)) return
+      const current = currentPendingRead()
+      if (!read || !current) {
+        setRecoveryView(operation, { kind: 'unknown' })
+        setCommandMessage(operation, 'A newer recovery read took priority. The saved command remains blocked; retry its status check.')
         return
       }
-      const summary = page.items.find(item => item.id === intentId)
+      if (current.page.items[0] && current.page.items[0].id !== intentId) {
+        replaceWithServerPending(operation, current.page.items[0])
+        return
+      }
+      const summary = current.page.items.find(item => item.id === intentId)
       if (!summary || summary.redacted) {
         setRecoveryView(operation, { kind: 'unknown' })
         setCommandMessage(operation, 'Current authorization no longer permits this saved request. It remains blocked while recovery is checked.')
@@ -732,6 +859,22 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       }
       const inspection = await inspectTransferCommandIntent(organizationId, intentId, operation.signal)
       if (!operationIsCurrent(operation)) return
+      const latest = currentPendingRead()
+      if (!latest) {
+        setRecoveryView(operation, { kind: 'unknown' })
+        setCommandMessage(operation, 'Current authorization and pending status could not be confirmed. No stock operation was retried.')
+        return
+      }
+      if (latest.page.items[0] && latest.page.items[0].id !== intentId) {
+        replaceWithServerPending(operation, latest.page.items[0])
+        return
+      }
+      const latestSummary = latest.page.items.find(item => item.id === intentId)
+      if (!latestSummary || latestSummary.redacted) {
+        setRecoveryView(operation, { kind: 'unknown', redacted: latestSummary?.redacted })
+        setCommandMessage(operation, 'Current authorization no longer permits this saved request. No stock operation was retried.')
+        return
+      }
       if (inspection.id !== intentId || !inspectionIsConsistent(inspection)) {
         setRecoveryView(operation, { kind: 'unknown' })
         setCommandMessage(operation, 'The current saved request could not be verified. No stock operation was retried.')
@@ -741,8 +884,8 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
         await applyInspection(operation, inspection)
         return
       }
-      if (inspection.redacted || !inspectionMatchesSummary(inspection, summary)) {
-        setRecoveryView(operation, { kind: 'unknown' })
+      if (inspection.redacted || !inspectionMatchesSummary(inspection, latestSummary)) {
+        setRecoveryView(operation, { kind: 'unknown', redacted: inspection.redacted || latestSummary.redacted })
         setCommandMessage(operation, 'The saved request changed or became restricted. No stock operation was retried.')
         return
       }
@@ -753,27 +896,9 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
         return
       }
       setRecoveryView(operation, { kind: 'inspection', inspection })
-      await submitPreparedCommand(intent, summary, operation, inspection.executionStatus === 'SUBMITTED_AWAITING_OUTCOME')
+      await submitPreparedCommand(intent, latestSummary, operation, inspection.executionStatus === 'SUBMITTED_AWAITING_OUTCOME')
     } catch (error) {
-      if (!operationIsCurrent(operation)) return
-      setRecoveryView(operation, { kind: 'unknown' })
-      if (!uncertainOutcome(error)) {
-        try {
-          await resolveFailedTransferCommandIntent(organizationId, intentId,
-            error instanceof ApiError && error.status === 409 ? 'CONFLICTED' : 'REJECTED', operation.signal)
-          if (operationIsCurrent(operation)) await inspectAndApply(operation, intentId)
-        } catch {
-          if (operationIsCurrent(operation)) {
-            setCommandMessage(operation, 'The request failed and its terminal result could not be confirmed. Keep it blocked and inspect the saved record.')
-            try { await refreshPendingIntents(operation.scopeKey, operation.signal) }
-            catch { setRecoveryView(operation, { kind: 'unknown' }) }
-          }
-        }
-      } else {
-        setCommandMessage(operation, 'The exact request may still be processing. No replacement command was sent; inspect its saved outcome before continuing.')
-        try { await refreshPendingIntents(operation.scopeKey, operation.signal) }
-        catch { setCommandMessage(operation, 'The result and current access could not be confirmed. Keep the command blocked and retry the status check.') }
-      }
+      await handlePreparedCommandFailure(operation, intentId, error)
     } finally { finishOperation(operation) }
   }
 
@@ -785,14 +910,30 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     retainRecoveryLock(operation, intentId)
     setCommandMessage(operation, 'Checking whether the server can safely resolve this saved command.')
     try {
-      const page = await refreshPendingIntents(operation.scopeKey, operation.signal)
-      if (!operationIsCurrent(operation) || !page) return
-      if (page.items[0] && page.items[0].id !== intentId) {
-        replaceWithServerPending(operation, page.items[0])
+      const read = await refreshPendingIntents(operation.scopeKey, operation.signal)
+      if (!operationIsCurrent(operation)) return
+      const current = currentPendingRead()
+      if (!read || !current) {
+        setRecoveryView(operation, { kind: 'unknown', redacted: true })
+        setCommandMessage(operation, 'A newer recovery read took priority. The redacted command remains blocked; retry its status check.')
+        return
+      }
+      if (current.page.items[0] && current.page.items[0].id !== intentId) {
+        replaceWithServerPending(operation, current.page.items[0])
         return
       }
       const inspection = await inspectTransferCommandIntent(organizationId, intentId, operation.signal)
       if (!operationIsCurrent(operation)) return
+      const latest = currentPendingRead()
+      if (!latest) {
+        setRecoveryView(operation, { kind: 'unknown', redacted: true })
+        setCommandMessage(operation, 'Current authorization and pending status could not be confirmed. No command was resolved.')
+        return
+      }
+      if (latest.page.items[0] && latest.page.items[0].id !== intentId) {
+        replaceWithServerPending(operation, latest.page.items[0])
+        return
+      }
       if (inspection.id !== intentId || !inspectionIsConsistent(inspection)) {
         setRecoveryView(operation, { kind: 'unknown' })
         setCommandMessage(operation, 'The server could not verify this recovery record. No command was resolved.')
@@ -802,7 +943,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
         await applyInspection(operation, inspection)
         return
       }
-      if (!inspection.redacted || !page.items.some(item => item.id === intentId && item.redacted)) {
+      if (!inspection.redacted || !latest.page.items.some(item => item.id === intentId && item.redacted)) {
         setRecoveryView(operation, { kind: 'unknown' })
         setCommandMessage(operation, 'The saved command authorization changed. Retry inspection before resolving it.')
         return
@@ -812,7 +953,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       if (operationIsCurrent(operation)) await inspectAndApply(operation, intentId)
     } catch (error) {
       if (operationIsCurrent(operation)) {
-        setRecoveryView(operation, { kind: 'unknown' })
+        setRecoveryView(operation, { kind: 'unknown', redacted: true })
         setCommandMessage(operation, transferAccessDenied(error)
           ? 'The server could not confirm access or safely resolve this command. Keep it blocked and retry inspection.'
           : 'The server could not safely resolve this command yet. It remains blocked; retry inspection when available.')
@@ -823,7 +964,13 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
   }
 
   async function retryPendingListSafely() {
-    try { await refreshPendingIntents(scopeKey, tenantSignal()) }
+    try {
+      const requestScope = scopeKey
+      const read = await refreshPendingIntents(requestScope, tenantSignal())
+      const current = currentPendingRead()
+      if (!read || !current || scopeKeyRef.current !== requestScope || current.page.items.length > 0) return
+      setCommandMessageState(message => message?.scopeKey === requestScope && !message.intentId ? null : message)
+    }
     catch { /* The read state carries the retryable failure into the recovery UI. */ }
   }
 
@@ -849,7 +996,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     || queue.isFetching || transit.isFetching || evidence.isFetching
   return <section className="space-y-7">
     <header className="space-y-2"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">{historicalOnly ? 'Administrative transfer history' : 'Stock movement between stores'}</p><h2 className="text-3xl font-semibold">{historicalOnly ? 'Historical transfers' : 'Stock transfers'}</h2><p className="max-w-3xl text-sm text-muted-foreground">{historicalOnly ? 'Find existing transfers that involve an archived store, review their custody history, and continue only with settlement actions authorized by the server.' : 'Review each request, physical handoff and receiving event against its saved stock and custody records.'}</p></header>
-    {!historicalOnly && pendingReadFailed && <div role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">The server could not confirm whether a transfer command is awaiting recovery. New transfer commands remain paused until a fresh read succeeds. <Button variant="outline" onClick={() => { void retryPendingListSafely() }}>Check saved commands again</Button></div>}
+    {!historicalOnly && pendingReadFailed && !commandMessage?.error && <div role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">The server could not confirm whether a transfer command is awaiting recovery. New transfer commands remain paused until a fresh read succeeds. <Button variant="outline" disabled={pendingIntents.isFetching} onClick={() => { void retryPendingListSafely() }}>Check saved commands again</Button></div>}
     {!historicalOnly && activeIntentId && <section aria-label="Recover saved transfer command" className="space-y-3 rounded-2xl border border-amber-500/50 bg-card p-5">
       <div><h3 className="text-lg font-semibold">A transfer command needs review</h3><p className="mt-2 text-sm text-muted-foreground">{recoveryRedacted || !activeSummary
         ? 'The saved command remains blocked while current authorization and outcome are checked. Request details stay hidden.'
@@ -860,7 +1007,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
         {canRetrySavedCommand && <Button disabled={commandBusy} onClick={() => { void retrySavedCommand() }}>{commandBusy ? 'Retrying saved command?' : 'Retry exact saved command'}</Button>}</div>
     </section>}
     {!historicalOnly && !activeIntentId && commandMessage?.complete && commandMessage.notice && <p role="status" className="rounded-xl border border-border p-4 text-sm">{commandMessage.notice}</p>}
-    {!historicalOnly && !activeIntentId && commandMessage?.error && <p role="alert" className="rounded-xl border border-border p-4 text-sm">{commandMessage.error}</p>}
+    {!historicalOnly && !activeIntentId && commandMessage?.error && <div role="alert" className="rounded-xl border border-border p-4 text-sm"><p>{commandMessage.error}</p>{!pendingReadReady && <Button className="mt-3" variant="outline" disabled={commandBusy || pendingIntents.isFetching} onClick={() => { void retryPendingListSafely() }}>Check saved commands again</Button>}</div>}
     {transferId ? detail.isPending ? <StateMessage state="loading" title="Loading transfer record" description="Confirming the current transfer and your participating-store access." />
       : detail.isError ? <div className="space-y-4"><StateMessage state={detail.error instanceof ApiError && detail.error.status === 403 ? 'forbidden' : 'unavailable'} title="Transfer unavailable" description={errorMessage(detail.error)} /><Button variant="outline" onClick={() => { void detail.refetch() }}>Retry transfer read</Button><AppLink href={transfersHref} className="inline-flex text-primary underline">Back to transfers</AppLink></div>
         : <TransferDetailView organizationId={organizationId} transfer={detail.data} stores={[...storeMap.values()]} onCommand={runIntent} busy={commandBlocked} onRefresh={refreshTransferData} />
