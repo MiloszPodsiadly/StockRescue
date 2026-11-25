@@ -1,0 +1,26 @@
+{
+  "eventId": "d248c04f-355a-49cc-89e6-a88f7c1ed134",
+  "eventType": "TransferDispatched",
+  "schemaVersion": 1,
+  "occurredAt": "2026-11-18T11:32:14Z",
+  "orgId": "b9635f6d-a20e-43ba-9ec8-1e59058048f0",
+  "transferId": "ec34c078-3646-46dd-948b-20f49f114042",
+  "aggregateVersion": 5,
+  "correlationId": "transfer-physical-411",
+  "causationId": "8c0cd005-2047-495c-9b18-d7db7401c6cc",
+  "commandId": "8c0cd005-2047-495c-9b18-d7db7401c6cc",
+  "dataClassification": "INTERNAL",
+  "data": {
+    "operation": "DISPATCH",
+    "statusBefore": "PICKED",
+    "statusAfter": "IN_TRANSIT",
+    "sourceStoreId": "bf347f28-7d4c-4f13-b784-12d52311d593",
+    "destinationStoreId": "7fe15b9d-1e0f-4ebc-81dc-428743d1d4e3",
+    "stockMovements": [
+      { "storeId": "bf347f28-7d4c-4f13-b784-12d52311d593", "movementId": "de8a916c-7d65-44bd-8396-3452c2c39086" }
+    ],
+    "custodyMovements": [
+      { "id": "779c5cdf-d422-4c54-96cb-55310b9ba05b", "lineId": "756e5a9f-8c6f-4505-9e2c-cba2e8cabd99", "movementType": "DISPATCH", "quantity": 12, "stockStoreId": "bf347f28-7d4c-4f13-b784-12d52311d593", "stockMovementId": "de8a916c-7d65-44bd-8396-3452c2c39086", "stockPositionId": "4b4b581d-774b-411b-bfbf-239c1d76b30a" }
+    ]
+  }
+}

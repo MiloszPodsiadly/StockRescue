@@ -2,6 +2,8 @@ package com.stockrescue.access.application;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import com.stockrescue.access.application.EffectivePermissions.OrganizationAction;
@@ -39,6 +41,16 @@ public class AccessPolicy {
         return new EffectivePermissions(membership,
                 organizationActions(membership.role()),
                 admin ? Arrays.asList(StoreAction.values()) : List.of(), grants);
+    }
+
+    public List<StoreAction> currentStoreActions(UUID actor, UUID organization, UUID store) {
+        var permissions = permissions(actor, organization);
+        if (!access.store(organization, store, false)) return List.of();
+        try {
+            return storeActions(permissions, store, true);
+        } catch (OrganizationUnavailableException unavailable) {
+            return List.of();
+        }
     }
 
     public OrganizationAccess requireAdmin(UUID actor, UUID organization, boolean write) {
@@ -82,16 +94,60 @@ public class AccessPolicy {
     }
 
     public OrganizationAccess requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
-        return requireStore(actor, organization, store, action, write, false);
+        return requireStore(actor, organization, store, action, write, false, false);
     }
 
     public OrganizationAccess requireStoreIncludingArchived(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
-        return requireStore(actor, organization, store, action, write, true);
+        return requireStore(actor, organization, store, action, write, true, false);
     }
 
-    private OrganizationAccess requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write, boolean includeArchived) {
+    public OrganizationAccess requireTransferStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write) {
+        return requireStore(actor, organization, store, action, write, false, true);
+    }
+
+    /**
+     * Authorizes a physical receipt or return while holding only a shared store row lock.
+     * The same transaction must never upgrade this lock after acquiring participant-store locks.
+     */
+    public OrganizationAccess requireTransferSettlementStore(UUID actor, UUID organization, UUID store, StoreAction action) {
+        var membership = lock(actor, organization, false);
+        boolean includeArchived = membership.role() == OrganizationRole.ORG_ADMIN;
+        if (!access.transferSettlementStore(organization, store, includeArchived)) throw new OrganizationUnavailableException();
+        if (includeArchived && !access.store(organization, store, false)) return membership;
+        if (membership.role() == OrganizationRole.ORG_ADMIN) return membership;
+        var role = access.storeRole(organization, membership.membershipId(), store, true)
+                .orElseThrow(OrganizationUnavailableException::new);
+        if (!storeActions(role).contains(action)) throw new AccessDeniedException("Action unavailable");
+        return membership;
+    }
+
+    /**
+     * Provides a transfer-scoped administrator fallback for documented historical custody settlement only.
+     * It never grants ordinary archived-store actions. The participant rows are checked and shared-locked in ID order
+     * before TransferService acquires its participant and advisory locks.
+     */
+    public Optional<OrganizationAccess> historicalTransferSettlementAdmin(UUID actor, UUID organization,
+            UUID sourceStore, UUID destinationStore, StoreAction action) {
+        if (!Set.of(StoreAction.REQUEST_TRANSFER_RETURN, StoreAction.MANAGE_TRANSFER_DISCREPANCIES).contains(action))
+            throw new IllegalArgumentException("Only historical transfer settlement actions are supported");
+        var membership = lock(actor, organization, false);
+        var participants = access.transferParticipantStores(organization, sourceStore, destinationStore);
+        if (participants.size() != 2) throw new OrganizationUnavailableException();
+        if (participants.stream().allMatch(AccessRepository.TransferParticipantStore::active)) return Optional.empty();
+        if (membership.role() != OrganizationRole.ORG_ADMIN) throw new OrganizationUnavailableException();
+        return Optional.of(membership);
+    }
+
+    public boolean isActiveStore(UUID organization, UUID store) {
+        return access.store(organization, store, false);
+    }
+
+    private OrganizationAccess requireStore(UUID actor, UUID organization, UUID store, StoreAction action, boolean write,
+            boolean includeArchived, boolean sharedStoreLock) {
         var membership = write ? lock(actor, organization, false) : organization(actor, organization);
-        if (!access.store(organization, store, write, includeArchived && membership.role() == OrganizationRole.ORG_ADMIN)) throw new OrganizationUnavailableException();
+        boolean available = write && sharedStoreLock ? access.transferStore(organization, store)
+                : access.store(organization, store, write, includeArchived && membership.role() == OrganizationRole.ORG_ADMIN);
+        if (!available) throw new OrganizationUnavailableException();
         if (membership.role() == OrganizationRole.ORG_ADMIN) return membership;
         var role = access.storeRole(organization, membership.membershipId(), store, write)
                 .orElseThrow(OrganizationUnavailableException::new);
@@ -132,10 +188,16 @@ public class AccessPolicy {
         return switch(role) {
             case STORE_MANAGER -> List.of(StoreAction.READ_STORE,StoreAction.EDIT_STORE,StoreAction.MANAGE_STORAGE_ZONES,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.MANAGE_STORAGE_LOCATIONS,StoreAction.REGISTER_STORE_LOT,
                     StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.ADJUST_STOCK,
-                    StoreAction.WRITE_OFF_STOCK,StoreAction.QUARANTINE_STOCK,StoreAction.RECORD_SALE,StoreAction.MANAGE_INVENTORY_ALLOCATIONS,StoreAction.RECONCILE_INVENTORY);
+                    StoreAction.WRITE_OFF_STOCK,StoreAction.QUARANTINE_STOCK,StoreAction.RECORD_SALE,StoreAction.READ_TRANSFERS,
+                    StoreAction.REQUEST_TRANSFER,StoreAction.APPROVE_TRANSFER,StoreAction.PICK_TRANSFER,
+                    StoreAction.DISPATCH_TRANSFER,StoreAction.CANCEL_TRANSFER,StoreAction.REQUEST_TRANSFER_RETURN,
+                    StoreAction.MANAGE_TRANSFER_DISCREPANCIES,
+                    StoreAction.MANAGE_INVENTORY_ALLOCATIONS,StoreAction.RECONCILE_INVENTORY);
             case INVENTORY_OPERATOR -> List.of(StoreAction.READ_STORE,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,
-                    StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.RECORD_SALE,StoreAction.QUARANTINE_STOCK);
-            case READ_ONLY_ANALYST -> List.of(StoreAction.READ_STORE,StoreAction.READ_INVENTORY);
+                    StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.RECORD_SALE,
+                    StoreAction.READ_TRANSFERS,StoreAction.REQUEST_TRANSFER,StoreAction.PICK_TRANSFER,
+                    StoreAction.DISPATCH_TRANSFER,StoreAction.REQUEST_TRANSFER_RETURN,StoreAction.QUARANTINE_STOCK);
+            case READ_ONLY_ANALYST -> List.of(StoreAction.READ_STORE,StoreAction.READ_INVENTORY,StoreAction.READ_TRANSFERS);
         };
     }
 }

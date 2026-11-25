@@ -89,6 +89,24 @@ public class AccessRepository {
                 .param("org", organization).param("store", store).query(UUID.class).optional().isPresent();
     }
 
+    public boolean transferStore(UUID organization, UUID store) {
+        return jdbc.sql("SELECT id FROM stockrescue.store WHERE org_id=:org AND id=:store AND active FOR SHARE")
+                .param("org", organization).param("store", store).query(UUID.class).optional().isPresent();
+    }
+
+    public boolean transferSettlementStore(UUID organization, UUID store, boolean includeArchived) {
+        return jdbc.sql("SELECT id FROM stockrescue.store WHERE org_id=:org AND id=:store"
+                        + (includeArchived ? "" : " AND active") + " FOR SHARE")
+                .param("org", organization).param("store", store).query(UUID.class).optional().isPresent();
+    }
+
+    public List<TransferParticipantStore> transferParticipantStores(UUID organization, UUID sourceStore, UUID destinationStore) {
+        return jdbc.sql("SELECT id,active FROM stockrescue.store WHERE org_id=:org AND id IN (:stores) ORDER BY id FOR SHARE")
+                .param("org", organization).param("stores", List.of(sourceStore, destinationStore).stream().distinct().sorted().toList())
+                .query((row, index) -> new TransferParticipantStore(row.getObject("id", UUID.class), row.getBoolean("active")))
+                .list();
+    }
+
     public boolean activeAccount(UUID actor) {
         return jdbc.sql("SELECT id FROM stockrescue.user_account WHERE id=:id AND status='ACTIVE' FOR SHARE")
                 .param("id", actor).query(UUID.class).optional().isPresent();
@@ -110,4 +128,5 @@ public class AccessRepository {
     }
 
     public record PermissionRow(OrganizationAccess organization, UUID storeId, StoreRole role) { }
+    public record TransferParticipantStore(UUID id, boolean active) { }
 }

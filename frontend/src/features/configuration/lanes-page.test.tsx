@@ -469,6 +469,25 @@ it('reconciles a lost cancellation response from saved evidence without retrying
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })
 
+it('keeps cancellation recovery disabled until the lost cancellation attempt settles', async () => {
+  let rejectResolution!: (reason: unknown) => void
+  api.cancelScheduledLaneRevisions.mockRejectedValue(new TypeError('Network disconnected after server commit'))
+  api.resolveScheduledLaneCancellation.mockImplementation(() => new Promise((_resolve, reject) => { rejectResolution = reject }))
+  const { user } = renderPage()
+  await user.click(await screen.findByRole('button', { name: 'Review and cancel scheduled costs' }))
+  await user.type(await screen.findByLabelText('Reason for cancelling scheduled costs'), 'Carrier agreement changed before the planned start')
+  await user.click(screen.getByLabelText('I reviewed the listed revisions and confirm cancelling all of them.'))
+  await user.click(screen.getByRole('button', { name: 'Cancel all 1 scheduled revision' }))
+
+  const retry = await screen.findByRole('button', { name: 'Reloading lane and history…' })
+  expect(rejectResolution).toBeTypeOf('function')
+  expect(retry).toBeDisabled()
+  await act(async () => rejectResolution(new TypeError('Cancellation resolution temporarily unavailable')))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Reload lane and history before continuing' })).toBeEnabled())
+  expect(api.cancelScheduledLaneRevisions).toHaveBeenCalledTimes(1)
+  expect(api.resolveScheduledLaneCancellation).toHaveBeenCalledTimes(1)
+})
+
 it('unblocks lane work when the synchronized read proves a reviewed schedule expired without cancellation', async () => {
   let cancellationAttempted = false
   api.laneHistory.mockImplementation(async () => history(cancellationAttempted ? [] : scheduledRevision))

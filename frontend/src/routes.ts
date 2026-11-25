@@ -31,5 +31,8 @@ const product = createRoute({ getParentRoute: () => root, path: '/organizations/
 const lot = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/catalog/lots/$lotId', component: lazyRouteComponent(() => import('./features/catalog/lot-page'), 'LotPage') })
 const locations = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/stores/$storeId/storage-locations', component: lazyRouteComponent(() => import('./features/catalog/locations-panel'), 'LocationsPage') })
 const inventory = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/stores/$storeId/inventory', component: InventoryPage })
+const transfers = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/transfers', component: lazyRouteComponent(() => import('./features/transfers/transfers-page'), 'TransfersPage') })
+const historicalTransfers = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/transfers/historical', component: lazyRouteComponent(() => import('./features/transfers/transfers-page'), 'HistoricalTransfersPage') })
+const transfer = createRoute({ getParentRoute: () => root, path: '/organizations/$organizationId/transfers/$transferId', component: lazyRouteComponent(() => import('./features/transfers/transfers-page'), 'TransfersPage') })
 
-export const router = createRouter({ routeTree: root.addChildren([home, signIn, signUp, account, members, acceptInvitation, stores, store, zones, lanes, lane, settings, catalog, product, lot, locations, inventory]) })
+export const router = createRouter({ routeTree: root.addChildren([home, signIn, signUp, account, members, acceptInvitation, stores, store, zones, lanes, lane, settings, catalog, product, lot, locations, inventory, transfers, historicalTransfers, transfer]) })

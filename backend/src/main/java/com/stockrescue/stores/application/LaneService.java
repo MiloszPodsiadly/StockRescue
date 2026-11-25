@@ -14,6 +14,7 @@ import com.stockrescue.stores.application.OperationalConfiguration.*;
 import com.stockrescue.stores.domain.ConfigurationFailure;
 import com.stockrescue.stores.domain.CostParameters;
 import com.stockrescue.stores.persistence.LaneRepository;
+import com.stockrescue.stores.persistence.StorageLocationRepository;
 import com.stockrescue.stores.persistence.ZoneRepository;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
@@ -22,8 +23,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class LaneService {
-    private final AccessPolicy access; private final LaneRepository lanes; private final ZoneRepository zones; private final AuditWriter audit;
-    public LaneService(AccessPolicy access,LaneRepository lanes,ZoneRepository zones,AuditWriter audit) { this.access=access;this.lanes=lanes;this.zones=zones;this.audit=audit; }
+    private final AccessPolicy access; private final LaneRepository lanes; private final ZoneRepository zones;
+    private final StorageLocationRepository locations; private final AuditWriter audit;
+    public LaneService(AccessPolicy access,LaneRepository lanes,ZoneRepository zones,StorageLocationRepository locations,AuditWriter audit) {
+        this.access=access;this.lanes=lanes;this.zones=zones;this.locations=locations;this.audit=audit;
+    }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public List<String> currencies(UUID actor,UUID org) { access.requireAdmin(actor,org,false);return CostParameters.supportedCurrencies(); }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
@@ -40,6 +44,61 @@ public class LaneService {
         pair(origin,destination);var asOf=lanes.snapshotTime();access.requireAdmin(actor,org,false);
         for(var store:List.of(origin,destination).stream().sorted().toList()) access.requireStoreIncludingArchived(actor,org,store,StoreAction.READ_STORE,false);
         return new RouteLookup(lanes.route(org,origin,destination).map(lane->view(org,lane,asOf)).orElse(null),asOf);
+    }
+
+    @Transactional
+    public TransferRoute requireTransferRoute(UUID org,UUID originStore,UUID destinationStore,
+            UUID originLocation,UUID destinationLocation) {
+        pair(originStore,destinationStore);
+        var initial=lanes.route(org,originStore,destinationStore).orElseThrow(() -> new ConfigurationFailure(ConfigurationFailure.Kind.INVALID));
+        var storeStates=lanes.lockTransferStores(org,originStore,destinationStore);
+        if(storeStates.size()!=2) throw new OrganizationUnavailableException();
+        if(storeStates.stream().anyMatch(active->!active)) throw inactive();
+        lanes.lock(org,initial.id());
+        var lane=lanes.route(org,originStore,destinationStore).orElseThrow(() -> new ConfigurationFailure(ConfigurationFailure.Kind.INVALID));
+        StorageLocation origin=null,destination=null;
+        for(var store:List.of(originStore,destinationStore).stream().sorted().toList()) {
+            var locationId=store.equals(originStore)?originLocation:destinationLocation;
+            var found=locations.detail(org,store,locationId,false).orElseThrow(OrganizationUnavailableException::new);
+            if(store.equals(originStore)) origin=found; else destination=found;
+        }
+        if(!origin.usable()||!destination.usable()) throw inactive();
+        if(!origin.data().zoneId().equals(lane.originZoneId())
+                ||!destination.data().zoneId().equals(lane.destinationZoneId())) throw new ConfigurationFailure(ConfigurationFailure.Kind.CONFLICT);
+        var asOf=lanes.databaseNow();
+        var currentCost=lanes.currentCosts(org,List.of(lane.id()),asOf).stream()
+                .map(LaneRepository.CostRow::revision).findFirst().orElse(null);
+        if(view(lane,currentCost,asOf).status()!=Status.CONFIGURED || currentCost==null)
+            throw new ConfigurationFailure(ConfigurationFailure.Kind.INACTIVE);
+        return new TransferRoute(lane.id(),currentCost.id(),lane.originZoneId(),lane.destinationZoneId());
+    }
+
+    @Transactional
+    public void lockTransferStoresForRequest(UUID org,UUID originStore,UUID destinationStore) {
+        var active=lockTransferStoreRows(org,originStore,destinationStore);
+        if(active.stream().anyMatch(value->!value)) throw inactive();
+    }
+
+    /** Lock both participant stores in ID order before transfer advisory locks are acquired. */
+    @Transactional
+    public List<Boolean> lockTransferStoreRows(UUID org,UUID originStore,UUID destinationStore) {
+        pair(originStore,destinationStore);
+        var active=lanes.lockTransferStores(org,originStore,destinationStore);
+        if(active.size()!=2) throw new OrganizationUnavailableException();
+        return active;
+    }
+
+    @Transactional
+    public void lockTransferLocations(UUID org,UUID originStore,UUID destinationStore,UUID originLocation,
+            UUID destinationLocation,TransferRoute route) {
+        pair(originStore,destinationStore);
+        for(var store:List.of(originStore,destinationStore).stream().sorted().toList()) {
+            var locationId=store.equals(originStore)?originLocation:destinationLocation;
+            var location=locations.lockTransferContext(org,store,locationId).orElseThrow(OrganizationUnavailableException::new);
+            if(!location.usable()) throw inactive();
+            UUID expectedZone=store.equals(originStore)?route.originZoneId():route.destinationZoneId();
+            if(!location.data().zoneId().equals(expectedZone)) throw new ConfigurationFailure(ConfigurationFailure.Kind.CONFLICT);
+        }
     }
     @Transactional
     public LaneView create(UUID actor,UUID org,UUID origin,UUID destination,UUID originZone,UUID destinationZone,String reason) {
@@ -157,4 +216,5 @@ public class LaneService {
     private void pair(UUID origin,UUID destination) { if(origin==null||destination==null||origin.equals(destination)) ZoneService.invalid(); }
     private ConfigurationFailure inactive() { return new ConfigurationFailure(ConfigurationFailure.Kind.INACTIVE); }
     public record RouteLookup(LaneView lane,Instant asOf) { }
+    public record TransferRoute(UUID laneId,UUID revisionId,UUID originZoneId,UUID destinationZoneId) { }
 }

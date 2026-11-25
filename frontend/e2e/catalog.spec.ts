@@ -455,6 +455,7 @@ test('assigned store manager registers unverified lot metadata without recording
   const owner = await account(browser)
   const manager = await account(browser)
   const page = await manager.context.newPage()
+  let releaseLotRead: (() => void) | undefined
   const suffix = randomUUID().slice(0, 8).toUpperCase()
   const originalDate = '2027-08-19'
   try {
@@ -462,6 +463,11 @@ test('assigned store manager registers unverified lot metadata without recording
     const base = `/api/v1/organizations/${organization.id}`
     const store = await write<Store>(owner.context, `${base}/stores`, { requestId: randomUUID(), code: 'NORTH', name: 'North receiving store', zoneId: 'Europe/Warsaw' }, 201)
     const product = await write<Product>(owner.context, `${base}/products`, { requestId: randomUUID(), sku: `INTAKE-${suffix}`, name: `Intake product ${suffix}`, baseUnit: 'EA', category: 'UNCLASSIFIED', temperatureClass: 'AMBIENT' }, 201)
+    const stockPath = `${base}/stores/${store.id}/inventory/positions?productId=${product.id}&offset=0&limit=100`
+    const stockBeforeResponse = await owner.context.request.get(stockPath)
+    expect(stockBeforeResponse.status()).toBe(200)
+    const stockBefore = await stockBeforeResponse.json() as components['schemas']['StockPageResponse']
+    expect(stockBefore.items).toHaveLength(0)
     const invitation = await write<{ token: string }>(owner.context, `${base}/invitations`, {
       email: manager.email, reason: 'Assigned store lot intake', storeGrants: [{ storeId: store.id, role: 'STORE_MANAGER' }],
     }, 201)
@@ -500,15 +506,48 @@ test('assigned store manager registers unverified lot metadata without recording
       if (route.request().method() === 'POST') registrations.push(route.request().postDataJSON() as Record<string, unknown>)
       await route.continue()
     })
-    await form.getByRole('button', { name: 'Save candidate lot metadata' }).click()
+    let reportLotReadStarted!: () => void
+    const lotReadStarted = new Promise<void>(resolve => { reportLotReadStarted = resolve })
+    await page.route(`**${base}/lots/*`, async route => {
+      if (route.request().method() === 'GET') {
+        reportLotReadStarted()
+        await new Promise<void>(resolve => { releaseLotRead = resolve })
+      }
+      await route.continue()
+    })
+    const registrationResponse = page.waitForResponse(response => response.url().includes(`${base}/lots`)
+      && response.request().method() === 'POST')
+    const [, savedResponse] = await Promise.all([
+      form.getByRole('button', { name: 'Save candidate lot metadata' }).click(), registrationResponse,
+    ])
+    expect([200, 201]).toContain(savedResponse.status())
+    const savedLot = await savedResponse.json() as Lot
+    expect(savedLot).toMatchObject({ productId: product.id, lotCode: `CANDIDATE-${suffix}`, identityState: 'CANDIDATE' })
+    await expect(page).toHaveURL(new RegExp(`/organizations/${organization.id}/catalog/lots/${savedLot.id}$`))
+    await lotReadStarted
     await expect(page.getByRole('heading', { name: `CANDIDATE-${suffix}`, exact: true })).toBeVisible()
+    releaseLotRead?.()
+    releaseLotRead = undefined
+    await page.unroute(`**${base}/lots/*`)
     expect(registrations).toHaveLength(1)
     expect(registrations[0]).toMatchObject({ storeId: store.id, identityState: 'CANDIDATE', manufacturerVerified: false, lotCode: `CANDIDATE-${suffix}` })
     expect(registrations[0].manufacturerIdentityKey).toBeUndefined()
     await expect(page.getByRole('region', { name: 'Original date marking', exact: true }).getByText(originalDate, { exact: true })).toBeVisible()
     await expect(page.getByLabel(/quantity|received stock/i)).toHaveCount(0)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-  } finally { await page.close(); await owner.context.close(); await manager.context.close() }
+    const persistedResponse = await owner.context.request.get(`${base}/lots/${savedLot.id}`)
+    expect(persistedResponse.status()).toBe(200)
+    expect(await persistedResponse.json()).toMatchObject({ id: savedLot.id, productId: product.id, lotCode: `CANDIDATE-${suffix}`, identityState: 'CANDIDATE' })
+    const reloadedLotResponse = page.waitForResponse(response => response.url().endsWith(`${base}/lots/${savedLot.id}`)
+      && response.request().method() === 'GET')
+    await page.reload()
+    expect((await reloadedLotResponse).status()).toBe(200)
+    await expect(page.getByRole('heading', { name: `CANDIDATE-${suffix}`, exact: true })).toBeVisible()
+    const stockAfterResponse = await owner.context.request.get(stockPath)
+    expect(stockAfterResponse.status()).toBe(200)
+    const stockAfter = await stockAfterResponse.json() as components['schemas']['StockPageResponse']
+    expect(stockAfter.items).toEqual(stockBefore.items)
+  } finally { releaseLotRead?.(); await page.close(); await owner.context.close(); await manager.context.close() }
 })
 
 async function registerLotForm(page: Page, code: string, label: string, type: string, precision: string, confirmed: boolean) {

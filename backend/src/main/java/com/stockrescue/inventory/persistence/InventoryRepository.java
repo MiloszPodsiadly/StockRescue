@@ -42,6 +42,11 @@ public class InventoryRepository {
 
     public InventoryRepository(JdbcClient jdbc, ObjectMapper json) { this.jdbc=jdbc; this.json=json; }
 
+    public Instant databaseTime() {
+        return jdbc.sql("SELECT clock_timestamp() AS database_time")
+                .query((row, index) -> row.getTimestamp("database_time").toInstant()).single();
+    }
+
     public record Allocation(UUID id,UUID positionId,String bucket,UUID ownerId,long remaining,String state,long version) {}
     public record Movement(UUID id,InventoryOperation operation,long positionVersion,StockBuckets.Delta delta,String reason,String evidenceReference,Instant recordedAt) {}
     public record PositionIdentity(UUID locationId,UUID productId,UUID lotId) { }
@@ -90,6 +95,15 @@ public class InventoryRepository {
 
     /** Lock every mutable catalogue context in a stable product, lot, then location order. */
     public void lockActiveContexts(UUID org,UUID store,Collection<PositionIdentity> requested) {
+        lockContexts(org,store,requested,false);
+    }
+
+    /** Physical settlement locks even archived contexts so all such stock is recorded in quarantine. */
+    public void lockTransferSettlementContexts(UUID org,UUID store,Collection<PositionIdentity> requested) {
+        lockContexts(org,store,requested,true);
+    }
+
+    private void lockContexts(UUID org,UUID store,Collection<PositionIdentity> requested,boolean allowArchivedContext) {
         requireWriteTransaction();
         var contexts=requested.stream().distinct().sorted(Comparator.comparing(PositionIdentity::productId)
                 .thenComparing(PositionIdentity::lotId).thenComparing(PositionIdentity::locationId)).toList();
@@ -100,7 +114,7 @@ public class InventoryRepository {
         var lockedProducts=jdbc.sql("SELECT id,active FROM stockrescue.product WHERE org_id=:org AND id IN (:ids) ORDER BY id FOR SHARE")
                 .param("org",org).param("ids",products).query((row,index)->Map.entry(row.getObject("id",UUID.class),row.getBoolean("active"))).list();
         if(lockedProducts.size()!=products.size()) throw new OrganizationUnavailableException();
-        if(lockedProducts.stream().anyMatch(product->!product.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
+        if(!allowArchivedContext && lockedProducts.stream().anyMatch(product->!product.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
 
         var productsByLot=new HashMap<UUID,UUID>();
         for(var context:contexts) {
@@ -113,7 +127,8 @@ public class InventoryRepository {
                         row.getObject("product_id",UUID.class),row.getBoolean("active"))).list();
         if(lockedLots.size()!=lots.size() || lockedLots.stream().anyMatch(lot->!lot.productId().equals(productsByLot.get(lot.id()))))
             throw new OrganizationUnavailableException();
-        if(lockedLots.stream().anyMatch(lot->!lot.active())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
+        if(!allowArchivedContext && lockedLots.stream().anyMatch(lot->!lot.active()))
+            throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
 
         var locations=contexts.stream().map(PositionIdentity::locationId).distinct().sorted().toList();
         var lockedLocations=jdbc.sql("""
@@ -123,7 +138,7 @@ public class InventoryRepository {
                 """).param("org",org).param("store",store).param("ids",locations)
                 .query((row,index)->Map.entry(row.getObject("id",UUID.class),row.getBoolean("active"))).list();
         if(lockedLocations.size()!=locations.size()) throw new OrganizationUnavailableException();
-        if(lockedLocations.stream().anyMatch(location->!location.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
+        if(!allowArchivedContext && lockedLocations.stream().anyMatch(location->!location.getValue())) throw new InventoryFailure(InventoryFailure.Kind.INACTIVE);
     }
 
     public Optional<StockPosition> positionByIdentity(UUID org,UUID store,UUID location,UUID lot) {
@@ -196,6 +211,28 @@ public class InventoryRepository {
                 .param("org",org).param("store",store).param("position",position).param("id",id)
                 .query((row,index)->new Allocation(id,position,row.getString("bucket"),row.getObject("owner_user_id",UUID.class),
                         row.getLong("remaining_quantity"),row.getString("state"),row.getLong("version"))).optional();
+    }
+
+    public boolean isTransferLinkedAllocation(UUID org,UUID store,UUID position,UUID allocationId) {
+        requireWriteTransaction();
+        return jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM stockrescue.transfer_line
+                    WHERE org_id=:org AND source_store_id=:store AND source_position_id=:position
+                        AND reservation_allocation_id=:allocation)
+                """).param("org",org).param("store",store).param("position",position).param("allocation",allocationId)
+                .query(Boolean.class).single();
+    }
+
+    public boolean transferAllocationMatches(UUID org,UUID store,UUID transferId,UUID lineId,
+            UUID position,UUID allocationId) {
+        requireWriteTransaction();
+        return jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM stockrescue.transfer_line
+                    WHERE org_id=:org AND source_store_id=:store AND transfer_id=:transfer AND id=:line
+                        AND source_position_id=:position AND reservation_allocation_id=:allocation
+                        AND reservation_bucket='RESERVED')
+                """).param("org",org).param("store",store).param("transfer",transferId).param("line",lineId)
+                .param("position",position).param("allocation",allocationId).query(Boolean.class).single();
     }
 
     public void openAllocation(UUID org,UUID store,UUID position,UUID id,String bucket,UUID owner,UUID membership,long quantity,UUID movement) {

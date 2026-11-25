@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import { Outlet, useRouterState } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { clearCsrf } from './api/client'
-import { subscribeSessionChanges } from './api/session-events'
+import { clearLegacyTransferIntents, subscribeSessionChanges } from './api/session-events'
 import { sessionKey } from './features/auth/session'
 
 export function RootLayout() {
@@ -11,9 +11,11 @@ export function RootLayout() {
   const pathname = useRouterState({ select: state => state.location.pathname })
   const previous = useRef(pathname)
   useLayoutEffect(() => {
+    clearLegacyTransferIntents()
     let generation = 0
     const unsubscribe = subscribeSessionChanges(change => {
       const current = ++generation
+      clearLegacyTransferIntents()
       clearCsrf()
       flushSync(() => { client.setQueryData(sessionKey, null) })
       void client.cancelQueries().then(() => {

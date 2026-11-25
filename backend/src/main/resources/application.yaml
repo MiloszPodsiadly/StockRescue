@@ -108,6 +108,9 @@ stockrescue:
       lease-duration: ${INVENTORY_OUTBOX_LEASE_DURATION:30s}
       retry-base: 1s
       retry-maximum: 5m
+  transfer:
+    messaging:
+      consumer-name: transfer-change-projection-v1
   security:
     secure-cookie: true
     maximum-session-age-seconds: 43200

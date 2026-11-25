@@ -26,7 +26,11 @@ public class StorageLocationService {
     public record Result(StorageLocation location,boolean created) { }
     public record Page(List<StorageLocation> items,boolean hasMore,boolean canManage) { }
     private final AccessPolicy access;private final StorageLocationRepository locations;private final ZoneRepository zones;private final StoreRepository stores;private final AuditWriter audit;
-    public StorageLocationService(AccessPolicy access,StorageLocationRepository locations,ZoneRepository zones,StoreRepository stores,AuditWriter audit) { this.access=access;this.locations=locations;this.zones=zones;this.stores=stores;this.audit=audit; }
+    private final TransferCustodyArchiveGuard transferArchiveGuard;
+    public StorageLocationService(AccessPolicy access,StorageLocationRepository locations,ZoneRepository zones,StoreRepository stores,
+            AuditWriter audit,TransferCustodyArchiveGuard transferArchiveGuard) {
+        this.access=access;this.locations=locations;this.zones=zones;this.stores=stores;this.audit=audit;this.transferArchiveGuard=transferArchiveGuard;
+    }
     @Transactional
     public Result create(UUID actor,UUID org,UUID store,UUID request,LocationData data) {
         access.requireStoreIncludingArchived(actor,org,store,StoreAction.MANAGE_STORAGE_LOCATIONS,true);
@@ -62,6 +66,7 @@ public class StorageLocationService {
         var digest=digest(store.toString(),id.toString(),Long.toString(version),reason);
         if (!locations.reserve(actor,org,store,Operation.ARCHIVE,request,id,version+1,digest)) return replay(actor,org,store,Operation.ARCHIVE,request,digest);
         var before=existing(org,store,id,true);editable(before,version);
+        if (transferArchiveGuard.hasOpenTransferForLocation(org,store,id)) throw ZoneService.conflict();
         if (!locations.archive(org,store,id,version)) throw ZoneService.conflict();
         var after=existing(org,store,id,false);
         audit.securityChange(actor,org,"storage-location",id,"STORAGE_LOCATION_ARCHIVED",Map.of("outcome","SUCCEEDED","before",before,"after",after),reason);

@@ -20,6 +20,7 @@ import tools.jackson.databind.ObjectMapper;
 
 @Component
 public class InventoryEventCodec {
+    public static final String EVENT_TYPE="InventoryStockChanged";
     private static final Set<String> ENVELOPE_FIELDS=Set.of("eventId","eventType","schemaVersion","occurredAt","tenantId",
             "aggregateType","aggregateId","aggregateVersion","correlationId","causationId","dataClassification","data");
     private static final Set<String> DATA_FIELDS=Set.of("storeId","movementId","unit","delta","position");
@@ -43,7 +44,7 @@ public class InventoryEventCodec {
         int schema=intValue(root.get("schemaVersion"));
         if(schema!=1) throw failure("UNSUPPORTED_SCHEMA_VERSION");
         String eventType=text(root.get("eventType"));
-        if(!eventType.equals("InventoryStockChanged")) throw failure("UNSUPPORTED_EVENT_TYPE");
+        if(!eventType.equals(EVENT_TYPE)) throw failure("UNSUPPORTED_EVENT_TYPE");
         if(!text(root.get("aggregateType")).equals("INVENTORY_POSITION")
                 || !text(root.get("dataClassification")).equals("INTERNAL")) throw failure("MALFORMED_EVENT");
         Instant occurredAt;

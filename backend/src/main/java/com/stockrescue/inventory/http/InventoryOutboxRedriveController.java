@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 @RestController
 @ConditionalOnWebApplication(type=ConditionalOnWebApplication.Type.SERVLET)
@@ -31,6 +32,7 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirement;
         produces=MediaType.APPLICATION_JSON_VALUE)
 @SecurityRequirement(name="session")
 public class InventoryOutboxRedriveController {
+    @Schema(name="InventoryOutboxRedriveRequest")
     public record RedriveRequestBody(@NotNull UUID requestId,@NotNull @Min(0) Long expectedOriginalClaimVersion,
             @NotNull @Min(0) Integer expectedOriginalAttemptCount,@NotBlank @Pattern(regexp="[0-9a-f]{64}") String sourceFingerprint,
             @NotBlank @Size(max=500) String reason,@NotBlank @Size(max=256) String evidenceReference) {

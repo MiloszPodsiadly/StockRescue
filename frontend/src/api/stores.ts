@@ -6,8 +6,8 @@ export type CreateStore = components['schemas']['CreateStoreRequest']
 export type UpdateStore = components['schemas']['UpdateStoreRequest']
 export type StoreState = NonNullable<operations['listStores']['parameters']['query']>['state']
 
-export async function listStores(organizationId: string, state: StoreState, q: string, offset: number, signal: AbortSignal) {
-  const { data, error, response } = await api.GET('/api/v1/organizations/{organizationId}/stores', { params: { path: { organizationId }, query: { state, q, offset, limit: 25 } }, signal: requestSignal(signal) })
+export async function listStores(organizationId: string, state: StoreState, q: string, offset: number, signal: AbortSignal, limit = 25) {
+  const { data, error, response } = await api.GET('/api/v1/organizations/{organizationId}/stores', { params: { path: { organizationId }, query: { state, q, offset, limit } }, signal: requestSignal(signal) })
   if (!data) throw new ApiError(response, error)
   return data
 }

@@ -1310,11 +1310,17 @@ class InventoryCommandsTest extends InfrastructureTestBase {
         var key=spoofed.tenantId()+":"+spoofed.aggregateType()+":"+spoofed.aggregateId();
         var unsupported=eventCodec.encode(trusted).replaceFirst("\"schemaVersion\"\\s*:\\s*1","\"schemaVersion\":2");
         var invalidCorrelation=eventCodec.encode(trusted).replaceFirst("\"correlationId\"\\s*:\\s*\"[^\"]*\"","\"correlationId\":7");
+        var trustedPayload=eventCodec.encode(trusted);
+        var unknownType=trustedPayload.replace("\"eventType\":\"InventoryStockChanged\"", "\"eventType\":\"UnknownStockEvent\"");
+        var duplicateType=trustedPayload.replace("\"eventType\":\"InventoryStockChanged\"",
+                "\"eventType\":\"InventoryStockChanged\",\"eventType\":\"InventoryStockChanged\"");
         var records=List.of(
                 new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_001L,key,eventCodec.encode(spoofed)),
                 new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_002L,"invalid",unsupported),
                 new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_003L,"invalid","not-json"),
-                new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_004L,key,invalidCorrelation));
+                new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_004L,key,invalidCorrelation),
+                new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_005L,key,unknownType),
+                new ConsumerRecord<>("stockrescue.inventory.events.v1",0,8_000_000_006L,key,duplicateType));
         MessageListenerContainer container=listeners.getListenerContainer("inventory-change-projection");
         haltInventoryConsumer();
         try {
@@ -1328,9 +1334,10 @@ class InventoryCommandsTest extends InfrastructureTestBase {
             await().atMost(Duration.ofSeconds(10)).until(container::isRunning);
         }
         assertThat(jdbc.sql("SELECT failure_code FROM stockrescue.inventory_consumer_parked_event WHERE record_offset>=8000000001 ORDER BY record_offset")
-                .query(String.class).list()).containsExactly("OUTBOX_EVENT_MISMATCH","UNSUPPORTED_SCHEMA_VERSION","MALFORMED_EVENT","MALFORMED_EVENT");
+                .query(String.class).list()).containsExactly("OUTBOX_EVENT_MISMATCH","UNSUPPORTED_SCHEMA_VERSION","MALFORMED_EVENT",
+                        "MALFORMED_EVENT","UNSUPPORTED_EVENT_TYPE","MALFORMED_EVENT");
         assertThat(jdbc.sql("SELECT count(*) FROM stockrescue.inventory_consumer_parked_event WHERE record_offset>=8000000001 AND octet_length(payload_digest)=32")
-                .query(Long.class).single()).isEqualTo(4);
+                .query(Long.class).single()).isEqualTo(6);
         assertThat(inboxCount(source.id())).isZero();
         assertThat(feedCount(source.id())).isZero();
         assertThat(snapshot(received).buckets().onHand()).isEqualTo(2);
@@ -2200,13 +2207,18 @@ class InventoryCommandsTest extends InfrastructureTestBase {
                 StoreAction.READ_STORE,StoreAction.EDIT_STORE,StoreAction.MANAGE_STORAGE_ZONES,StoreAction.REGISTER_SOURCE_EVIDENCE,
                 StoreAction.MANAGE_STORAGE_LOCATIONS,StoreAction.REGISTER_STORE_LOT,StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,
                 StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.ADJUST_STOCK,StoreAction.WRITE_OFF_STOCK,
-                StoreAction.QUARANTINE_STOCK,StoreAction.RECORD_SALE,StoreAction.MANAGE_INVENTORY_ALLOCATIONS,StoreAction.RECONCILE_INVENTORY);
+                StoreAction.QUARANTINE_STOCK,StoreAction.RECORD_SALE,StoreAction.READ_TRANSFERS,StoreAction.REQUEST_TRANSFER,
+                StoreAction.APPROVE_TRANSFER,StoreAction.PICK_TRANSFER,StoreAction.DISPATCH_TRANSFER,StoreAction.CANCEL_TRANSFER,
+                StoreAction.REQUEST_TRANSFER_RETURN,StoreAction.MANAGE_TRANSFER_DISCREPANCIES,
+                StoreAction.MANAGE_INVENTORY_ALLOCATIONS,StoreAction.RECONCILE_INVENTORY);
         assertThat(access.permissions(f.manager,f.org).storeGrants().getFirst().actions()).doesNotContain(StoreAction.REMEDIATE_INVENTORY);
         assertThat(access.permissions(f.operator,f.org).storeGrants().getFirst().actions()).containsExactly(
                 StoreAction.READ_STORE,StoreAction.REGISTER_SOURCE_EVIDENCE,StoreAction.READ_INVENTORY,StoreAction.RECEIVE_STOCK,
-                StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.RECORD_SALE,StoreAction.QUARANTINE_STOCK);
+                StoreAction.RESERVE_STOCK,StoreAction.RELEASE_RESERVATION,StoreAction.RECORD_SALE,StoreAction.READ_TRANSFERS,
+                StoreAction.REQUEST_TRANSFER,StoreAction.PICK_TRANSFER,StoreAction.DISPATCH_TRANSFER,
+                StoreAction.REQUEST_TRANSFER_RETURN,StoreAction.QUARANTINE_STOCK);
         assertThat(access.permissions(f.analyst,f.org).storeGrants().getFirst().actions())
-                .containsExactly(StoreAction.READ_STORE,StoreAction.READ_INVENTORY);
+                .containsExactly(StoreAction.READ_STORE,StoreAction.READ_INVENTORY,StoreAction.READ_TRANSFERS);
         var received=receive(4);
         assertThat(service.snapshot(f.analyst,f.org,f.store,received.positionId()).buckets().onHand()).isEqualTo(4);
         assertThatThrownBy(()->service.reserveStock(f.analyst,f.org,f.store,change(received.positionId(),1))).isInstanceOf(AccessDeniedException.class);

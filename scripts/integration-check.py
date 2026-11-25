@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -111,6 +112,11 @@ def main():
         action="store_true",
         help="build an isolated Compose project and run the inventory ledger browser scenario",
     )
+    isolated_e2e.add_argument(
+        "--transfer-e2e-only",
+        action="store_true",
+        help="build an isolated Compose project and run only the stock transfer browser journey",
+    )
     parser.add_argument(
         "--keep-on-failure",
         action="store_true",
@@ -130,6 +136,7 @@ def main():
     os.chdir(root)
     project = f"stockrescue-check-{uuid4().hex[:16]}"
     working = root / ".tools"
+    diagnostic_directory = Path(os.environ.get("RUNNER_TEMP") or working) / "stockrescue-compose-diagnostics"
     working.mkdir(exist_ok=True)
     environment_file = working / f"{project}.env"
     postgres_admin_password = uuid4().hex
@@ -152,8 +159,13 @@ def main():
             text,
         )
         text = re.sub(
-            r"(?i)([\"']?[A-Za-z0-9_.-]*(?:authorization|proxy-authorization|cookie|set-cookie|x-csrf-token|csrf-token|password|passwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token)[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)",
+            r"(?i)([\"']?[A-Za-z0-9_.-]*(?:authorization|proxy-authorization|cookie|set-cookie|x-csrf-token|csrf-token|password|passwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|payload|request[_-]?body|response[_-]?body|reason|evidence[_-]?(?:reference|data)|email|full[_-]?name|sku|lot[_-]?code|supplier[_-]?key)[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)",
             lambda match: f'{match.group(1)}"[REDACTED]"',
+            text,
+        )
+        text = re.sub(
+            r"(?im)^.*(?:request|response)\s+body\s*[:=].*$",
+            "[REDACTED HTTP BODY]",
             text,
         )
         text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
@@ -161,7 +173,7 @@ def main():
         return text
 
     def save_diagnostic(contents, append=False):
-        diagnostic = working / f"{project}-failure.log"
+        diagnostic = diagnostic_directory / f"{project}-failure.log"
         try:
             contents = redact(contents)
             if append and diagnostic.exists():
@@ -170,6 +182,11 @@ def main():
                 if os.name != "nt":
                     os.chmod(diagnostic, 0o600)
             else:
+                contents = (
+                    f"scenario: {project}\n"
+                    f"captured_at_utc: {datetime.now(timezone.utc).isoformat()}\n"
+                    + contents
+                )
                 write_private_environment_file(diagnostic, contents)
         except Exception:
             return None
@@ -232,18 +249,50 @@ def main():
         return execute(compose + list(command), **options)
 
     def collect_failure_diagnostics(error):
+        message = str(error)
+        if isinstance(error, AssertionError) and message.startswith(
+            "Kafka recovery did not drain/apply the committed event;"
+        ):
+            safe_cause = redact(message[:1200])
+        elif isinstance(error, subprocess.CalledProcessError):
+            safe_cause = f"child process exited with status {error.returncode}"
+        elif isinstance(error, TimeoutError):
+            safe_cause = "bounded infrastructure command or readiness wait timed out"
+        elif isinstance(error, AssertionError):
+            safe_cause = "integration assertion failed"
+        else:
+            safe_cause = type(error).__name__
         sections = [
             "=== Integration failure ===",
+            f"scenario: {project}",
+            f"captured_at_utc: {datetime.now(timezone.utc).isoformat()}",
             f"type: {type(error).__name__}",
-            "message: omitted to avoid copying request data or secrets",
+            f"cause: {safe_cause}",
         ]
+        state_query = """
+            SELECT concat_ws(',',
+                'inventory_outbox_pending=' || (SELECT count(*) FROM stockrescue.inventory_outbox_delivery WHERE published_at IS NULL),
+                'inventory_redrive_blocked=' || (SELECT count(*) FROM stockrescue.inventory_outbox_redrive_attempt WHERE blocked_at IS NOT NULL),
+                'inventory_consumer_parked=' || (SELECT count(*) FROM stockrescue.inventory_consumer_parked_event),
+                'inventory_inbox=' || (SELECT count(*) FROM stockrescue.inventory_inbox),
+                'inventory_projection_rows=' || (SELECT count(*) FROM stockrescue.inventory_change_projection),
+                'inventory_projection_max_version=' || (SELECT coalesce(max(aggregate_version),0) FROM stockrescue.inventory_change_projection),
+                'transfer_outbox_pending=' || (SELECT count(*) FROM stockrescue.transfer_outbox_delivery WHERE published_at IS NULL AND parked_at IS NULL),
+                'transfer_outbox_parked=' || (SELECT count(*) FROM stockrescue.transfer_outbox_delivery WHERE parked_at IS NOT NULL),
+                'transfer_redrive_blocked=' || (SELECT count(*) FROM stockrescue.transfer_outbox_redrive_attempt WHERE blocked_at IS NOT NULL),
+                'transfer_inbox=' || (SELECT count(*) FROM stockrescue.transfer_inbox),
+                'transfer_projection_rows=' || (SELECT count(*) FROM stockrescue.transfer_change_projection),
+                'transfer_projection_max_version=' || (SELECT coalesce(max(aggregate_version),0) FROM stockrescue.transfer_change_projection)
+            )
+        """
         projects = [(project, compose)] + [
             (scenario["project"], scenario["compose"]) for scenario in scenario_projects
         ]
         for project_name, project_compose in projects:
             for label, arguments in (
                 ("service status", ["ps", "-a"]),
-                ("recent service logs", ["logs", "--no-color", "--tail", "80"]),
+                ("recent service logs", ["logs", "--no-color", "--tail", "80", "backend", "kafka", "postgres", "web", "intelligence"]),
+                ("outbox inbox and projection counts", ["exec", "-T", "postgres", "psql", "-U", "stockrescue_admin", "-d", "stockrescue", "-Atc", state_query]),
             ):
                 try:
                     result = subprocess.run(
@@ -256,8 +305,8 @@ def main():
                         timeout=20,
                     )
                     output = result.stdout + result.stderr
-                    if len(output) > 60000:
-                        output = output[-60000:]
+                    if len(output) > 30000:
+                        output = output[-30000:]
                     sections.extend(
                         [
                             f"=== {project_name}: {label} (exit {result.returncode}) ===",
@@ -274,7 +323,19 @@ def main():
         return save_diagnostic("\n".join(sections) + "\n", append=True)
 
     scenario_projects = []
-    pnpm_executable = "pnpm.cmd" if os.name == "nt" else "pnpm"
+    pnpm_command = "pnpm.cmd" if os.name == "nt" else "pnpm"
+    pnpm_executable = shutil.which(pnpm_command)
+    if pnpm_executable is None:
+        package_manager = json.loads(
+            (root / "frontend/package.json").read_text(encoding="utf-8")
+        ).get("packageManager", "")
+        pnpm_version = (
+            package_manager.removeprefix("pnpm@").split("+", 1)[0]
+            if package_manager.startswith("pnpm@")
+            else ""
+        )
+        local_pnpm = root / ".tools" / f"pnpm-{pnpm_version}" / pnpm_command
+        pnpm_executable = str(local_pnpm) if pnpm_version and local_pnpm.is_file() else pnpm_command
 
     def new_scenario(label, server_port=None):
         scenario_project = f"{project}-{label}"
@@ -1252,7 +1313,7 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
         )
 
         if (arguments.inventory_recovery_e2e_only or arguments.operational_configuration_e2e_only
-                or arguments.browser_suite_only or arguments.inventory_ledger_e2e_only):
+                or arguments.browser_suite_only or arguments.inventory_ledger_e2e_only or arguments.transfer_e2e_only):
             run("up", "--build", "-d", "--wait", "--wait-timeout", "180")
             require(
                 json.loads(wait_for("/api/health/readiness", 200))["status"] == "UP",
@@ -1262,24 +1323,18 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
                 json.loads(wait_for("/api/health/integration", 200))["status"] == "UP",
                 "Integration is not healthy",
             )
+            if arguments.transfer_e2e_only:
+                browser_tests = ["e2e/transfers.spec.ts"]
+            elif arguments.inventory_ledger_e2e_only:
+                browser_tests = ["e2e/inventory.spec.ts"]
+            elif arguments.browser_suite_only:
+                browser_tests = ["--grep-invert", "cold-start"]
+            elif arguments.operational_configuration_e2e_only:
+                browser_tests = ["e2e/operational-configuration.spec.ts"]
+            else:
+                browser_tests = ["e2e/inventory-command-recovery.spec.ts"]
             subprocess.run(
-                [
-                    pnpm_executable,
-                    "--dir",
-                    "frontend",
-                    "exec",
-                    "playwright",
-                    "test",
-                    *(
-                        ["e2e/inventory.spec.ts"]
-                        if arguments.inventory_ledger_e2e_only
-                        else ["--grep-invert", "cold-start"]
-                        if arguments.browser_suite_only
-                        else ["e2e/operational-configuration.spec.ts"]
-                        if arguments.operational_configuration_e2e_only
-                        else ["e2e/inventory-command-recovery.spec.ts"]
-                    ),
-                ],
+                [pnpm_executable, "--dir", "frontend", "exec", "playwright", "test", *browser_tests],
                 check=True,
                 env={
                     **os.environ,
@@ -1287,10 +1342,12 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
                     "STOCKRESCUE_TEST_PROJECT": project,
                     "STOCKRESCUE_TEST_ENV_FILE": str(environment_file),
                 },
-                timeout=240 if arguments.browser_suite_only else 360,
+                timeout=600 if arguments.browser_suite_only else 360,
             )
             print(
-                "PASS: isolated inventory ledger browser test"
+                "PASS: isolated stock transfer browser journey"
+                if arguments.transfer_e2e_only
+                else "PASS: isolated inventory ledger browser test"
                 if arguments.inventory_ledger_e2e_only
                 else "PASS: full isolated browser suite"
                 if arguments.browser_suite_only
@@ -1695,7 +1752,7 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
                     "STOCKRESCUE_TEST_PROJECT": project,
                     "STOCKRESCUE_TEST_ENV_FILE": str(environment_file),
                 },
-                timeout=240,
+                timeout=600,
             )
         print("PASS: integrated foundation checks", flush=True)
         completed = True
@@ -1773,10 +1830,15 @@ WHERE e.movement_id='{movement_id}' AND e.position_id='{position_id}'
             )
 
         if cleanup_errors:
-            diagnostic = working / f"{project}-cleanup.log"
+            diagnostic = diagnostic_directory / f"{project}-cleanup.log"
             diagnostic_written = True
             try:
-                write_private_environment_file(diagnostic, "\n".join(cleanup_errors))
+                write_private_environment_file(
+                    diagnostic,
+                    f"scenario: {project}\n"
+                    f"captured_at_utc: {datetime.now(timezone.utc).isoformat()}\n"
+                    + "\n".join(cleanup_errors),
+                )
             except Exception as error:
                 diagnostic_written = False
                 if primary_error is None:

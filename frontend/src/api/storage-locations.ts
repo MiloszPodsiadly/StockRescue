@@ -6,9 +6,9 @@ export type CreateStorageLocation = components['schemas']['CreateStorageLocation
 export type RenameStorageLocation = components['schemas']['RenameStorageLocationRequest']
 export type ArchiveStorageLocation = components['schemas']['ArchiveStorageLocationRequest']
 
-export async function listStorageLocations(organizationId: string, storeId: string, includeArchived: boolean, q: string, offset: number, signal: AbortSignal) {
+export async function listStorageLocations(organizationId: string, storeId: string, includeArchived: boolean, q: string, offset: number, signal: AbortSignal, limit = 25) {
   const { data, error, response } = await api.GET('/api/v1/organizations/{organizationId}/stores/{storeId}/storage-locations', {
-    params: { path: { organizationId, storeId }, query: { includeArchived, q, offset, limit: 25 } }, signal: requestSignal(signal),
+    params: { path: { organizationId, storeId }, query: { includeArchived, q, offset, limit } }, signal: requestSignal(signal),
   })
   if (!data) throw new ApiError(response, error)
   return data

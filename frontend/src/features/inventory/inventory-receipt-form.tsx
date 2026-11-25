@@ -6,6 +6,7 @@ import type { Product } from '@/api/products'
 import { listLots } from '@/api/lots'
 import type { StorageLocation } from '@/api/storage-locations'
 import { executeInventoryCommandIntent, listInventoryPositions, prepareInventoryCommandIntent } from '@/api/inventory'
+import type { InventoryCommandIntent } from '@/api/inventory'
 import type { InventoryReceiptDocument } from '@/api/inventory'
 import type { Store } from '@/api/stores'
 import { Button } from '@/components/ui/button'
@@ -13,12 +14,12 @@ import { Field, inputClass } from '@/components/form-field'
 import { useTenantRequests } from '../organizations/tenant-requests'
 
 type ReceiptLineDraft = { id: string, documentLineReference: string, productId: string, lotId: string, locationId: string, quantity: string }
-type Props = { organizationId: string, storeId: string, store: Store, products: Product[], locations: StorageLocation[], scope: readonly unknown[], intentsLoaded: boolean, pendingIntent: boolean, onCommitted: () => Promise<void> }
+type Props = { organizationId: string, storeId: string, store: Store, products: Product[], locations: StorageLocation[], scope: readonly unknown[], intentsLoaded: boolean, pendingIntent: boolean, onPrepared: (intent: InventoryCommandIntent) => void, onCommitted: () => Promise<void> }
 const refresh = { refetchOnWindowFocus: true, staleTime: 0 } as const
 const newLine = (): ReceiptLineDraft => ({ id: crypto.randomUUID(), documentLineReference: '', productId: '', lotId: '', locationId: '', quantity: '' })
 const maximumStockQuantity = 9_223_372_036_854_775_807n
 
-export function InventoryReceiptForm({ organizationId, storeId, store, products, locations, scope, intentsLoaded, pendingIntent, onCommitted }: Props) {
+export function InventoryReceiptForm({ organizationId, storeId, store, products, locations, scope, intentsLoaded, pendingIntent, onPrepared, onCommitted }: Props) {
   const tenantSignal = useTenantRequests()
   const submittingRef = useRef(false)
   const [submitting, setSubmitting] = useState(false)
@@ -111,14 +112,17 @@ export function InventoryReceiptForm({ organizationId, storeId, store, products,
     submittingRef.current = true
     setSubmitting(true)
     setSubmissionError('')
+    let preparedIntent: InventoryCommandIntent | undefined
     try {
-      const intent = await prepareInventoryCommandIntent(organizationId, storeId, {
+      preparedIntent = await prepareInventoryCommandIntent(organizationId, storeId, {
         prepareId: crypto.randomUUID(), operation: 'RECEIPT_DOCUMENT', payload,
       }, tenantSignal())
-      await executeInventoryCommandIntent(organizationId, storeId, intent.id, tenantSignal())
+      await executeInventoryCommandIntent(organizationId, storeId, preparedIntent.id, tenantSignal())
+      onPrepared(preparedIntent)
       resetAfterCommit()
       await onCommitted()
     } catch (error) {
+      if (preparedIntent) onPrepared(preparedIntent)
       setSubmissionError(errorMessage(error))
       await onCommitted()
     } finally {

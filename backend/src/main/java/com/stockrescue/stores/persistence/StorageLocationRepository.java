@@ -45,6 +45,10 @@ public class StorageLocationRepository {
         return jdbc.sql(SELECT+" WHERE l.org_id=:org AND l.store_id=:store AND l.id=:id"+(lock?" FOR UPDATE OF l":""))
                 .param("org",org).param("store",store).param("id",id).query((row,index) -> location(row)).optional();
     }
+    public Optional<StorageLocation> lockTransferContext(UUID org,UUID store,UUID id) {
+        return jdbc.sql(SELECT+" WHERE l.org_id=:org AND l.store_id=:store AND l.id=:id FOR SHARE OF l,z,s")
+                .param("org",org).param("store",store).param("id",id).query((row,index) -> location(row)).optional();
+    }
     public List<StorageLocation> list(UUID org,UUID store,boolean includeArchived,String q,int offset,int limit) {
         return jdbc.sql(SELECT+"""
                  WHERE l.org_id=:org AND l.store_id=:store AND (:archived OR l.active)
