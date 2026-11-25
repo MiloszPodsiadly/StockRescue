@@ -757,7 +757,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       || inspection.executionStatus === 'SUBMITTED_AWAITING_OUTCOME'
       || inspection.executionStatus === 'COMMITTED_AWAITING_ACKNOWLEDGEMENT'
     if (requiresPendingSummary && (!summary || !inspectionMatchesSummary(inspection, summary))) {
-      setRecoveryView(operation, { kind: 'unknown' })
+      setRecoveryView(operation, { kind: 'unknown', redacted: inspection.redacted || Boolean(summary?.redacted) })
       setCommandMessage(operation, 'The inspection and current pending record disagree. Keep the command blocked and retry the status check.')
       return
     }

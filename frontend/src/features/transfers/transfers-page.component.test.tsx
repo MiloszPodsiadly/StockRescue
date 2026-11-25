@@ -1278,6 +1278,99 @@ it('acknowledges a redacted committed command and releases the gate only after f
   expect(apiMocks.navigate).not.toHaveBeenCalled()
 })
 
+it('keeps same-intent recovery redacted when inspection outruns authorization refresh', async () => {
+  const user = userEvent.setup()
+  const intentId = 'intent-access-revoked-during-inspection'
+  const privateRequestId = 'c0ffee00-0000-4000-8000-000000000002'
+  const privateTransferId = 'private-transfer-access-revoked'
+  const preparedAt = '2026-11-20T10:00:00Z'
+  const readableSummary = { id: intentId, operation: 'CLOSE', transferId: privateTransferId, requestId: privateRequestId,
+    state: 'SUBMITTED', preparedAt, subject: 'Transfer close', redacted: false }
+  const redactedSummary = { ...readableSummary, operation: null, transferId: null, requestId: null, redacted: true }
+  const redactedCommittedInspection = { ...redactedSummary, executionStatus: 'COMMITTED_AWAITING_ACKNOWLEDGEMENT',
+    payload: null, committedOutcome: null }
+  const firstInspection = Promise.withResolvers<typeof redactedCommittedInspection>()
+  const acknowledgement = Promise.withResolvers<{ id: string, state: 'ACKNOWLEDGED', redacted: true }>()
+  const reconciliation = Promise.withResolvers<{ items: never[] }>()
+  let pendingCalls = 0
+  apiMocks.stores.mockResolvedValue({ items: [
+    store('source', ['READ_TRANSFERS', 'REQUEST_TRANSFER', 'READ_INVENTORY']), store('destination', ['READ_STORE']),
+  ], hasMore: false })
+  apiMocks.pendingIntents.mockImplementation(async () => {
+    pendingCalls++
+    if (pendingCalls === 1 || pendingCalls === 2) return { items: [readableSummary] }
+    if (pendingCalls === 3) return { items: [redactedSummary] }
+    if (pendingCalls === 4) return reconciliation.promise
+    return { items: [] }
+  })
+  apiMocks.inspectIntent.mockImplementationOnce(() => firstInspection.promise).mockResolvedValueOnce(redactedCommittedInspection)
+  apiMocks.acknowledgeIntent.mockImplementationOnce(() => acknowledgement.promise)
+  renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  expect(recovery).toHaveTextContent(privateRequestId)
+  expect(recovery).toHaveTextContent('CLOSE')
+  await user.click(screen.getByRole('button', { name: 'New transfer request' }))
+  expect(screen.getByRole('button', { name: 'Resolve saved command first' })).toBeDisabled()
+
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await waitFor(() => expect(apiMocks.inspectIntent).toHaveBeenCalledTimes(1))
+  await act(async () => { firstInspection.resolve(redactedCommittedInspection) })
+  await within(recovery).findByRole('status')
+  await waitFor(() => expect(within(recovery).getByRole('button', { name: 'Inspect saved outcome' })).toBeEnabled())
+  expect(recovery).toHaveTextContent(/request details stay hidden/i)
+  expect(recovery).not.toHaveTextContent(privateRequestId)
+  expect(recovery).not.toHaveTextContent(privateTransferId)
+  expect(recovery).not.toHaveTextContent('CLOSE')
+  expect(within(recovery).queryByRole('button', { name: 'Retry exact saved command' })).not.toBeInTheDocument()
+  expect(within(recovery).queryByRole('button', { name: 'Resolve without transfer details' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Resolve saved command first' })).toBeDisabled()
+  expect(apiMocks.acknowledgeIntent).not.toHaveBeenCalled()
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.prepareIntent).not.toHaveBeenCalled()
+  expect(apiMocks.markIntentSubmitted).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+  expect(apiMocks.navigate).not.toHaveBeenCalled()
+
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await waitFor(() => expect(apiMocks.acknowledgeIntent).toHaveBeenCalledTimes(1))
+  expect(apiMocks.acknowledgeIntent).toHaveBeenCalledWith(orgId, intentId, expect.anything())
+  expect(within(recovery).queryByRole('button', { name: 'Retry exact saved command' })).not.toBeInTheDocument()
+  expect(within(recovery).queryByRole('button', { name: 'Resolve without transfer details' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /Saving request/ })).toBeDisabled()
+  expect(recovery).not.toHaveTextContent(privateRequestId)
+  expect(recovery).not.toHaveTextContent(privateTransferId)
+  expect(recovery).not.toHaveTextContent('CLOSE')
+  expect(within(recovery).queryByRole('link')).not.toBeInTheDocument()
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.prepareIntent).not.toHaveBeenCalled()
+  expect(apiMocks.markIntentSubmitted).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+  expect(apiMocks.navigate).not.toHaveBeenCalled()
+
+  await act(async () => { acknowledgement.resolve({ id: intentId, state: 'ACKNOWLEDGED', redacted: true }) })
+  await waitFor(() => expect(pendingCalls).toBe(4))
+  expect(recovery).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /Saving request/ })).toBeDisabled()
+  expect(apiMocks.acknowledgeIntent).toHaveBeenCalledTimes(1)
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.prepareIntent).not.toHaveBeenCalled()
+  expect(apiMocks.markIntentSubmitted).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+  expect(apiMocks.navigate).not.toHaveBeenCalled()
+
+  await act(async () => { reconciliation.resolve({ items: [] }) })
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Recover saved transfer command' })).not.toBeInTheDocument())
+  expect(await screen.findByText('The command is acknowledged. Transfer details remain hidden because access changed.')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Resolve saved command first' })).not.toBeInTheDocument()
+  expect(apiMocks.acknowledgeIntent).toHaveBeenCalledTimes(1)
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.prepareIntent).not.toHaveBeenCalled()
+  expect(apiMocks.markIntentSubmitted).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+  expect(apiMocks.navigate).not.toHaveBeenCalled()
+})
+
 it('reconciles a redacted acknowledgement after a pending refresh fails without acknowledging twice', async () => {
   const user = userEvent.setup()
   const intent = { id: 'intent-redacted-ack-refresh', operation: null, transferId: null, requestId: null,
