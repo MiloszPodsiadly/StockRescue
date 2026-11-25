@@ -733,6 +733,56 @@ async function switchSession(page: Page, sourceContext: BrowserContext, returnPa
 async function recoverCommittedTransferCommand(page: Page, path: string, submit: () => Promise<void>, expectedStatus: string,
   reopen?: () => Promise<Page>) {
   let committedResponses = 0
+  let businessRequestCount = 0
+  let prepareRequestCount = 0
+  const endpoint = path.slice(path.lastIndexOf('/') + 1)
+  const expectedOperation = ({
+    dispatch: 'DISPATCH', receive: 'RECEIVE', 'confirm-return': 'CONFIRM_RETURN',
+    'close-discrepancy': 'CLOSE', 'request-return': 'REQUEST_RETURN',
+  } as Record<string, string>)[endpoint]
+  if (!expectedOperation) throw new Error(`Unsupported recovered transfer operation: ${endpoint}`)
+  const expectedOutcomeStatus = ({
+    'In transit': 'IN_TRANSIT', 'Partially received': 'PARTIALLY_RECEIVED',
+    'Reconciliation required': 'RECONCILIATION_REQUIRED', 'Closed with discrepancy': 'CLOSED_WITH_DISCREPANCY',
+  } as Record<string, string>)[expectedStatus]
+  if (!expectedOutcomeStatus) throw new Error(`Unsupported recovered transfer status: ${expectedStatus}`)
+  const businessRequests: { operation: string, requestId: string | null }[] = []
+  const prepareRequests: { operation: string | null, requestId: string | null }[] = []
+  const preparedIntents: { id: string, operation: string, requestId: string, status: number }[] = []
+  const initialCaptureTasks: Promise<void>[] = []
+  const intentCollectionPath = new URL(path, 'http://stockrescue.local').pathname
+    .slice(0, new URL(path, 'http://stockrescue.local').pathname.indexOf('/transfers/')) + '/transfer-command-intents'
+  const captureInitialRequest = (request: import('@playwright/test').Request) => {
+    if (request.method() !== 'POST') return
+    const pathname = new URL(request.url()).pathname
+    if (pathname.endsWith(path)) {
+      businessRequestCount++
+      const body = request.postDataJSON() as Record<string, unknown>
+      businessRequests.push({ operation: expectedOperation, requestId: typeof body.requestId === 'string' ? body.requestId : null })
+    }
+    if (pathname === intentCollectionPath) {
+      prepareRequestCount++
+      const body = request.postDataJSON() as Record<string, unknown>
+      const payload = typeof body.payload === 'object' && body.payload !== null ? body.payload as Record<string, unknown> : {}
+      prepareRequests.push({ operation: typeof body.operation === 'string' ? body.operation : null,
+        requestId: typeof payload.requestId === 'string' ? payload.requestId : null })
+    }
+  }
+  const capturePreparedIntent = (response: import('@playwright/test').Response) => {
+    const request = response.request()
+    if (request.method() !== 'POST' || new URL(response.url()).pathname !== intentCollectionPath) return
+    const capture = (async () => {
+      try {
+        const body = await response.json() as Record<string, unknown>
+        if (typeof body.id === 'string' && typeof body.operation === 'string' && typeof body.requestId === 'string') {
+          preparedIntents.push({ id: body.id, operation: body.operation, requestId: body.requestId, status: response.status() })
+        }
+      } catch { /* The safe operation, request key and durable intent ID are checked below. */ }
+    })()
+    initialCaptureTasks.push(capture)
+  }
+  page.on('request', captureInitialRequest)
+  page.on('response', capturePreparedIntent)
   const routePattern = `**${path}`
   const dropResponse = async (route: import('@playwright/test').Route) => {
     const response = await route.fetch()
@@ -744,6 +794,15 @@ async function recoverCommittedTransferCommand(page: Page, path: string, submit:
   try {
     await submit()
     await expect.poll(() => committedResponses, { timeout: 20000, intervals: [100, 250, 500] }).toBe(1)
+    await expect.poll(() => preparedIntents.length, { timeout: 20000, intervals: [100, 250, 500] }).toBe(1)
+    await Promise.all(initialCaptureTasks)
+    expect(businessRequestCount).toBe(1)
+    expect(prepareRequestCount).toBe(1)
+    expect(businessRequests).toHaveLength(1)
+    expect(businessRequests[0]!.requestId).toMatch(/^[0-9a-f-]{36}$/i)
+    expect(prepareRequests).toEqual([{ operation: expectedOperation, requestId: businessRequests[0]!.requestId }])
+    const preparedIntent = preparedIntents[0]!
+    expect(preparedIntent).toMatchObject({ operation: expectedOperation, requestId: businessRequests[0]!.requestId, status: 200 })
     const recovery = page.getByRole('region', { name: 'Recover saved transfer command' })
     await expect(recovery).toBeVisible()
     let recoveryPage = page
@@ -751,41 +810,109 @@ async function recoverCommittedTransferCommand(page: Page, path: string, submit:
     else await page.reload()
     const reopenedRegion = recoveryPage.getByRole('region', { name: 'Recover saved transfer command' })
     await expect(reopenedRegion).toBeVisible()
+    let recoverySequence = 0
+    let acknowledgementSequence = 0
+    const recoveryRequests: { method: string, path: string }[] = []
+    const pendingIntentResponses: { sequence: number, status: number, intentIds: string[] }[] = []
     const intentResponses: { method: string, path: string, status: number, details: Record<string, unknown> }[] = []
-    const pendingIntentResponses: Promise<void>[] = []
+    const responseCaptureTasks: Promise<void>[] = []
+    const requestSequenceByRequest = new WeakMap<import('@playwright/test').Request, number>()
+    const captureRecoveryRequest = (request: import('@playwright/test').Request) => {
+      const url = new URL(request.url())
+      const route = { method: request.method(), path: url.pathname }
+      recoveryRequests.push(route)
+      const sequence = ++recoverySequence
+      requestSequenceByRequest.set(request, sequence)
+      if (route.method === 'POST' && route.path === `${intentCollectionPath}/${preparedIntent.id}/acknowledge`) {
+        acknowledgementSequence = sequence
+      }
+    }
     const captureIntentResponse = (response: import('@playwright/test').Response) => {
       const url = new URL(response.url())
-      if (!url.pathname.includes('/transfer-command-intents/')) return
+      if (url.pathname !== intentCollectionPath && !url.pathname.startsWith(`${intentCollectionPath}/`)) return
       const capture = (async () => {
         const details: Record<string, unknown> = {}
         try {
           const body = await response.json() as Record<string, unknown>
-          for (const key of ['code', 'state', 'executionStatus', 'redacted']) {
+          for (const key of ['id', 'operation', 'requestId', 'code', 'state', 'executionStatus', 'redacted']) {
             if (key in body) details[key] = body[key]
           }
           const outcome = body.committedOutcome
           if (typeof outcome === 'object' && outcome !== null && 'status' in outcome) {
             details.committedOutcomeStatus = (outcome as { status: unknown }).status
           }
+          if (response.request().method() === 'GET' && url.pathname === intentCollectionPath && Array.isArray(body.items)) {
+            const intentIds = body.items.flatMap(item => typeof item === 'object' && item !== null
+              && 'id' in item && typeof item.id === 'string' ? [item.id] : [])
+            pendingIntentResponses.push({ sequence: requestSequenceByRequest.get(response.request()) ?? 0,
+              status: response.status(), intentIds })
+          }
         } catch { /* Keep status and route when a problem response has no JSON body. */ }
         intentResponses.push({ method: response.request().method(), path: url.pathname, status: response.status(), details })
       })()
-      pendingIntentResponses.push(capture)
+      responseCaptureTasks.push(capture)
     }
+    recoveryPage.on('request', captureRecoveryRequest)
     recoveryPage.on('response', captureIntentResponse)
     try {
       await recoveryPage.getByRole('button', { name: 'Inspect saved outcome' }).click()
-      await expect(recoveryPage.getByText(`Recovered ${expectedStatus} from the saved command record.`)).toBeVisible()
+      await expect(recoveryPage.getByText('The command is acknowledged and its pending recovery record has been reconciled.', { exact: true })).toBeVisible()
+      await expect(reopenedRegion).toHaveCount(0)
+
+      await expect.poll(() => intentResponses.some(response => response.method === 'GET'
+        && response.path === `${intentCollectionPath}/${preparedIntent.id}` && response.status === 200
+        && response.details.executionStatus === 'COMMITTED_AWAITING_ACKNOWLEDGEMENT'
+        && response.details.committedOutcomeStatus === expectedOutcomeStatus),
+      { timeout: 20000, intervals: [100, 250, 500] }).toBe(true)
+
+      const recoveredContext = recoveryPage.context()
+      const intentPath = `${intentCollectionPath}/${preparedIntent.id}`
+      let authoritativeInspection: Record<string, unknown> | undefined
+      await expect.poll(async () => {
+        const response = await recoveredContext.request.get(intentPath)
+        if (response.status() === 429) return false
+        expect(response.status()).toBe(200)
+        authoritativeInspection = await response.json() as Record<string, unknown>
+        return authoritativeInspection.executionStatus
+      }, { timeout: 20000, intervals: [100, 250, 500] }).toBe('ACKNOWLEDGED')
+      expect(authoritativeInspection).toMatchObject({ id: preparedIntent.id, operation: expectedOperation,
+        requestId: businessRequests[0]!.requestId, executionStatus: 'ACKNOWLEDGED' })
+
+      let reconciledPendingIds: string[] | undefined
+      await expect.poll(async () => {
+        const response = await recoveredContext.request.get(intentCollectionPath)
+        if (response.status() === 429) return false
+        expect(response.status()).toBe(200)
+        const page = await response.json() as { items: { id: string }[] }
+        reconciledPendingIds = page.items.map(item => item.id)
+        return !reconciledPendingIds.includes(preparedIntent.id)
+      }, { timeout: 20000, intervals: [100, 250, 500] }).toBe(true)
+      expect(reconciledPendingIds).not.toContain(preparedIntent.id)
+      await expect.poll(() => pendingIntentResponses.some(response => response.sequence > acknowledgementSequence
+        && response.status === 200 && !response.intentIds.includes(preparedIntent.id)),
+      { timeout: 20000, intervals: [100, 250, 500] }).toBe(true)
+      expect(recoveryRequests.filter(request => request.method === 'GET'
+        && request.path === `${intentCollectionPath}/${preparedIntent.id}`)).toHaveLength(1)
+      expect(recoveryRequests.filter(request => request.method === 'POST'
+        && request.path === `${intentCollectionPath}/${preparedIntent.id}/acknowledge`)).toHaveLength(1)
+      expect(recoveryRequests.filter(request => request.method === 'POST' && request.path.endsWith(path))).toHaveLength(0)
+      expect(intentResponses.filter(response => response.method === 'POST'
+        && response.path === `${intentCollectionPath}/${preparedIntent.id}/acknowledge`)).toHaveLength(1)
+      expect(businessRequestCount).toBe(1)
+      expect(prepareRequestCount).toBe(1)
     } catch (failure) {
-      await Promise.all(pendingIntentResponses)
+      await Promise.all(responseCaptureTasks)
       const visibleMessages = await recoveryPage.locator('[role="alert"], [role="status"]').allTextContents()
       throw new Error(`${String(failure)}\nRecovery intent API responses: ${JSON.stringify(intentResponses)}\nVisible messages: ${JSON.stringify(visibleMessages)}`, { cause: failure })
     } finally {
+      recoveryPage.off('request', captureRecoveryRequest)
       recoveryPage.off('response', captureIntentResponse)
     }
     return recoveryPage
   } finally {
     if (!page.isClosed()) await page.unroute(routePattern, dropResponse)
+    page.off('request', captureInitialRequest)
+    page.off('response', capturePreparedIntent)
   }
 }
 

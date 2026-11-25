@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
 import type { Store } from '@/api/stores'
 import type { Transfer, TransferQueueItem } from '@/api/transfers'
-import { TenantScope } from '../organizations/tenant-requests'
+import { TenantRequests, TenantScope } from '../organizations/tenant-requests'
 import { OrganizationContext } from '../organizations/organization-context'
 import { CreateTransferPanel, HistoricalTransfersPage, TransferDetailView, TransfersPage } from './transfers-page'
 import { reconcileTransferSummaries } from './transfer-summary-reconciliation'
@@ -34,7 +34,8 @@ vi.mock('@/api/lots', () => ({ getLot: apiMocks.lot }))
 vi.mock('@/api/stores', () => ({ getStore: apiMocks.getStore, listStores: apiMocks.stores }))
 vi.mock('@/api/configuration', () => ({ lookupLane: apiMocks.lane }))
 vi.mock('@/components/app-link', () => ({ AppLink: ({ href, children, ...props }: React.ComponentProps<'a'>) => <a href={href} {...props}>{children}</a> }))
-vi.mock('@/api/transfers', () => ({
+vi.mock('@/api/transfers', async importOriginal => ({
+  ...await importOriginal<typeof import('@/api/transfers')>(),
   executeTransferCommand: apiMocks.command,
   getTransfer: vi.fn(),
   getTransferCapabilities: apiMocks.capabilities,
@@ -86,16 +87,16 @@ function queueSummary(overrides: Partial<TransferQueueItem> = {}): TransferQueue
 }
 
 function renderWithTenant(element: React.ReactNode, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
-  return { ...render(<QueryClientProvider client={queryClient}><TenantScope.Provider value={['tenant', orgId, 'actor-1']}>{element}</TenantScope.Provider></QueryClientProvider>), queryClient }
+  return { ...render(<QueryClientProvider client={queryClient}><TenantScope.Provider value={['tenant', orgId, 'actor-1']}><TenantRequests.Provider value={() => new AbortController().signal}>{element}</TenantRequests.Provider></TenantScope.Provider></QueryClientProvider>), queryClient }
 }
 
 function renderTransfersWorkspace(role = 'ORG_ADMIN', scope: readonly ['tenant', string, string] = ['tenant', orgId, 'actor-1']) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const organization = { id: orgId, role } as never
   const rendered = render(<QueryClientProvider client={queryClient}>
-    <TenantScope.Provider value={scope}><OrganizationContext.Provider value={organization}>
+    <TenantScope.Provider value={scope}><TenantRequests.Provider value={() => new AbortController().signal}><OrganizationContext.Provider value={organization}>
       <TransfersPage />
-    </OrganizationContext.Provider></TenantScope.Provider>
+    </OrganizationContext.Provider></TenantRequests.Provider></TenantScope.Provider>
   </QueryClientProvider>)
   return { ...rendered, queryClient }
 }
@@ -228,7 +229,7 @@ it('keeps stale queue results visible and labels them when a background refresh 
   const user = userEvent.setup()
   apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
   apiMocks.queue.mockImplementationOnce(async () => ({ items: [queueSummary({ id: 'transfer-stale' })], nextCursor: null, hasMore: false }))
-    .mockRejectedValueOnce(new Error('refresh failed'))
+    .mockRejectedValueOnce(new ApiError(new Response(null, { status: 503 }), { code: 'SERVICE_UNAVAILABLE' } as never))
   renderTransfersWorkspace()
 
   const queue = await screen.findByRole('region', { name: 'Transfer queue' })
@@ -238,6 +239,69 @@ it('keeps stale queue results visible and labels them when a background refresh 
   expect(within(queue).getByText('Showing previously loaded transfers; the latest refresh failed.')).toBeInTheDocument()
   expect(within(queue).getByText(/transfer-stale/)).toBeInTheDocument()
 })
+
+it.each((['queue', 'transit', 'evidence'] as const).flatMap(dataset => [403, 404].map(status => ({ dataset, status }))))(
+  'hides cached transfer, custody and evidence records after a $status denial in the $dataset read until fresh access succeeds', async ({ dataset, status }) => {
+    const user = userEvent.setup()
+    const freshStoreRead = Promise.withResolvers<{ items: Store[], hasMore: false }>()
+    let workspaceStoreReads = 0
+    apiMocks.stores.mockImplementation(async (_org, _status, _search, _offset, _signal, pageSize) => {
+      if (pageSize !== undefined) return { items: [store('source', ['READ_TRANSFERS'])], hasMore: false }
+      workspaceStoreReads++
+      return workspaceStoreReads === 1 ? { items: [store('source', ['READ_TRANSFERS'])], hasMore: false } : freshStoreRead.promise
+    })
+    const staleTransfer = queueSummary({ id: 'transfer-cached-before-denial' })
+    const freshTransfer = queueSummary({ id: 'transfer-fresh-after-denial', status: 'PARTIALLY_RECEIVED', version: 5 })
+    const staleTransit = { transferId: staleTransfer.id, lineId: 'stale-line', outstanding: 3, ageSeconds: 120, dispatchedAt: '2026-11-20T10:00:00Z' }
+    const freshTransit = { transferId: freshTransfer.id, lineId: 'fresh-line', outstanding: 2, ageSeconds: 60, dispatchedAt: '2026-11-20T10:00:00Z' }
+    const staleEvidence = { id: 'stale-evidence-record', transferId: staleTransfer.id, type: 'STALE_EVIDENCE', resolutionScope: 'TRANSFER_OPEN', lineSettled: false, transferClosed: false, recordedAt: '2026-11-20T10:00:00Z' }
+    const freshEvidence = { id: 'fresh-evidence-record', transferId: freshTransfer.id, type: 'FRESH_EVIDENCE', resolutionScope: 'TRANSFER_OPEN', lineSettled: false, transferClosed: false, recordedAt: '2026-11-20T11:00:00Z' }
+    const denied = new ApiError(new Response(null, { status }), { code: status === 403 ? 'FORBIDDEN' : 'NOT_FOUND' } as never)
+    let denyNextSelectedRead = false
+    let accessRevalidationStarted = false
+    const selectedRead = dataset === 'queue' ? apiMocks.queue : dataset === 'transit' ? apiMocks.transit : apiMocks.queueEvidence
+    apiMocks.queue.mockImplementation(async () => ({ items: accessRevalidationStarted ? [freshTransfer] : [staleTransfer], nextCursor: null, hasMore: false }))
+    apiMocks.transit.mockImplementation(async () => ({ items: accessRevalidationStarted ? [freshTransit] : [staleTransit], nextCursor: null, hasMore: false }))
+    apiMocks.queueEvidence.mockImplementation(async () => ({ items: accessRevalidationStarted ? [freshEvidence] : [staleEvidence], nextCursor: null, hasMore: false }))
+    selectedRead.mockImplementation(async () => {
+      if (denyNextSelectedRead) {
+        denyNextSelectedRead = false
+        accessRevalidationStarted = true
+        throw denied
+      }
+      return dataset === 'queue' ? { items: accessRevalidationStarted ? [freshTransfer] : [staleTransfer], nextCursor: null, hasMore: false }
+        : dataset === 'transit' ? { items: accessRevalidationStarted ? [freshTransit] : [staleTransit], nextCursor: null, hasMore: false }
+          : { items: accessRevalidationStarted ? [freshEvidence] : [staleEvidence], nextCursor: null, hasMore: false }
+    })
+    const rendered = renderTransfersWorkspace()
+
+    expect(await screen.findByText(/transfer-cached-before-denial/)).toBeInTheDocument()
+    expect(await screen.findByText(/stale-li/)).toBeInTheDocument()
+    expect(await screen.findByText(/STALE_EVIDENCE/)).toBeInTheDocument()
+    denyNextSelectedRead = true
+    if (dataset === 'queue') {
+      await user.click(within(screen.getByRole('region', { name: 'Transfer queue' })).getByRole('button', { name: 'Refresh queue' }))
+    } else {
+      await act(async () => {
+        await rendered.queryClient.refetchQueries({ queryKey: ['tenant', orgId, 'actor-1', 'transfers', dataset === 'transit' ? 'in-transit' : 'evidence'], type: 'active' })
+      })
+    }
+
+    expect(await screen.findByText(/Previously loaded transfer, custody and evidence records are hidden/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry transfer access' })).toBeInTheDocument()
+    expect(screen.queryByText(/transfer-cached-before-denial/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/stale-li/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/STALE_EVIDENCE/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Find a store')).toBeInTheDocument()
+
+    await act(async () => { freshStoreRead.resolve({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false }) })
+    expect(await screen.findByText(/transfer-fresh-after-denial/)).toBeInTheDocument()
+    expect(await screen.findByText(/fresh-li/)).toBeInTheDocument()
+    expect(await screen.findByText(/FRESH_EVIDENCE/)).toBeInTheDocument()
+    expect(screen.queryByText(/transfer-cached-before-denial/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/stale-li/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/STALE_EVIDENCE/)).not.toBeInTheDocument()
+  })
 
 it('does not show a late queue page after the operator changes the store filter', async () => {
   const user = userEvent.setup()
@@ -273,9 +337,9 @@ it('discards a late transfer read after the authenticated actor scope changes', 
   await firstReadStarted.promise
 
   rendered.rerender(<QueryClientProvider client={rendered.queryClient}>
-    <TenantScope.Provider value={['tenant', orgId, 'actor-2']}><OrganizationContext.Provider value={{ id: orgId, role: 'ORG_ADMIN' } as never}>
+    <TenantScope.Provider value={['tenant', orgId, 'actor-2']}><TenantRequests.Provider value={() => new AbortController().signal}><OrganizationContext.Provider value={{ id: orgId, role: 'ORG_ADMIN' } as never}>
       <TransfersPage />
-    </OrganizationContext.Provider></TenantScope.Provider>
+    </OrganizationContext.Provider></TenantRequests.Provider></TenantScope.Provider>
   </QueryClientProvider>)
   const queue = await screen.findByRole('region', { name: 'Transfer queue' })
   expect(await within(queue).findByText(/transfer-actor-two/)).toBeInTheDocument()
@@ -284,9 +348,96 @@ it('discards a late transfer read after the authenticated actor scope changes', 
   expect(within(queue).getByText(/transfer-actor-two/)).toBeInTheDocument()
 })
 
+it('does not publish a late recovery inspection after the authenticated actor scope changes', async () => {
+  const user = userEvent.setup()
+  const intent = { id: 'intent-actor-scope', operation: 'CLOSE', transferId: 'transfer-actor-scope',
+    requestId: '8529e39b-f6a2-49ca-a29d-73fc208d9863', state: 'PREPARED',
+    preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close', redacted: false }
+  const inspection = { ...intent, executionStatus: 'PREPARED', payload: { requestId: intent.requestId, expectedVersion: 4 }, committedOutcome: null }
+  const recoveryListRead = Promise.withResolvers<{ items: typeof intent[] }>()
+  const inspectionRead = Promise.withResolvers<typeof inspection>()
+  const inspectionStarted = Promise.withResolvers<void>()
+  let pendingListCalls = 0
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.pendingIntents.mockImplementation(async () => {
+    pendingListCalls++
+    if (pendingListCalls === 1) return { items: [intent] }
+    if (pendingListCalls === 2) return recoveryListRead.promise
+    return { items: [] }
+  })
+  apiMocks.inspectIntent.mockImplementation(() => {
+    inspectionStarted.resolve()
+    return inspectionRead.promise
+  })
+  const rendered = renderTransfersWorkspace('ORG_ADMIN', ['tenant', orgId, 'actor-1'])
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await waitFor(() => expect(pendingListCalls).toBe(2))
+  await act(async () => { recoveryListRead.resolve({ items: [intent] }) })
+  await inspectionStarted.promise
+
+  rendered.rerender(<QueryClientProvider client={rendered.queryClient}>
+    <TenantScope.Provider value={['tenant', orgId, 'actor-2']}><TenantRequests.Provider value={() => new AbortController().signal}><OrganizationContext.Provider value={{ id: orgId, role: 'ORG_ADMIN' } as never}>
+      <TransfersPage />
+    </OrganizationContext.Provider></TenantRequests.Provider></TenantScope.Provider>
+  </QueryClientProvider>)
+  await waitFor(() => expect(pendingListCalls).toBe(3))
+  await act(async () => { inspectionRead.resolve(inspection) })
+
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Recover saved transfer command' })).not.toBeInTheDocument())
+  expect(screen.queryByText(intent.requestId)).not.toBeInTheDocument()
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.acknowledgeIntent).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+})
+
+it('switches to a different server pending intent while an older inspection is still loading', async () => {
+  const user = userEvent.setup()
+  const intent = { id: 'intent-being-inspected', operation: 'CLOSE', transferId: 'transfer-old',
+    requestId: '8529e39b-f6a2-49ca-a29d-73fc208d9863', state: 'PREPARED',
+    preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close', redacted: false }
+  const nextIntent = { ...intent, id: 'intent-now-pending', operation: 'RECEIVE', transferId: 'transfer-new',
+    requestId: '3be09d14-c277-43cf-8f82-227741419b81', subject: 'Transfer receipt' }
+  const inspection = { ...intent, executionStatus: 'PREPARED', payload: { requestId: intent.requestId, expectedVersion: 4 }, committedOutcome: null }
+  const recoveryListRead = Promise.withResolvers<{ items: typeof intent[] }>()
+  const inspectionRead = Promise.withResolvers<typeof inspection>()
+  const inspectionStarted = Promise.withResolvers<void>()
+  let pendingListCalls = 0
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.pendingIntents.mockImplementation(async () => {
+    pendingListCalls++
+    if (pendingListCalls === 1) return { items: [intent] }
+    return recoveryListRead.promise
+  })
+  apiMocks.inspectIntent.mockImplementation(() => {
+    inspectionStarted.resolve()
+    return inspectionRead.promise
+  })
+  const rendered = renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await waitFor(() => expect(pendingListCalls).toBe(2))
+  await act(async () => { recoveryListRead.resolve({ items: [intent] }) })
+  await inspectionStarted.promise
+
+  await act(async () => {
+    rendered.queryClient.setQueryData(['tenant', orgId, 'actor-1', 'transfer-command-intents', 'pending'], { items: [nextIntent] })
+  })
+  await waitFor(() => expect(recovery).toHaveTextContent(nextIntent.requestId))
+  await act(async () => { inspectionRead.resolve(inspection) })
+
+  expect(recovery).toHaveTextContent(nextIntent.requestId)
+  expect(within(recovery).queryByText(intent.requestId)).not.toBeInTheDocument()
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.acknowledgeIntent).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+})
+
 it('keeps a committed CLOSE distinct from lost acknowledgement and reconciles an already acknowledged intent without another write', async () => {
   const user = userEvent.setup()
-  const intent = { id: 'intent-close', operation: 'CLOSE', requestId: 'request-close', state: 'SUBMITTED', preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close' }
+  const intent = { id: 'intent-close', operation: 'CLOSE', transferId: 'transfer-close', requestId: '8529e39b-f6a2-49ca-a29d-73fc208d9863', state: 'SUBMITTED', preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close', redacted: false }
   const committed = {
     id: intent.id, operation: 'CLOSE', transferId: 'transfer-close', requestId: intent.requestId,
     state: 'SUBMITTED', preparedAt: intent.preparedAt, executionStatus: 'COMMITTED_AWAITING_ACKNOWLEDGEMENT',
@@ -294,7 +445,8 @@ it('keeps a committed CLOSE distinct from lost acknowledgement and reconciles an
     committedOutcome: { transferId: 'transfer-close', status: 'CLOSED_WITH_DISCREPANCY', version: 10 }, redacted: false,
   }
   apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS', 'REQUEST_TRANSFER', 'READ_INVENTORY'])], hasMore: false })
-  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [intent] }).mockResolvedValue({ items: [] })
+  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [intent] }).mockResolvedValueOnce({ items: [intent] })
+    .mockResolvedValueOnce({ items: [intent] }).mockResolvedValueOnce({ items: [intent] }).mockResolvedValue({ items: [] })
   apiMocks.inspectIntent.mockResolvedValueOnce(committed).mockResolvedValueOnce(committed).mockResolvedValueOnce({
     ...committed, executionStatus: 'ACKNOWLEDGED', state: 'ACKNOWLEDGED',
   })
@@ -303,20 +455,232 @@ it('keeps a committed CLOSE distinct from lost acknowledgement and reconciles an
 
   const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
   await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
-  expect(await within(recovery).findByText(/Recovered Closed with discrepancy/)).toBeInTheDocument()
-  expect(await within(recovery).findByRole('alert')).toHaveTextContent('transfer is committed, but acknowledgement could not be confirmed')
+  expect(await within(recovery).findByRole('status')).toHaveTextContent('business result is committed, but acknowledgement remains unconfirmed')
   expect(apiMocks.command).not.toHaveBeenCalled()
   expect(apiMocks.prepareIntent).not.toHaveBeenCalled()
   await user.click(await screen.findByRole('button', { name: 'New transfer request' }))
   expect(screen.getByRole('button', { name: 'Resolve saved command first' })).toBeDisabled()
 
   await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
-  expect(await screen.findByText(/Recovered Closed with discrepancy from the saved command record/)).toBeInTheDocument()
   await waitFor(() => expect(screen.queryByRole('region', { name: 'Recover saved transfer command' })).not.toBeInTheDocument())
+  expect(screen.getByText('The saved command is acknowledged and no longer pending.')).toBeInTheDocument()
   expect(apiMocks.acknowledgeIntent).toHaveBeenCalledTimes(1)
   expect(apiMocks.inspectIntent).toHaveBeenCalledTimes(3)
   expect(apiMocks.command).not.toHaveBeenCalled()
   expect(screen.getByRole('button', { name: 'Create transfer request' })).toBeDisabled()
+})
+
+it.each([
+  { executionStatus: 'REJECTED', redacted: false },
+  { executionStatus: 'REJECTED', redacted: true },
+  { executionStatus: 'CONFLICTED', redacted: false },
+  { executionStatus: 'CONFLICTED', redacted: true },
+] as const)('reconciles a cross-session $executionStatus intent from a fresh pending list without repeating a write', async ({ executionStatus, redacted }) => {
+  const user = userEvent.setup()
+  const intent = { id: `intent-${executionStatus}-${redacted}`, operation: redacted ? null : 'CLOSE',
+    transferId: redacted ? null : 'transfer-terminal', requestId: redacted ? null : '8529e39b-f6a2-49ca-a29d-73fc208d9863',
+    state: executionStatus, preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close', redacted }
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS', 'REQUEST_TRANSFER', 'READ_INVENTORY'])], hasMore: false })
+  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [intent] }).mockResolvedValue({ items: [] })
+  apiMocks.inspectIntent.mockResolvedValue({
+    id: intent.id, operation: redacted ? null : 'CLOSE', transferId: redacted ? null : 'transfer-terminal',
+    requestId: redacted ? null : intent.requestId, state: executionStatus, preparedAt: intent.preparedAt,
+    executionStatus, payload: redacted ? null : { requestId: intent.requestId, expectedVersion: 9 },
+    committedOutcome: null, redacted,
+  })
+  renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Recover saved transfer command' })).not.toBeInTheDocument())
+  expect(await screen.findByRole('status')).toHaveTextContent(executionStatus === 'REJECTED' ? 'rejected' : 'conflicted')
+  expect(apiMocks.pendingIntents).toHaveBeenCalledTimes(3)
+  expect(apiMocks.acknowledgeIntent).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.prepareIntent).not.toHaveBeenCalled()
+})
+
+it('discards previously readable saved-request details when the server redacts the current intent', async () => {
+  const user = userEvent.setup()
+  const requestId = '8529e39b-f6a2-49ca-a29d-73fc208d9863'
+  const prepared = { id: 'intent-access-change', operation: 'CLOSE', transferId: 'transfer-private', requestId,
+    state: 'PREPARED', preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close', redacted: false }
+  const redacted = { ...prepared, operation: null, transferId: null, requestId: null, redacted: true }
+  const readableInspection = { ...prepared, executionStatus: 'PREPARED', payload: { requestId, expectedVersion: 7, reason: 'PRIVATE_PAYLOAD_MARKER' }, committedOutcome: null }
+  const redactedInspection = { ...redacted, executionStatus: 'PREPARED', payload: null, committedOutcome: null }
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [prepared] })
+    .mockResolvedValueOnce({ items: [prepared] }).mockResolvedValueOnce({ items: [redacted] })
+  apiMocks.inspectIntent.mockResolvedValueOnce(readableInspection).mockResolvedValueOnce(redactedInspection)
+  renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  expect(within(recovery).getByText(new RegExp(requestId))).toBeInTheDocument()
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  expect(await within(recovery).findByRole('button', { name: 'Retry exact saved command' })).toBeInTheDocument()
+  expect(within(recovery).getByText(new RegExp(requestId))).toBeInTheDocument()
+
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  expect(await within(recovery).findByText(/request details stay hidden/i)).toBeInTheDocument()
+  expect(within(recovery).queryByText(new RegExp(requestId))).not.toBeInTheDocument()
+  expect(within(recovery).queryByText(/PRIVATE_PAYLOAD_MARKER|transfer-private|CLOSE/)).not.toBeInTheDocument()
+  expect(within(recovery).queryByRole('button', { name: 'Retry exact saved command' })).not.toBeInTheDocument()
+  expect(within(recovery).getByRole('button', { name: 'Resolve without transfer details' })).toBeInTheDocument()
+  expect(within(recovery).queryByRole('link')).not.toBeInTheDocument()
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.acknowledgeIntent).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+})
+
+it('keeps a terminal intent locked when its fresh pending read fails, then releases after a successful reconciliation', async () => {
+  const user = userEvent.setup()
+  const intent = { id: 'intent-terminal-refresh', operation: 'CLOSE', transferId: 'transfer-terminal',
+    requestId: '8529e39b-f6a2-49ca-a29d-73fc208d9863', state: 'SUBMITTED',
+    preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close', redacted: false }
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [intent] }).mockResolvedValueOnce({ items: [intent] })
+    .mockRejectedValueOnce(new Error('pending intent refresh unavailable'))
+    .mockResolvedValueOnce({ items: [intent] }).mockResolvedValueOnce({ items: [] })
+  apiMocks.inspectIntent.mockResolvedValue({
+    id: intent.id, operation: intent.operation, transferId: intent.transferId, requestId: intent.requestId,
+    state: intent.state, preparedAt: intent.preparedAt, executionStatus: 'REJECTED',
+    payload: { requestId: intent.requestId, expectedVersion: 7 }, committedOutcome: null, redacted: false,
+  })
+  renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  expect(await within(recovery).findByRole('status')).toHaveTextContent('Keep the command blocked')
+  expect(recovery).toBeInTheDocument()
+  expect(within(recovery).getByRole('button', { name: 'Inspect saved outcome' })).toBeEnabled()
+  expect(apiMocks.command).not.toHaveBeenCalled()
+
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Recover saved transfer command' })).not.toBeInTheDocument())
+  expect(screen.getByText(/The saved command was rejected before committing/)).toBeInTheDocument()
+  expect(apiMocks.pendingIntents).toHaveBeenCalledTimes(5)
+  expect(apiMocks.acknowledgeIntent).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+  expect(apiMocks.command).not.toHaveBeenCalled()
+})
+
+it('keeps an exact retry blocked when its result and pending-list refresh both fail', async () => {
+  const user = userEvent.setup()
+  const intent = { id: 'intent-exact-retry', operation: 'CLOSE', transferId: 'transfer-retry',
+    requestId: '8529e39b-f6a2-49ca-a29d-73fc208d9863', state: 'PREPARED',
+    preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close', redacted: false }
+  const inspection = { ...intent, executionStatus: 'PREPARED', payload: { requestId: intent.requestId, expectedVersion: 7 }, committedOutcome: null }
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS', 'REQUEST_TRANSFER', 'READ_INVENTORY'])], hasMore: false })
+  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [intent] }).mockResolvedValueOnce({ items: [intent] })
+    .mockResolvedValueOnce({ items: [intent] }).mockRejectedValueOnce(new Error('pending refresh unavailable'))
+  apiMocks.inspectIntent.mockResolvedValue(inspection)
+  apiMocks.markIntentSubmitted.mockResolvedValue({ id: intent.id, state: 'SUBMITTED', redacted: false })
+  apiMocks.command.mockRejectedValueOnce(new Error('connection lost after exact command submission'))
+  renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await user.click(await within(recovery).findByRole('button', { name: 'Retry exact saved command' }))
+
+  expect(await within(recovery).findByRole('status')).toHaveTextContent('Keep the command blocked')
+  expect(recovery).toBeInTheDocument()
+  expect(within(recovery).getByRole('button', { name: 'Inspect saved outcome' })).toBeEnabled()
+  expect(apiMocks.markIntentSubmitted).toHaveBeenCalledTimes(1)
+  expect(apiMocks.command).toHaveBeenCalledTimes(1)
+  expect(apiMocks.acknowledgeIntent).not.toHaveBeenCalled()
+  expect(apiMocks.resolveIntent).not.toHaveBeenCalled()
+})
+
+it('keeps a redacted command blocked when safe resolution and its pending refresh both fail', async () => {
+  const user = userEvent.setup()
+  const intent = { id: 'intent-redacted-resolution', operation: null, transferId: null, requestId: null,
+    state: 'PREPARED', preparedAt: '2026-11-20T10:00:00Z', subject: 'Saved command', redacted: true }
+  const inspection = { ...intent, executionStatus: 'PREPARED', payload: null, committedOutcome: null }
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [intent] }).mockResolvedValueOnce({ items: [intent] })
+    .mockResolvedValueOnce({ items: [intent] }).mockRejectedValueOnce(new Error('pending refresh unavailable'))
+  apiMocks.inspectIntent.mockResolvedValue(inspection)
+  apiMocks.resolveIntent.mockRejectedValueOnce(new Error('safe resolution unavailable'))
+  renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await user.click(await within(recovery).findByRole('button', { name: 'Resolve without transfer details' }))
+
+  expect(await within(recovery).findByRole('status')).toHaveTextContent('Keep the command blocked')
+  expect(recovery).toBeInTheDocument()
+  expect(within(recovery).queryByRole('button', { name: 'Resolve without transfer details' })).not.toBeInTheDocument()
+  expect(within(recovery).getByRole('button', { name: 'Inspect saved outcome' })).toBeEnabled()
+  expect(apiMocks.resolveIntent).toHaveBeenCalledTimes(1)
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.acknowledgeIntent).not.toHaveBeenCalled()
+})
+
+it('reconciles successful redacted resolution after its pending refresh fails without resolving twice', async () => {
+  const user = userEvent.setup()
+  const intent = { id: 'intent-redacted-resolution-retry', operation: null, transferId: null, requestId: null,
+    state: 'PREPARED', preparedAt: '2026-11-20T10:00:00Z', subject: 'Saved command', redacted: true }
+  const prepared = { ...intent, executionStatus: 'PREPARED', payload: null, committedOutcome: null }
+  const rejected = { ...intent, executionStatus: 'REJECTED', state: 'REJECTED', payload: null, committedOutcome: null }
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [intent] }).mockResolvedValueOnce({ items: [intent] })
+    .mockResolvedValueOnce({ items: [intent] }).mockRejectedValueOnce(new Error('post-resolution pending refresh unavailable'))
+    .mockResolvedValueOnce({ items: [] }).mockResolvedValueOnce({ items: [] })
+  apiMocks.inspectIntent.mockResolvedValueOnce(prepared).mockResolvedValueOnce(prepared)
+    .mockResolvedValueOnce(rejected).mockResolvedValueOnce(rejected)
+  apiMocks.resolveIntent.mockResolvedValueOnce({ id: intent.id, state: 'REJECTED', redacted: true })
+  renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await user.click(await within(recovery).findByRole('button', { name: 'Resolve without transfer details' }))
+  expect(await within(recovery).findByRole('status')).toHaveTextContent('Keep the command blocked')
+  expect(recovery).toBeInTheDocument()
+  expect(apiMocks.resolveIntent).toHaveBeenCalledTimes(1)
+  expect(apiMocks.command).not.toHaveBeenCalled()
+
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Recover saved transfer command' })).not.toBeInTheDocument())
+  expect(screen.getByText('The saved command is rejected. Transfer details remain hidden.')).toBeInTheDocument()
+  expect(apiMocks.resolveIntent).toHaveBeenCalledTimes(1)
+  expect(apiMocks.acknowledgeIntent).not.toHaveBeenCalled()
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.pendingIntents).toHaveBeenCalledTimes(6)
+})
+
+it('reconciles an acknowledged result after a failed pending refresh without acknowledging twice', async () => {
+  const user = userEvent.setup()
+  const intent = { id: 'intent-ack-refresh', operation: 'CLOSE', transferId: 'transfer-ack',
+    requestId: '8529e39b-f6a2-49ca-a29d-73fc208d9863', state: 'SUBMITTED',
+    preparedAt: '2026-11-20T10:00:00Z', subject: 'Transfer close', redacted: false }
+  const committed = { ...intent, executionStatus: 'COMMITTED_AWAITING_ACKNOWLEDGEMENT',
+    payload: { requestId: intent.requestId, expectedVersion: 7 },
+    committedOutcome: { transferId: intent.transferId, status: 'CLOSED_WITH_DISCREPANCY', version: 8 } }
+  apiMocks.stores.mockResolvedValue({ items: [store('source', ['READ_TRANSFERS'])], hasMore: false })
+  apiMocks.pendingIntents.mockResolvedValueOnce({ items: [intent] }).mockResolvedValueOnce({ items: [intent] })
+    .mockRejectedValueOnce(new Error('acknowledged pending refresh unavailable'))
+    .mockResolvedValueOnce({ items: [] }).mockResolvedValueOnce({ items: [] })
+  apiMocks.inspectIntent.mockResolvedValueOnce(committed).mockResolvedValueOnce({
+    ...committed, state: 'ACKNOWLEDGED', executionStatus: 'ACKNOWLEDGED',
+  })
+  apiMocks.acknowledgeIntent.mockResolvedValueOnce({ id: intent.id, state: 'ACKNOWLEDGED', redacted: false })
+  renderTransfersWorkspace()
+
+  const recovery = await screen.findByRole('region', { name: 'Recover saved transfer command' })
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  expect(await within(recovery).findByRole('status')).toHaveTextContent('Keep the command blocked')
+  expect(recovery).toBeInTheDocument()
+  expect(apiMocks.acknowledgeIntent).toHaveBeenCalledTimes(1)
+  expect(apiMocks.command).not.toHaveBeenCalled()
+
+  await user.click(within(recovery).getByRole('button', { name: 'Inspect saved outcome' }))
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Recover saved transfer command' })).not.toBeInTheDocument())
+  expect(screen.getByText('The saved command is acknowledged and no longer pending.')).toBeInTheDocument()
+  expect(apiMocks.acknowledgeIntent).toHaveBeenCalledTimes(1)
+  expect(apiMocks.command).not.toHaveBeenCalled()
+  expect(apiMocks.pendingIntents).toHaveBeenCalledTimes(5)
 })
 
 it('renders one queue card using the newest summary returned by different store requests', async () => {
@@ -362,9 +726,9 @@ it('does not request exhausted stores again when queue, transit and evidence pag
         : { items: [evidence('transfer-B-2')], nextCursor: null, hasMore: false })
   const organization = { id: orgId, role: 'ORG_ADMIN' } as never
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <TenantScope.Provider value={['tenant', orgId, 'actor-1']}><OrganizationContext.Provider value={organization}>
+    <TenantScope.Provider value={['tenant', orgId, 'actor-1']}><TenantRequests.Provider value={() => new AbortController().signal}><OrganizationContext.Provider value={organization}>
       <TransfersPage />
-    </OrganizationContext.Provider></TenantScope.Provider>
+    </OrganizationContext.Provider></TenantRequests.Provider></TenantScope.Provider>
   </QueryClientProvider>)
 
   expect(await screen.findByRole('button', { name: 'Load more transfers' })).toBeInTheDocument()
@@ -396,9 +760,9 @@ it('finds historical transfers without active stores and pages authorized archiv
       : { items: [second], nextCursor: null, hasMore: false })
   const organization = { id: orgId, role: 'ORG_ADMIN' } as never
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <TenantScope.Provider value={['tenant', orgId, 'actor-1']}><OrganizationContext.Provider value={organization}>
+    <TenantScope.Provider value={['tenant', orgId, 'actor-1']}><TenantRequests.Provider value={() => new AbortController().signal}><OrganizationContext.Provider value={organization}>
       <HistoricalTransfersPage />
-    </OrganizationContext.Provider></TenantScope.Provider>
+    </OrganizationContext.Provider></TenantRequests.Provider></TenantScope.Provider>
   </QueryClientProvider>)
 
   expect(await screen.findByRole('heading', { name: 'Historical transfers' })).toBeInTheDocument()
@@ -509,9 +873,9 @@ it('limits combined queue, transit and evidence fan-out while loading every stor
   const organization = { id: orgId, role: 'ORG_ADMIN' } as never
 
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <TenantScope.Provider value={['tenant', orgId, 'actor-1']}><OrganizationContext.Provider value={organization}>
+    <TenantScope.Provider value={['tenant', orgId, 'actor-1']}><TenantRequests.Provider value={() => new AbortController().signal}><OrganizationContext.Provider value={organization}>
       <TransfersPage />
-    </OrganizationContext.Provider></TenantScope.Provider>
+    </OrganizationContext.Provider></TenantRequests.Provider></TenantScope.Provider>
   </QueryClientProvider>)
 
   await waitFor(() => expect(completed).toBe(75))
