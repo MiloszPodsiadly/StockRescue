@@ -743,8 +743,8 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       setCommandMessage(operation, 'The server changed access while the command was being inspected. Transfer details remain hidden.')
       return
     }
-    if (inspection.redacted && inspection.executionStatus !== 'REJECTED' && inspection.executionStatus !== 'CONFLICTED'
-      && inspection.executionStatus !== 'ACKNOWLEDGED') {
+    if (inspection.redacted && (inspection.executionStatus === 'PREPARED'
+      || inspection.executionStatus === 'SUBMITTED_AWAITING_OUTCOME')) {
       setRecoveryView(operation, { kind: 'inspection', inspection, redacted: true })
       setCommandMessage(operation, 'Current access no longer permits these request details. The saved command remains blocked while recovery is checked.')
       return
