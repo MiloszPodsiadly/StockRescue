@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { AppLink } from '@/components/app-link'
@@ -35,6 +35,7 @@ import type { StoreCursorStates } from './transfer-pagination'
 type DraftTransferLine = { id: string, sourcePositionId: string, destinationLocationId: string, quantity: string }
 type PendingReturnLine = { lineId: string, requestId: string, requestReference: string, requestedQuantity: number, settledQuantity: number, unsettledQuantity: number }
 type RecoveryLock = { scopeKey: string, intentId: string }
+type RecoveryRedaction = RecoveryLock
 type RecoveryView = {
   scopeKey: string
   intentId: string
@@ -165,6 +166,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
   const scopeKey = JSON.stringify(scope)
   const scopeKeyRef = useRef(scopeKey)
   scopeKeyRef.current = scopeKey
+  const activeIntentIdRef = useRef<string | null>(null)
   const pendingReadToken = useRef(0)
   const operationToken = useRef(0)
   const transferRequestScheduler = useMemo(() => new TransferRequestScheduler(8), [])
@@ -177,10 +179,38 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
   const transferAccessDenialHandled = useRef(false)
   const [commandBusyState, setCommandBusyState] = useState<{ scopeKey: string, token: number } | null>(null)
   const [recoveryLockState, setRecoveryLockState] = useState<RecoveryLock | null>(null)
+  const [recoveryRedactionState, setRecoveryRedactionState] = useState<RecoveryRedaction | null>(null)
   const [recoveryViewState, setRecoveryViewState] = useState<RecoveryView | null>(null)
   const [commandMessageState, setCommandMessageState] = useState<RecoveryMessage | null>(null)
   const [pendingReadState, setPendingReadState] = useState<PendingReadState | null>(null)
   const pendingReadStateRef = useRef<PendingReadState | null>(null)
+  const recoveryRedactionRef = useRef<RecoveryRedaction | null>(null)
+  const updateRecoveryRedaction = useCallback((next: RecoveryRedaction | null) => {
+    recoveryRedactionRef.current = next
+    setRecoveryRedactionState(next)
+  }, [])
+  const latchRecoveryRedaction = useCallback((requestScope: string, intentId: string) => {
+    if (scopeKeyRef.current !== requestScope) return
+    const current = recoveryRedactionRef.current
+    if (current?.scopeKey === requestScope && current.intentId === intentId) return
+    updateRecoveryRedaction({ scopeKey: requestScope, intentId })
+  }, [updateRecoveryRedaction])
+  const clearRecoveryRedaction = useCallback((requestScope: string, intentId: string) => {
+    const current = recoveryRedactionRef.current
+    if (scopeKeyRef.current === requestScope && current?.scopeKey === requestScope && current.intentId === intentId) {
+      updateRecoveryRedaction(null)
+    }
+  }, [updateRecoveryRedaction])
+  const applyPendingSummaryRedaction = useCallback((requestScope: string, summary: TransferCommandIntentSummary | null) => {
+    if (scopeKeyRef.current !== requestScope) return
+    const current = recoveryRedactionRef.current
+    if (current && current.scopeKey !== requestScope) updateRecoveryRedaction(null)
+    if (summary?.redacted) {
+      latchRecoveryRedaction(requestScope, summary.id)
+    } else if (summary && current?.scopeKey === requestScope && current.intentId !== summary.id) {
+      updateRecoveryRedaction(null)
+    }
+  }, [latchRecoveryRedaction, updateRecoveryRedaction])
   function recordPendingReadState(next: PendingReadState) {
     pendingReadStateRef.current = next
     setPendingReadState(next)
@@ -189,6 +219,9 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     }
   }
   const pendingIntentKey = useMemo(() => [...scope, 'transfer-command-intents', 'pending'] as const, [scope])
+  useEffect(() => {
+    if (recoveryRedactionRef.current && recoveryRedactionRef.current.scopeKey !== scopeKey) updateRecoveryRedaction(null)
+  }, [scopeKey, updateRecoveryRedaction])
   const pendingIntents = useQuery({
     queryKey: pendingIntentKey,
     queryFn: async ({ signal }) => {
@@ -202,7 +235,8 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
         recordPendingReadState({ scopeKey: requestedScope, token, status: 'success' })
         return { scopeKey: requestedScope, token, page }
       } catch (error) {
-        if (scopeKeyRef.current === requestedScope && pendingReadToken.current === token) {
+        if (scopeKeyRef.current === requestedScope && pendingReadToken.current === token && !signal.aborted) {
+          if (transferAccessDenied(error) && activeIntentIdRef.current) latchRecoveryRedaction(requestedScope, activeIntentIdRef.current)
           recordPendingReadState({ scopeKey: requestedScope, token, status: 'error' })
         }
         throw error
@@ -220,14 +254,14 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
   const activeIntentId = localRecoveryLock && pendingSummary && localRecoveryLock.intentId !== pendingSummary.id
     ? pendingSummary.id : localRecoveryLock?.intentId ?? pendingSummary?.id ?? null
   const activeSummary = pendingSummary?.id === activeIntentId ? pendingSummary : null
+  activeIntentIdRef.current = activeIntentId
   const recoveryView = recoveryViewState?.scopeKey === scopeKey && recoveryViewState.intentId === activeIntentId ? recoveryViewState : null
   const recoveryInspection = recoveryView?.kind === 'inspection' ? recoveryView.inspection : null
   const authorizedInspection = recoveryInspection && activeSummary
     && inspectionIsConsistent(recoveryInspection) && inspectionMatchesSummary(recoveryInspection, activeSummary)
     ? recoveryInspection : null
-  const recoveryRedacted = Boolean(activeSummary?.redacted || recoveryInspection?.redacted || recoveryView?.redacted)
-  const activeIntentIdRef = useRef(activeIntentId)
-  activeIntentIdRef.current = activeIntentId
+  const recoveryRedacted = Boolean(activeSummary?.redacted || recoveryInspection?.redacted || recoveryView?.redacted
+    || recoveryRedactionState?.scopeKey === scopeKey && recoveryRedactionState.intentId === activeIntentId)
   const commandBusy = commandBusyState?.scopeKey === scopeKey && commandBusyState.token === operationToken.current
   const commandMessage = commandMessageState?.scopeKey === scopeKey
     && (!activeIntentId || commandMessageState.intentId === activeIntentId) ? commandMessageState : null
@@ -335,6 +369,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       const summary = cached.page.items[0] ?? null
       setRecoveryLockState(current => current?.scopeKey === currentScope && summary && current.intentId !== summary.id
         ? { scopeKey: currentScope, intentId: summary.id } : current)
+      applyPendingSummaryRedaction(currentScope, summary)
       setRecoveryViewState(current => {
         if (!current || current.scopeKey !== currentScope) return current
         if (summary && current.intentId !== summary.id) return null
@@ -351,7 +386,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       }
     })
     return unsubscribe
-  }, [client, pendingIntentKey, scopeKey])
+  }, [applyPendingSummaryRedaction, client, pendingIntentKey, scopeKey])
 
   async function refreshTransferData() {
     await client.invalidateQueries({ queryKey: scope, predicate: query => !query.queryKey.includes('transfer-command-intents') })
@@ -377,6 +412,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
 
   function setRecoveryView(operation: RecoveryOperation, view: Omit<RecoveryView, 'scopeKey' | 'intentId'> | null) {
     if (!operationIsCurrent(operation) || !operation.intentId) return
+    if (view?.redacted) latchRecoveryRedaction(operation.scopeKey, operation.intentId)
     setRecoveryViewState(view ? { ...view, scopeKey: operation.scopeKey, intentId: operation.intentId } : null)
   }
 
@@ -415,6 +451,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       return result
     } catch (error) {
       if (scopeKeyRef.current === requestScope && pendingReadToken.current === token && !signal.aborted) {
+        if (transferAccessDenied(error) && activeIntentIdRef.current) latchRecoveryRedaction(requestScope, activeIntentIdRef.current)
         recordPendingReadState({ scopeKey: requestScope, token, status: 'error' })
         throw error
       }
@@ -428,19 +465,20 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       if (acknowledged.id === intentId && acknowledged.state === 'ACKNOWLEDGED') {
         return { kind: 'acknowledged', redacted: acknowledged.redacted }
       }
-      if (acknowledged.redacted) return { kind: 'unknown', redacted: true }
-    } catch {
+      if (acknowledged.id === intentId && acknowledged.redacted) return { kind: 'unknown', redacted: true }
+    } catch (error) {
+      if (transferAccessDenied(error)) return { kind: 'unknown', redacted: true }
       try {
         const current = await inspectTransferCommandIntent(organizationId, intentId, signal)
-        if (current.id !== intentId || !inspectionIsConsistent(current)) return { kind: 'unknown', redacted: current.redacted }
+        if (current.id !== intentId || !inspectionIsConsistent(current)) return { kind: 'unknown', redacted: false }
         if (current.executionStatus === 'ACKNOWLEDGED') return { kind: 'acknowledged', redacted: current.redacted }
         if (current.executionStatus === 'COMMITTED_AWAITING_ACKNOWLEDGEMENT') {
           return { kind: 'committed-awaiting-acknowledgement', inspection: current }
         }
         if (terminalIntentStatus(current.executionStatus)) return { kind: 'terminal', inspection: current }
         return { kind: 'unknown', redacted: current.redacted }
-      } catch {
-        return { kind: 'unknown', redacted: false }
+      } catch (inspectionError) {
+        return { kind: 'unknown', redacted: transferAccessDenied(inspectionError) }
       }
     }
     return { kind: 'unknown', redacted: false }
@@ -450,6 +488,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     if (!operationIsCurrent(operation)) return
     operationToken.current++
     activeIntentIdRef.current = intent.id
+    applyPendingSummaryRedaction(operation.scopeKey, intent)
     setRecoveryLockState({ scopeKey: operation.scopeKey, intentId: intent.id })
     setRecoveryViewState(null)
     setCommandMessageState(null)
@@ -463,9 +502,9 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     let read: PendingReadResult | null
     try {
       read = await refreshPendingIntents(operation.scopeKey, operation.signal)
-    } catch {
+    } catch (error) {
       if (operationIsCurrent(operation)) {
-        setRecoveryView(operation, { kind: 'unknown' })
+        setRecoveryView(operation, { kind: 'unknown', redacted: transferAccessDenied(error) })
         setCommandMessage(operation, 'The current recovery state could not be confirmed. New commands remain paused; retry the saved-command check.')
       }
       return false
@@ -488,6 +527,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       replaceWithServerPending(operation, current)
       return false
     }
+    if (current?.redacted) latchRecoveryRedaction(operation.scopeKey, intentId)
     if (current) {
       if (current.redacted || redacted) {
         setRecoveryView(operation, { kind: 'unknown' })
@@ -509,6 +549,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       setCommandMessage(operation, 'The server pending list no longer shows this command, but its terminal outcome has not been confirmed.')
       return false
     }
+    clearRecoveryRedaction(operation.scopeKey, intentId)
     setCommandMessage(operation, notice, undefined, true)
     activeIntentIdRef.current = null
     setRecoveryLockState(currentLock => currentLock?.scopeKey === operation.scopeKey && currentLock.intentId === intentId ? null : currentLock)
@@ -517,6 +558,10 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
   }
 
   async function refreshCommittedCommand(operation: RecoveryOperation, outcome: AcknowledgementResult, transferToOpen?: string) {
+    if (!operationIsCurrent(operation) || !operation.intentId) return
+    const outcomeRedacted = outcome.kind === 'acknowledged' || outcome.kind === 'unknown'
+      ? outcome.redacted : outcome.inspection.redacted
+    if (outcomeRedacted) latchRecoveryRedaction(operation.scopeKey, operation.intentId)
     try { await refreshTransferData() }
     catch {
       if (operationIsCurrent(operation)) {
@@ -570,8 +615,10 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
     const status = inspection.executionStatus
     const page = currentPendingRead()
     const summary = page?.page.items.find(item => item.id === operation.intentId)
+    if (inspection.redacted || summary?.redacted) latchRecoveryRedaction(operation.scopeKey, operation.intentId)
+    else if (summary && inspectionMatchesSummary(inspection, summary)) clearRecoveryRedaction(operation.scopeKey, operation.intentId)
     if (summary?.redacted && !inspection.redacted) {
-      setRecoveryView(operation, { kind: 'unknown' })
+      setRecoveryView(operation, { kind: 'unknown', redacted: true })
       setCommandMessage(operation, 'The server changed access while the command was being checked. Details remain hidden until the next check succeeds.')
       await reconcilePendingIntent(operation, 'UNRESOLVED', 'The terminal result is awaiting a fresh access check.', true)
       return
@@ -727,6 +774,7 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       setCommandMessage(operation, 'The server returned an inconsistent recovery record. Keep the command blocked and retry the status check.')
       return
     }
+    if (inspection.redacted) latchRecoveryRedaction(operation.scopeKey, operation.intentId)
     const page = currentPendingRead()
     if (!page) {
       setRecoveryView(operation, { kind: 'unknown' })
@@ -738,8 +786,12 @@ function TransferWorkspace({ organizationId, transferId, historicalOnly = false 
       replaceWithServerPending(operation, summary)
       return
     }
+    if (summary?.redacted) latchRecoveryRedaction(operation.scopeKey, operation.intentId)
+    else if (summary && !inspection.redacted && inspectionMatchesSummary(inspection, summary)) {
+      clearRecoveryRedaction(operation.scopeKey, operation.intentId)
+    }
     if (summary?.redacted && !inspection.redacted) {
-      setRecoveryView(operation, { kind: 'unknown' })
+      setRecoveryView(operation, { kind: 'unknown', redacted: true })
       setCommandMessage(operation, 'The server changed access while the command was being inspected. Transfer details remain hidden.')
       return
     }
